@@ -1,0 +1,17 @@
+{
+  "name": "iifl-trader-terminal-server",
+  "version": "2.0.0",
+  "description": "Secure IIFL Markets API gateway for the Trader Terminal",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}

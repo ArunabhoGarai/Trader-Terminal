@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#dfe8eb" />
+    <title>IIFL Trader Terminal</title>
+    <meta name="description" content="Desktop-style market watch powered by the IIFL Markets API." />
+    <link rel="stylesheet" href="styles/main.css" />
+  </head>
+  <body>
+    <main class="terminal-shell" aria-label="Trader terminal">
+      <header class="titlebar">
+        <div class="brand-mark" aria-hidden="true">✺</div>
+        <div class="app-title">IIFL Trader Terminal <span>3.0.0.18</span></div>
+        <div class="title-context">for Online Client &nbsp;•&nbsp; Market Watch :: NSE Equity :: <span id="script-count">20 Scripts</span></div>
+        <div class="window-controls" aria-hidden="true"><span>—</span><span>□</span><span>×</span></div>
+      </header>
+
+      <nav class="menu-bar" aria-label="Terminal menu">
+        <button class="menu-logo" title="Terminal home">◈</button>
+        <button>File</button><button>Market</button><button>Reports</button><button>SIP</button>
+        <button>My Account</button><button>Links</button><button>Tools</button><button>Research</button>
+        <button>Windows</button><button>Customer Service</button><button>Help</button>
+        <div class="menu-spacer"></div>
+        <span id="terminal-clock">--:--:--</span>
+        <button class="compact-button" title="Restore">▣</button>
+        <button class="compact-button" title="Close">×</button>
+      </nav>
+
+      <section class="index-strip" aria-label="Index summary">
+        <div><span>SP CNX Nifty</span><strong id="nifty-value">24,836.25</strong><em class="positive" id="nifty-change">+124.50</em></div>
+        <i></i>
+        <div><span>Sensex</span><strong id="sensex-value">81,523.16</strong><em class="positive" id="sensex-change">+328.40</em></div>
+        <div class="connection-status" id="connection-status"><b></b><span>Simulation</span></div>
+      </section>
+
+      <section class="watch-toolbar" aria-label="Market watch controls">
+        <label>Add Scrip <span>»</span></label>
+        <select aria-label="Exchange"><option>NSE</option><option>BSE</option></select>
+        <select aria-label="Segment"><option>Equity</option><option>F&O</option><option>Currency</option></select>
+        <input id="symbol-search" type="search" autocomplete="off" placeholder="Symbol search" aria-label="Search symbol" />
+        <button id="add-scrip" class="native-button">Add</button>
+        <button id="open-action-watch" class="analysis-button">⌁ <span>Market Analysis</span></button>
+        <div class="toolbar-spacer"></div>
+        <button id="connect-iifl" class="connect-button">Connect IIFL</button>
+      </section>
+
+      <section class="watch-stage">
+        <div class="table-wrap">
+          <table class="market-table" aria-label="Market watch quotes">
+            <thead>
+              <tr>
+                <th>Ex</th><th>EX</th><th>DJ</th><th>Now</th><th>Ind</th><th class="symbol-head">Symbol</th>
+                <th>Last Rate</th><th>%chg</th><th>Bid Rate</th><th>Bid Rate</th><th>Offer Qty</th><th>Offer Rate</th>
+                <th>Open</th><th>High</th><th>Low</th><th>PC close</th><th>Total Qty</th><th>Find</th>
+              </tr>
+            </thead>
+            <tbody id="market-body"></tbody>
+          </table>
+        </div>
+        <div class="watch-actions">
+          <button class="buy-button">BUY</button><button class="sell-button">SELL</button>
+          <span class="action-divider"></span>
+          <button title="Delete row">▥</button><button title="View columns">▤</button><button title="Chart">▱</button>
+          <button title="Market depth">≣</button><button title="Refresh" id="refresh-quotes">↻</button>
+          <span class="action-divider"></span><span class="details-label">Show Scrip Details</span>
+          <div class="watch-actions-spacer"></div>
+          <button title="Export">▧</button><button title="Grid">▦</button><button title="Add">＋</button>
+        </div>
+      </section>
+
+      <section class="bottom-dock">
+        <article class="dock-panel news-panel">
+          <header><span>Dow Jones News Wire</span><button id="news-refresh" title="Refresh news">↻</button></header>
+          <div class="news-list" id="news-list"></div>
+        </article>
+        <article class="dock-panel calls-panel">
+          <header><span>Equity Calls</span><button id="open-action-watch-secondary">Action Watch ↗</button></header>
+          <div class="calls-list" id="calls-list"></div>
+        </article>
+      </section>
+    </main>
+
+    <section class="analysis-window is-hidden" id="analysis-window" aria-modal="true" role="dialog" aria-labelledby="analysis-title">
+      <header class="analysis-titlebar">
+        <strong id="analysis-title">Market AnalysisEquity <span>(Action Watch is shown for scrips added in market watch)</span></strong>
+        <button id="close-analysis" aria-label="Close market analysis">×</button>
+      </header>
+      <div class="analysis-tabs" role="tablist">
+        <button class="active" data-analysis-tab="action">Action Watch</button>
+        <button data-analysis-tab="high">52Wk High</button>
+        <button data-analysis-tab="low">52Wk Low</button>
+        <button data-analysis-tab="traded">Top Traded</button>
+        <button data-analysis-tab="gainers">Top Gainers</button>
+        <button data-analysis-tab="losers">Top Losers</button>
+        <button data-analysis-tab="quantity">Traded Qty</button>
+        <button class="tab-scroll" aria-label="Next tabs">◀ ▶</button>
+      </div>
+      <div class="analysis-filters">
+        <label><input type="checkbox" checked data-filter="NSEEQ" /> NSE</label>
+        <label><input type="checkbox" checked data-filter="BSEEQ" /> BSE</label>
+        <label><input type="checkbox" /> MSSX</label>
+        <label><input type="checkbox" checked /> Cash</label>
+        <label><input type="checkbox" /> F&amp;O</label>
+        <label><input type="checkbox" /> Currency</label>
+        <span></span>
+        <label><input type="checkbox" checked id="high-filter" /> High</label>
+        <label><input type="checkbox" checked id="low-filter" /> Low</label>
+      </div>
+      <div class="analysis-table-wrap">
+        <table class="analysis-table">
+          <thead><tr><th>Ex</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr></thead>
+          <tbody id="analysis-body"></tbody>
+        </table>
+      </div>
+      <footer class="analysis-footer"><span id="analysis-summary">Action Watch · live market conditions</span><button id="analysis-refresh">Refresh</button></footer>
+    </section>
+
+    <div id="toast" class="toast" role="status"></div>
+    <script src="scripts/app.js"></script>
+  </body>
+</html>
