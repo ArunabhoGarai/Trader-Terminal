@@ -45,11 +45,36 @@ const qty       = (v) => Number(v || 0).toLocaleString('en-IN', { maximumFractio
 const keyFor    = (q) => `${q.exchange || 'NSEEQ'}:${q.instrumentId || q.id}`;
 const esc       = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
-function quoteFromPrice(quote, index = 0) {
+function quoteFromPrice(quote, index = 0, prevQuote = null) {
   const lastPrice  = Number(quote.lastPrice ?? quote.ltp ?? 0);
   const pctChange  = Number(quote.pctChange ?? quote.changePercent ?? 0);
-  const pcClose    = Number((quote.close ?? quote.previousClose ?? (lastPrice / (1 + pctChange / 100))) || lastPrice);
-  const spread     = Math.max(lastPrice * .001, .05);
+  // pcClose: use explicit close field; if 0/missing, derive from lastPrice + pctChange
+  let pcClose = Number(quote.close ?? quote.previousClose ?? 0);
+  if (!pcClose && lastPrice && pctChange) pcClose = lastPrice / (1 + pctChange / 100);
+  if (!pcClose) pcClose = lastPrice;
+  const spread = Math.max(lastPrice * .001, .05);
+
+  // Guard all numerical fields against 0 (not just null)
+  const safeNum = (v, fallback) => { const n = Number(v ?? 0); return n > 0 ? n : fallback; };
+
+  const open       = safeNum(quote.open,         pcClose * .998);
+  const high       = safeNum(quote.high,         lastPrice * 1.013);
+  const low        = safeNum(quote.low,          lastPrice * .988);
+  const bidPrice   = safeNum(quote.bestBidPrice, lastPrice - spread);
+  const offerPrice = safeNum(quote.bestAskPrice, lastPrice + spread);
+  const bidQty     = safeNum(quote.bestBidQty  ?? quote.bestBidQuantity,  100 + index * 17);
+  const offerQty   = safeNum(quote.bestAskQty  ?? quote.bestAskQuantity,  120 + index * 19);
+  const totalQty   = safeNum(quote.tradedVolume ?? quote.totalQty,         80000 + index * 11457);
+  const week52High = safeNum(quote.week52High,   lastPrice * (1.025 + (index % 3) * .02));
+  const week52Low  = safeNum(quote.week52Low,    lastPrice * (.72  - (index % 3) * .02));
+
+  // Tick direction: compare to previous quote's lastPrice
+  const prevPrice = prevQuote?.lastPrice ?? null;
+  const tickDir   = prevPrice === null ? 'flat'
+                  : lastPrice > prevPrice ? 'up'
+                  : lastPrice < prevPrice ? 'down'
+                  : 'flat';
+
   return {
     id: quote.id || quote.instrumentId || String(index),
     instrumentId: String(quote.instrumentId || quote.id || index),
@@ -57,16 +82,10 @@ function quoteFromPrice(quote, index = 0) {
     exchange: quote.exchange || 'NSEEQ',
     segment: quote.segment || ((quote.exchange || '').endsWith('FO') ? 'F&O' : 'Equity'),
     lastPrice, pctChange, pcClose,
-    bidPrice: Number(quote.bestBidPrice ?? lastPrice - spread),
-    bidQty:   Number(quote.bestBidQty   ?? quote.bestBidQuantity ?? 100 + index * 17),
-    offerPrice: Number(quote.bestAskPrice ?? lastPrice + spread),
-    offerQty:   Number(quote.bestAskQty   ?? quote.bestAskQuantity ?? 120 + index * 19),
-    open:     Number(quote.open ?? pcClose * .996),
-    high:     Number(quote.high ?? lastPrice * 1.013),
-    low:      Number(quote.low  ?? lastPrice * .988),
-    totalQty: Number(quote.tradedVolume ?? quote.totalQty ?? 80000 + index * 11457),
-    week52High: Number(quote.week52High ?? lastPrice * (1.02 + (index % 3) * .025)),
-    week52Low:  Number(quote.week52Low  ?? lastPrice * (.72 - (index % 3) * .02)),
+    bidPrice, bidQty, offerPrice, offerQty,
+    open, high, low, totalQty,
+    week52High, week52Low,
+    tickDir,
     updatedAt: quote.updatedAt || new Date().toISOString(),
   };
 }
@@ -307,15 +326,44 @@ async function renderAnalysis() {
   // ── All other tabs: watchlist-based ────────────────────────────────────────────
   setScreenerMode(false);
   const rows = analysisRows();
+  // ── Action Watch tab ────────────────────────────────────────────────────────
   if (state.analysisTab === 'action') {
-    el('analysis-body').innerHTML = rows.map((e) =>
-      `<tr class="analysis-tick-${esc(e.direction||'flat')}">
-        <td>${esc(e.exchange.slice(0,1))}</td><td>${esc(e.segment==='F&O'?'F':'C')}</td>
-        <td>${esc(e.instrumentId)}</td><td>${esc(e.symbol)}</td><td>${esc(e.status)}</td>
-        <td class="analysis-rate">${fmt(e.lastPrice)}</td>
-        <td>${new Date(e.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</td>
-      </tr>`
-    ).join('') || '<tr><td colspan="7" class="analysis-empty">No new intraday highs or lows yet. Alerts appear when an active Market Watch scrip makes a new day high or low.</td></tr>';
+    if (!state.actionWatch.length) {
+      el('analysis-body').innerHTML = '<tr><td colspan="7" class="analysis-empty">Monitoring market watch scrips for intraday new highs and lows. Alerts will appear here as prices breach their session levels.</td></tr>';
+      return;
+    }
+    const opts = analysisOptions();
+    const visible = state.actionWatch.filter((e) => {
+      const ex   = String(e.exchange || '').toUpperCase();
+      const isFO = (e.segment || '').toUpperCase() === 'F&O' || ex.endsWith('FO');
+      return (ex.startsWith('NSE') ? opts.nse : ex.startsWith('BSE') ? opts.bse : true)
+          && (isFO ? opts.fo : opts.cash)
+          && (e.status === 'New High' ? opts.high : opts.low);
+    }).slice(0, 200);
+
+    if (!visible.length) {
+      el('analysis-body').innerHTML = '<tr><td colspan="7" class="analysis-empty">No alerts match the selected filters.</td></tr>';
+      return;
+    }
+
+    // Row color = TICK DIRECTION at the moment the alert fired
+    // Green (analysis-tick-up)   = up-tick   / positive price movement
+    // Pink  (analysis-tick-down) = down-tick  / negative price movement  
+    // Dim   (analysis-tick-flat) = flat / neutral
+    el('analysis-body').innerHTML = visible.map((e) => {
+      const statusCls = e.status === 'New High' ? 'new-high' : 'new-low';
+      const dir       = e.direction || 'flat';
+      const ts        = new Date(e.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      return `<tr class="action-row action-tick-${esc(dir)}">
+        <td class="ac-ex">${esc(e.exchange.slice(0, 1))}</td>
+        <td class="ac-seg">${esc(e.segment === 'F&O' ? 'F' : 'C')}</td>
+        <td class="ac-tok">${esc(e.instrumentId)}</td>
+        <td class="ac-sym">${esc(e.symbol)}</td>
+        <td class="ac-status ${statusCls}">${esc(e.status)}</td>
+        <td class="ac-rate analysis-rate">${fmt(e.lastPrice)}</td>
+        <td class="ac-time">${ts}</td>
+      </tr>`;
+    }).join('');
     return;
   }
   el('analysis-body').innerHTML = rows.map((q) => {
@@ -355,7 +403,14 @@ function setSession(session) {
 }
 
 function applyTerminalPayload(data) {
-  if (Array.isArray(data.quotes)) state.quotes = data.quotes.map(quoteFromPrice);
+  if (Array.isArray(data.quotes)) {
+    // Build a map of previous quotes so we can compute per-tick direction
+    const prevMap = new Map(state.quotes.map((q) => [keyFor(q), q]));
+    state.quotes  = data.quotes.map((q, i) => {
+      const key  = `${(q.exchange || 'NSEEQ')}:${(q.instrumentId || q.id || i)}`;
+      return quoteFromPrice(q, i, prevMap.get(key) || null);
+    });
+  }
   if (data.watchlist) {
     state.watchlist = data.watchlist;
     if (Array.isArray(data.watchlist.items)) saveWatchlistCache(data.watchlist.items);
@@ -393,7 +448,15 @@ async function refreshQuotes(silent = false) {
     applyTerminalPayload(data);
     if (!silent) toast(data.session?.mode === 'LIVE' ? 'Live IIFL quotes refreshed' : 'Simulation quotes refreshed');
   } catch (_) {
-    state.quotes = state.quotes.map((q) => quoteFromPrice({ ...q, lastPrice: +(q.lastPrice * (1 + (Math.random() - .49) * .0015)).toFixed(2), pctChange: q.pctChange + (Math.random() - .5) * .08 }));
+    // Offline fallback: advance locally with tick direction tracking
+    state.quotes = state.quotes.map((q, i) => {
+      const prev    = q; // current quote becomes the "previous" for tickDir
+      const updated = { ...q,
+        lastPrice: +(q.lastPrice * (1 + (Math.random() - .49) * .0015)).toFixed(2),
+        pctChange: +(q.pctChange + (Math.random() - .5) * .08).toFixed(2),
+      };
+      return quoteFromPrice(updated, i, prev);
+    });
     renderMarket(); renderAnalysis();
     if (!silent) toast('Showing local simulation quotes');
   }
@@ -711,16 +774,18 @@ function bindEvents() {
   });
   el('add-scrip').addEventListener('click', addScrip);
 
-  // Market table click: select row OR remove scrip; double-click opens chart
+  // Market table: single click → select row (CSS only, no re-render) + open chart
+  // Remove button (×) still removes the scrip.
   el('market-body').addEventListener('click', (ev) => {
     const remove = ev.target.closest('.remove-scrip');
     if (remove) { removeScrip(remove.dataset.key); return; }
     const row = ev.target.closest('tr[data-key]');
-    if (row) { state.selectedKey = row.dataset.key; renderMarket(); }
-  });
-  el('market-body').addEventListener('dblclick', (ev) => {
-    const row = ev.target.closest('tr[data-key]');
     if (!row) return;
+    // Toggle selected highlight WITHOUT rebuilding the whole table (avoids dblclick race)
+    el('market-body').querySelectorAll('tr.selected').forEach((r) => r.classList.remove('selected'));
+    row.classList.add('selected');
+    state.selectedKey = row.dataset.key;
+    // Single click opens the chart panel
     openChart(row.dataset.exchange, row.dataset.iid, row.dataset.symbol);
   });
 
