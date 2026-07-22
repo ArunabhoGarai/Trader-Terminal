@@ -13,7 +13,7 @@
       <header class="titlebar">
         <div class="brand-mark" aria-hidden="true">✺</div>
         <div class="app-title">IIFL Trader Terminal <span>3.0.0.18</span></div>
-        <div class="title-context">for Online Client &nbsp;•&nbsp; Market Watch :: NSE Equity :: <span id="script-count">20 Scripts</span></div>
+        <div class="title-context">for Online Client &nbsp;•&nbsp; Market Watch :: <span id="watch-scope">All Instruments</span> :: <span id="script-count">20 / 20 Scripts</span></div>
         <div class="window-controls" aria-hidden="true"><span>—</span><span>□</span><span>×</span></div>
       </header>
 
@@ -37,10 +37,14 @@
 
       <section class="watch-toolbar" aria-label="Market watch controls">
         <label>Add Scrip <span>»</span></label>
-        <select aria-label="Exchange"><option>NSE</option><option>BSE</option></select>
-        <select aria-label="Segment"><option>Equity</option><option>F&O</option><option>Currency</option></select>
-        <input id="symbol-search" type="search" autocomplete="off" placeholder="Symbol search" aria-label="Search symbol" />
+        <select id="exchange-filter" aria-label="Exchange filter"><option value="ALL">All Exchanges</option><option value="NSE">NSE</option><option value="BSE">BSE</option></select>
+        <select id="segment-filter" aria-label="Segment filter"><option value="ALL">All Segments</option><option value="Equity">Equity</option><option value="F&O">F&amp;O</option></select>
+        <div class="symbol-search-wrap">
+          <input id="symbol-search" type="search" autocomplete="off" placeholder="Search symbol to add" aria-label="Search symbol" aria-expanded="false" aria-controls="symbol-results" />
+          <div id="symbol-results" class="symbol-results hidden" role="listbox" aria-label="Symbol search results"></div>
+        </div>
         <button id="add-scrip" class="native-button">Add</button>
+        <span id="watchlist-capacity" class="watchlist-capacity" aria-live="polite">20 / 20 Scripts</span>
         <button id="open-action-watch" class="analysis-button">⌁ <span>Market Analysis</span></button>
         <div class="toolbar-spacer"></div>
         <button id="connect-iifl" class="connect-button">Connect IIFL</button>
@@ -53,7 +57,7 @@
               <tr>
                 <th>Ex</th><th>EX</th><th>DJ</th><th>Now</th><th>Ind</th><th class="symbol-head">Symbol</th>
                 <th>Last Rate</th><th>%chg</th><th>Bid Rate</th><th>Bid Rate</th><th>Offer Qty</th><th>Offer Rate</th>
-                <th>Open</th><th>High</th><th>Low</th><th>PC close</th><th>Total Qty</th><th>Find</th>
+                <th>Open</th><th>High</th><th>Low</th><th>PC close</th><th>Total Qty</th><th>Remove</th>
               </tr>
             </thead>
             <tbody id="market-body"></tbody>
@@ -62,7 +66,7 @@
         <div class="watch-actions">
           <button class="buy-button">BUY</button><button class="sell-button">SELL</button>
           <span class="action-divider"></span>
-          <button title="Delete row">▥</button><button title="View columns">▤</button><button title="Chart">▱</button>
+          <button id="remove-selected" title="Remove selected scrip">▥</button><button title="View columns">▤</button><button title="Chart">▱</button>
           <button title="Market depth">≣</button><button title="Refresh" id="refresh-quotes">↻</button>
           <span class="action-divider"></span><span class="details-label">Show Scrip Details</span>
           <div class="watch-actions-spacer"></div>
