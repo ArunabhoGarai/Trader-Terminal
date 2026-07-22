@@ -135,7 +135,7 @@ function extractToken(payload) {
 }
 
 function callbackClientId(req) {
-  const value = req.query.clientId || req.query.clientCode || req.query.clientcode || req.query.client_id;
+  const value = req.query.clientId || req.query.clientid || req.query.clientCode || req.query.clientcode || req.query.client_id;
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
@@ -213,16 +213,15 @@ app.post('/api/market-watch/refresh', async (req, res) => {
 app.get('/auth/login', (req, res) => {
   browserSession(req, res);
   if (!configured()) return res.status(503).send('IIFL is not configured. Add IIFL_APP_KEY, IIFL_APP_SECRET, and IIFL_REDIRECT_URI to server/.env, then restart the server.');
-  const url = new URL(`${CONFIG.marketsUrl}/`);
-  url.searchParams.set('v', '1');
-  url.searchParams.set('appkey', CONFIG.appKey);
-  url.searchParams.set('redirecturl', CONFIG.redirectUri);
-  res.redirect(url.toString());
+  // IIFL expects the callback URI as a literal query value. Encoding the URI
+  // turns it into a relative path on markets.iiflcapital.com after login.
+  const authUrl = `${CONFIG.marketsUrl}/?v=1&appkey=${encodeURIComponent(CONFIG.appKey)}&redirecturl=${CONFIG.redirectUri}`;
+  res.redirect(authUrl);
 });
 
 app.get('/auth/callback', async (req, res) => {
   const session = browserSession(req, res);
-  const code = req.query.code || req.query.authCode;
+  const code = req.query.code || req.query.authCode || req.query.authcode;
   if (!code || typeof code !== 'string') return res.status(400).send('IIFL did not provide an authorization code.');
   try {
     await exchangeAuthorizationCode(code, callbackClientId(req), session);
