@@ -215,23 +215,44 @@ function makeSimulationQuote(instrument, position = 0) {
 }
 
 function quoteFromPayload(raw, fallback, position) {
-  const ltp = number(raw.ltp ?? raw.lastPrice ?? raw.lastTradedPrice, fallback.lastPrice);
-  const close = number(raw.close ?? raw.previousClose ?? raw.pcClose, fallback.close);
-  const pctChange = close ? ((ltp - close) / close) * 100 : 0;
+  // safeNum: returns the parsed value only when it is a positive finite number.
+  // Price fields that IIFL returns as 0 when unavailable must NOT overwrite the
+  // previous good value stored in `fallback`.
+  const safeNum = (v, fb) => {
+    const n = Number(v ?? -1);
+    return (Number.isFinite(n) && n > 0) ? n : (Number.isFinite(Number(fb)) && Number(fb) > 0 ? Number(fb) : 0);
+  };
+
+  const ltp   = safeNum(raw.ltp ?? raw.lastPrice ?? raw.lastTradedPrice, fallback.lastPrice);
+  const close = safeNum(raw.close ?? raw.previousClose ?? raw.pcClose, fallback.close ?? fallback.lastPrice);
+
+  // Prefer the API's own pctChange; derive from ltp/close only as last resort
+  const pctChange = (raw.pctChange != null && Number.isFinite(Number(raw.pctChange)))
+    ? Number(raw.pctChange)
+    : (raw.changePercent != null && Number.isFinite(Number(raw.changePercent)))
+      ? Number(raw.changePercent)
+      : (close > 0 ? ((ltp - close) / close) * 100 : 0);
+
   return {
     ...fallback,
-    instrumentId: String(raw.instrumentId ?? raw.token ?? fallback.instrumentId),
-    symbol: raw.symbol ?? raw.tradingSymbol ?? fallback.symbol,
-    exchange: raw.exchange ?? fallback.exchange,
-    lastPrice: ltp,
-    pctChange: number(raw.pctChange ?? raw.changePercent, pctChange),
+    instrumentId:  String(raw.instrumentId ?? raw.token ?? fallback.instrumentId),
+    symbol:        raw.symbol ?? raw.tradingSymbol ?? fallback.symbol,
+    exchange:      raw.exchange ?? fallback.exchange,
+    lastPrice:     ltp,
+    pctChange,
     close,
-    open: number(raw.open, fallback.open), high: number(raw.high, fallback.high), low: number(raw.low, fallback.low),
-    bestBidPrice: number(raw.bestBidPrice, fallback.bestBidPrice), bestBidQty: number(raw.bestBidQty ?? raw.bestBidQuantity, fallback.bestBidQty),
-    bestAskPrice: number(raw.bestAskPrice ?? raw.bestAskRate, fallback.bestAskPrice), bestAskQty: number(raw.bestAskQty ?? raw.bestAskQuantity, fallback.bestAskQty),
-    tradedVolume: number(raw.tradedVolume ?? raw.totalQty ?? raw.totalTradedQuantity, fallback.tradedVolume),
-    week52High: number(raw.week52High, fallback.week52High), week52Low: number(raw.week52Low, fallback.week52Low),
-    updatedAt: new Date().toISOString(), position,
+    open:          safeNum(raw.open,                              fallback.open),
+    high:          safeNum(raw.high,                              fallback.high),
+    low:           safeNum(raw.low,                               fallback.low),
+    bestBidPrice:  safeNum(raw.bestBidPrice,                      fallback.bestBidPrice),
+    bestBidQty:    number(raw.bestBidQty ?? raw.bestBidQuantity,   fallback.bestBidQty),
+    bestAskPrice:  safeNum(raw.bestAskPrice ?? raw.bestAskRate,    fallback.bestAskPrice),
+    bestAskQty:    number(raw.bestAskQty ?? raw.bestAskQuantity,   fallback.bestAskQty),
+    tradedVolume:  number(raw.tradedVolume ?? raw.totalQty ?? raw.totalTradedQuantity, fallback.tradedVolume),
+    week52High:    safeNum(raw.week52High,                         fallback.week52High),
+    week52Low:     safeNum(raw.week52Low,                          fallback.week52Low),
+    updatedAt:     new Date().toISOString(),
+    position,
   };
 }
 
@@ -458,11 +479,21 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   session.actionWatch = [];
   session.actionWatchDate = indiaTradingDate();
   session.intradayRanges.clear();
+  // Reset so real instrument IDs get re-resolved on the next live refresh
+  session.idsResolved = false;
   saveSession(session);
 }
 
 async function refreshLiveQuotes(session) {
   if (!session.accessToken || !session.watchlist.length) return false;
+
+  // On the first live refresh (or after re-auth), resolve real IIFL instrument IDs
+  // for any watchlist item that has a placeholder / incorrect token.
+  if (!session.idsResolved) {
+    session.idsResolved = true; // Set early to avoid concurrent duplicate resolution
+    await resolveWatchlistIds(session);
+  }
+
   const instruments = session.watchlist.map(({ exchange, instrumentId }) => ({ exchange, instrumentId }));
   try {
     const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, instruments, {
@@ -471,18 +502,28 @@ async function refreshLiveQuotes(session) {
     const results = Array.isArray(response.data?.result) ? response.data.result : [];
     if (!results.length) throw new Error(response.data?.message || 'The market quote response did not contain results.');
     const previous = new Map(session.quotes.map((quote) => [instrumentKey(quote), quote]));
-    const resultsByKey = new Map(results.map((quote) => [instrumentKey({ exchange: quote.exchange || '', instrumentId: quote.instrumentId ?? quote.token }), quote]));
+    // Build lookup by token key (exchange:instrumentId)
+    const resultsByKey = new Map(results.map((q) => [
+      instrumentKey({ exchange: q.exchange || '', instrumentId: q.instrumentId ?? q.token }), q,
+    ]));
     const nextQuotes = session.watchlist.map((instrument, index) => {
       const fallback = previous.get(instrumentKey(instrument)) || makeSimulationQuote(instrument, index);
-      const raw = resultsByKey.get(instrumentKey(instrument)) || results.find((quote) => String(quote.instrumentId ?? quote.token) === String(instrument.instrumentId));
+      // Match: 1) by exchange+token, 2) by token alone, 3) by symbol name
+      const raw = resultsByKey.get(instrumentKey(instrument))
+        || results.find((q) => String(q.instrumentId ?? q.token) === String(instrument.instrumentId))
+        || results.find((q) => (q.symbol ?? q.tradingSymbol ?? '').toUpperCase() === instrument.symbol.toUpperCase());
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
     updateActionWatch(session, session.quotes, nextQuotes);
     session.quotes = nextQuotes;
     return true;
   } catch (error) {
-    if (error.response?.status === 401 || error.response?.status === 403) clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
-    else session.lastError = 'IIFL market data request failed.';
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
+    } else {
+      session.lastError = `IIFL market data request failed: ${error.message}`;
+      console.error('[live quotes]', error.message);
+    }
     return false;
   }
 }
@@ -508,17 +549,82 @@ function normaliseContract(row, code, index) {
   return instrument;
 }
 
-async function contractsFor(code) {
+async function contractsFor(code, accessToken = null) {
   const cached = contractCache.get(code);
   if (cached && Date.now() - cached.at < CONTRACT_CACHE_MS) return cached.instruments;
   try {
-    const response = await axios.get(`${CONFIG.apiBaseUrl}/contractfiles/${code}.json`, { timeout: 20000 });
+    const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+    const response = await axios.get(`${CONFIG.apiBaseUrl}/contractfiles/${code}.json`, { headers, timeout: 20000 });
     const instruments = contractRows(response.data).map((row, index) => normaliseContract(row, code, index)).filter(Boolean);
     contractCache.set(code, { at: Date.now(), instruments });
     return instruments;
   } catch (error) {
     return [];
   }
+}
+
+/**
+ * Resolve real IIFL instrument IDs for all watchlist items by looking them up
+ * in the official IIFL contract files (downloaded with auth).
+ *
+ * Many default-watchlist items were initialised with placeholder IDs (1–74).
+ * This function replaces those with the actual exchange tokens so that live
+ * marketquotes and historicaldata calls work correctly.
+ *
+ * Called once per LIVE session (flag: session.idsResolved).
+ */
+async function resolveWatchlistIds(session) {
+  // Group watchlist items by exchange code
+  const codeSet = new Set(session.watchlist.map((i) => i.exchange));
+  let resolvedCount = 0;
+
+  for (const code of codeSet) {
+    // Use auth token so contract files requiring auth are accessible
+    const contracts = await contractsFor(code, session.accessToken);
+    if (!contracts.length) {
+      console.warn(`[live] No contract data for ${code} – instrument IDs may be incorrect`);
+      continue;
+    }
+    const bySymbol = new Map(contracts.map((c) => [c.symbol.toUpperCase(), c]));
+
+    for (let idx = 0; idx < session.watchlist.length; idx++) {
+      const item = session.watchlist[idx];
+      if (item.exchange !== code) continue;
+      const real = bySymbol.get(item.symbol.toUpperCase());
+      if (!real || real.instrumentId === item.instrumentId) continue;
+
+      const oldKey = instrumentKey(item);
+      const oldId  = item.instrumentId;
+      item.instrumentId = real.instrumentId;
+      item.basePrice    = number(real.basePrice, item.basePrice);
+      item.displayName  = real.displayName || item.displayName || item.symbol;
+      knownInstruments.set(instrumentKey(item), item);
+
+      // Update the matching quote object so key-based lookups keep working
+      const qIdx = session.quotes.findIndex(
+        (q) => q.symbol === item.symbol && q.exchange === item.exchange
+      );
+      if (qIdx >= 0) {
+        session.quotes[qIdx] = { ...session.quotes[qIdx], instrumentId: item.instrumentId };
+        // Re-key the intraday range entry
+        const range = session.intradayRanges.get(oldKey);
+        if (range) {
+          session.intradayRanges.delete(oldKey);
+          session.intradayRanges.set(instrumentKey(item), range);
+        }
+      }
+      resolvedCount++;
+      console.log(`[live] ${item.symbol}: ID ${oldId} → ${item.instrumentId}`);
+    }
+  }
+
+  if (resolvedCount > 0) {
+    console.log(`[live] ✓ Resolved ${resolvedCount} instrument IDs from IIFL contract files`);
+    saveSession(session); // Persist corrected IDs so they survive server restarts
+  } else {
+    console.log('[live] Instrument ID resolution complete – all IDs already current');
+  }
+  return resolvedCount;
 }
 
 async function searchInstruments(exchange, segment, query) {
@@ -835,7 +941,7 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
 
   const instrument = knownInstrument(exchange, instrumentId) || { symbol: instrumentId, instrumentId, exchange, basePrice: 100 };
 
-  // Live mode: use IIFL historicaldata endpoint
+  // ── LIVE mode: fetch real historical candles from IIFL ─────────────────────
   if (session.mode === 'LIVE' && session.accessToken) {
     const { interval, fromDate, toDate } = chartRange(period);
     try {
@@ -846,11 +952,29 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
         timeout: 20000,
       });
       const candles = parseHistoricalResponse(response.data);
-      if (candles.length) return res.json({ symbol: instrument.symbol, exchange, instrumentId, period, candles });
-    } catch (_) { /* fall through to simulation */ }
+      if (candles.length) {
+        return res.json({ symbol: instrument.symbol, exchange, instrumentId, period, candles, simulated: false });
+      }
+      // IIFL returned a response but no candles – this instrument may not have
+      // historical data on the API (e.g., illiquid/unlisted). Report it clearly.
+      console.warn(`[chart] No candles for ${exchange}:${instrumentId} (${instrument.symbol}) period=${period}`);
+      return res.status(503).json({
+        message: `IIFL did not return chart data for ${instrument.symbol} (${period}). The instrument may be unlisted, illiquid, or unsupported by the historicaldata endpoint.`,
+        simulated: false,
+      });
+    } catch (err) {
+      console.error(`[chart] historicaldata error for ${exchange}:${instrumentId}:`, err.response?.status || err.message);
+      if (err.response?.status === 401 || err.response?.status === 403) {
+        clearSession(session, 'IIFL session expired.');
+      }
+      return res.status(503).json({
+        message: `Chart data unavailable: ${err.response?.data?.message || err.message}`,
+        simulated: false,
+      });
+    }
   }
 
-  // Simulation / fallback: generate synthetic candles
+  // ── Simulation / offline fallback (only when NOT in LIVE mode) ────────────
   const candles = syntheticCandles(instrument, period);
   res.json({ symbol: instrument.symbol, exchange, instrumentId, period, candles, simulated: true });
 });
