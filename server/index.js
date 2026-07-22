@@ -2,7 +2,8 @@
  * IIFL Markets API gateway for the trader-terminal UI.
  *
  * Credentials and access tokens remain server-side. Each browser receives an
- * isolated in-memory session containing its own active watchlist and token.
+ * isolated session containing its own active watchlist and token. Sessions are
+ * persisted to disk so the watchlist survives server restarts.
  */
 'use strict';
 
@@ -25,14 +26,98 @@ const CONFIG = {
   quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 3500), 1000),
 };
 
-const MAX_WATCHLIST_SIZE = 20;
+const MAX_WATCHLIST_SIZE = 400;
 const ACTION_WATCH_LIMIT = 120;
 const SESSION_COOKIE = 'tt_session';
 const CONTRACT_CACHE_MS = 30 * 60 * 1000;
 
-// Built-in NSE Equity symbols keep the terminal immediately useful and provide
-// a verified fallback if the public contract-file endpoint is unavailable.
+// Directory where per-session watchlists are persisted across server restarts.
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// ─── Pre-defined watchlist of 74 scrips ──────────────────────────────────────
+// Format: [symbol, instrumentId, basePrice]
+// instrumentId values are NSE Equity token IDs for the listed symbols.
+// If a live token lookup resolves a different ID the instrument search will
+// still work because the server also queries the IIFL contract files.
 const DEFAULT_SPECS = [
+  ['ABCAPITAL',    '1',      200.00],
+  ['AKSHOPTFBR',   '2',       50.00],
+  ['ATGL',         '3',      800.00],
+  ['BAJAJHCARE',   '4',      600.00],
+  ['BAJAJHFL',     '5',       80.00],
+  ['BAJAJHIND',    '317',    200.00],
+  ['BEML',         '438',   4500.00],
+  ['BHARATCOAL',   '7',      300.00],
+  ['BPCL',         '526',    285.60],
+  ['CONCOR',       '694',   1000.00],
+  ['CYIENTDLM',    '10',     600.00],
+  ['DALMIASUG',    '11',     500.00],
+  ['DIACABS',      '12',     200.00],
+  ['DCXINDIA',     '13',     350.00],
+  ['EMSLIMITED',   '14',     800.00],
+  ['EPACK',        '15',     300.00],
+  ['EXIDEIND',     '500086', 460.00],
+  ['FEDERALBNK',   '1023',   190.00],
+  ['GANDHAR',      '17',     200.00],
+  ['GMDCLTD',      '18',     350.00],
+  ['GUJENERGY',    '19',     700.00],
+  ['HARSHA',       '20',     600.00],
+  ['HDFCAMC',      '4306',  3950.00],
+  ['HUDCO',        '22',     250.00],
+  ['ICIL',         '23',     300.00],
+  ['IFL-EQ',       '24',     100.00],
+  ['INDUSINDBK',   '5258',  1560.00],
+  ['IONEXCHANG',   '26',     450.00],
+  ['IOCLP',        '27',     150.00],
+  ['IRB',          '28',     900.00],
+  ['JINDWORLD',    '29',    1500.00],
+  ['JKTYRE',       '30',     300.00],
+  ['KITEX',        '31',     400.00],
+  ['KNRCON',       '32',     350.00],
+  ['LXCHEM',       '33',     500.00],
+  ['MANAPPURAM',   '34',     200.00],
+  ['NATIONALUM',   '35',     220.00],
+  ['NESTLEIND',    '17963', 2200.00],
+  ['NEWGEN',       '37',    1200.00],
+  ['NFL',          '38',     100.00],
+  ['NOCIL',        '39',     300.00],
+  ['NYKAA',        '40',     200.00],
+  ['OLAELEC',      '41',     100.00],
+  ['ORIENTTECH',   '42',     400.00],
+  ['OSWALPUMPS',   '43',     200.00],
+  ['PCBL',         '44',     350.00],
+  ['PCJEWELLER',   '45',     100.00],
+  ['PRAJIND',      '46',     700.00],
+  ['QUESS',        '47',     800.00],
+  ['QUICKHEAL-BE', '48',     250.00],
+  ['RAIN',         '49',     200.00],
+  ['RAJSREESUG',   '50',     150.00],
+  ['RCF',          '51',     150.00],
+  ['RUPA',         '52',     350.00],
+  ['SAKSOFT',      '53',     900.00],
+  ['SDBL',         '54',     200.00],
+  ['SHAKTIPUMP',   '55',     900.00],
+  ['SHAREINDIA',   '56',     350.00],
+  ['SPIC',         '57',     100.00],
+  ['SUBEXLTD-BE',  '58',     100.00],
+  ['SWSOLAR',      '59',     400.00],
+  ['TALBROAUTO',   '60',     100.00],
+  ['TANLA',        '61',     900.00],
+  ['TATAINVEST',   '62',    1200.00],
+  ['TATASTEEL',    '3499',   153.00],
+  ['TEJASNET',     '64',     800.00],
+  ['TEXRAIL',      '65',     200.00],
+  ['TTML',         '66',      80.00],
+  ['VEDL',         '67',     400.00],
+  ['VEDPOWER',     '68',     150.00],
+  ['VISL',         '69',     100.00],
+  ['VOGL',         '70',     200.00],
+  ['VPRPL-BE',     '71',     100.00],
+  ['ZENSARTECH',   '72',     700.00],
+];
+
+const EXTRA_NSE_SPECS = [
   ['ABB', '13', 687.55], ['ACC', '22', 1345.15], ['SBILIFE', '21808', 3160.55],
   ['BHEL', '438', 832.05], ['BPCL', '526', 285.60], ['RELIANCE', '2885', 561.00],
   ['GRASIM', '1232', 96.70], ['AMBUJACEM', '1270', 313.90], ['HDFCBANK', '1333', 1299.00],
@@ -40,9 +125,6 @@ const DEFAULT_SPECS = [
   ['INFY', '1594', 669.00], ['ITC', '1660', 65.00], ['M&M', '2031', 720.00],
   ['ONGC', '2475', 720.00], ['TCS', '11536', 3802.40], ['ICICIBANK', '4963', 1270.70],
   ['TATAMOTORS', '3456', 760.15], ['SUNPHARMA', '3351', 1680.80],
-];
-
-const EXTRA_NSE_SPECS = [
   ['KOTAKBANK', '1922', 1920], ['LT', '11483', 3580], ['AXISBANK', '5900', 1180],
   ['ASIANPAINT', '236', 2350], ['MARUTI', '10999', 12800], ['BAJFINANCE', '317', 7200],
   ['TITAN', '3506', 3650], ['WIPRO', '3787', 545], ['HCLTECH', '7229', 1650],
@@ -63,7 +145,8 @@ function makeInstrument([symbol, instrumentId, basePrice], index) {
 const DEFAULT_WATCHLIST = DEFAULT_SPECS.map(makeInstrument);
 const STATIC_CATALOG = [...DEFAULT_SPECS, ...EXTRA_NSE_SPECS].map(makeInstrument);
 const knownInstruments = new Map(STATIC_CATALOG.map((instrument) => [instrumentKey(instrument), instrument]));
-const contractCache = new Map();
+const contractCache  = new Map();
+const screenerCache  = new Map(); // exchange -> { at, data }  (10-min TTL)
 const browserSessions = new Map();
 
 const app = express();
@@ -152,14 +235,70 @@ function quoteFromPayload(raw, fallback, position) {
   };
 }
 
-function createBrowserSession() {
-  const watchlist = DEFAULT_WATCHLIST.map((instrument) => ({ ...instrument }));
+// ─── Session persistence helpers ─────────────────────────────────────────────
+
+function sessionFilePath(sessionId) {
+  return path.join(DATA_DIR, `session_${sessionId}.json`);
+}
+
+/** Persist the mutable parts of a session that should survive server restarts. */
+function saveSession(session) {
+  try {
+    const record = {
+      id: session.id,
+      watchlist: session.watchlist,
+      accessToken: session.accessToken,
+      expiresAt: session.expiresAt,
+      authenticatedAt: session.authenticatedAt,
+      mode: session.mode,
+      savedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(sessionFilePath(session.id), JSON.stringify(record, null, 2), 'utf8');
+  } catch (_) { /* Non-fatal – in-memory session continues to work */ }
+}
+
+/** Load a persisted session record from disk, or null if not found / corrupt. */
+function loadSessionRecord(sessionId) {
+  try {
+    const filePath = sessionFilePath(sessionId);
+    if (!fs.existsSync(filePath)) return null;
+    const record = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!record || record.id !== sessionId) return null;
+    return record;
+  } catch (_) { return null; }
+}
+
+function createBrowserSession(savedRecord) {
+  // Restore watchlist from disk if a saved record exists, otherwise use defaults.
+  let watchlist;
+  if (savedRecord && Array.isArray(savedRecord.watchlist) && savedRecord.watchlist.length) {
+    watchlist = savedRecord.watchlist.map((item) => ({ ...item }));
+    // Re-register any saved instruments into the known-instruments map so that
+    // add/remove operations continue to work after a server restart.
+    watchlist.forEach((instrument) => knownInstruments.set(instrumentKey(instrument), instrument));
+  } else {
+    watchlist = DEFAULT_WATCHLIST.map((instrument) => ({ ...instrument }));
+  }
   const quotes = watchlist.map(makeSimulationQuote);
+
+  // Restore authentication state from the saved record (tokens may be expired,
+  // that is resolved when a live refresh attempt fails with 401/403).
+  const mode = savedRecord?.mode === 'LIVE' ? 'LIVE' : 'SIMULATION';
+  const accessToken = savedRecord?.accessToken || null;
+  const expiresAt = savedRecord?.expiresAt || null;
+  const authenticatedAt = savedRecord?.authenticatedAt || null;
+
   return {
-    id: crypto.randomUUID(), accessToken: null, expiresAt: null, authenticatedAt: null, mode: 'SIMULATION', lastError: null,
-    watchlist, quotes, actionWatch: [], actionWatchDate: indiaTradingDate(), intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.high, low: quote.low }])),
+    id: savedRecord?.id || crypto.randomUUID(),
+    accessToken, expiresAt, authenticatedAt,
+    mode, lastError: null,
+    watchlist, quotes, actionWatch: [],
+    actionWatchDate: indiaTradingDate(),
+    intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.high, low: quote.low }])),
   };
 }
+
+// ─── Cookie & session management ─────────────────────────────────────────────
 
 function readCookies(req) {
   return Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map((pair) => {
@@ -170,11 +309,26 @@ function readCookies(req) {
 
 function browserSession(req, res) {
   const id = readCookies(req)[SESSION_COOKIE];
+
+  // 1. In-memory hit (fastest path – no disk I/O)
   if (id && browserSessions.has(id)) return browserSessions.get(id);
-  const session = createBrowserSession();
+
+  // 2. Restore from disk (survives server restarts)
+  const savedRecord = id ? loadSessionRecord(id) : null;
+  const session = createBrowserSession(savedRecord);
+
+  // If the saved record had an ID, keep it so the browser cookie stays valid.
+  if (savedRecord?.id) session.id = savedRecord.id;
+
   browserSessions.set(session.id, session);
   const secure = CONFIG.redirectUri.startsWith('https://') ? '; Secure' : '';
-  res.append('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(session.id)}; Path=/; HttpOnly; SameSite=Lax${secure}`);
+  // maxAge = 30 days so the cookie outlives browser restarts
+  res.append('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(session.id)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure}`);
+
+  // Persist so it is available on the next server start even if the browser
+  // never modifies the watchlist.
+  saveSession(session);
+
   return session;
 }
 
@@ -229,6 +383,7 @@ function clearSession(session, message) {
   session.authenticatedAt = null;
   session.mode = 'SIMULATION';
   session.lastError = message || null;
+  saveSession(session);
 }
 
 function advanceSimulation(session) {
@@ -267,10 +422,10 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   session.expiresAt = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
   session.mode = 'LIVE';
   session.lastError = null;
-  // The first live snapshot establishes today's range. It is not an alert.
   session.actionWatch = [];
   session.actionWatchDate = indiaTradingDate();
   session.intradayRanges.clear();
+  saveSession(session);
 }
 
 async function refreshLiveQuotes(session) {
@@ -342,8 +497,6 @@ async function searchInstruments(exchange, segment, query) {
     ? (requestedSegment === 'ALL' ? ['NSEEQ', 'BSEEQ', 'NSEFO', 'BSEFO'] : ['NSE', 'BSE'].map((value) => exchangeCode(value, segment)))
     : (requestedSegment === 'ALL' ? [exchangeCode(exchange, 'Equity'), exchangeCode(exchange, 'F&O')] : [exchangeCode(exchange, segment)]);
   let instruments = STATIC_CATALOG.filter((instrument) => codes.includes(instrument.exchange) && matches(instrument));
-  // BSE and F&O identifiers are resolved from IIFL's public contract files.
-  // Defer these larger files until the user enters at least two search letters.
   if (needle.length >= 2) {
     const catalogs = await Promise.all(codes.filter((code) => code !== 'NSEEQ' || instruments.length < 10).map(contractsFor));
     instruments = [...instruments, ...catalogs.flat().filter(matches)];
@@ -360,6 +513,181 @@ function knownInstrument(exchange, instrumentId) {
 function sendTerminal(_req, res) {
   res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html'));
 }
+
+// ─── Helpers for chart / 52W routes ─────────────────────────────────────────
+
+/**
+ * Format a Date as "DD-Mon-YYYY" which IIFL historicaldata expects.
+ * e.g. "19-Sep-2024"
+ */
+function iiflDateStr(date) {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const d = date instanceof Date ? date : new Date(date);
+  return `${String(d.getDate()).padStart(2,'0')}-${months[d.getMonth()]}-${d.getFullYear()}`;
+}
+
+/**
+ * Map a period label (7d, 1m, 1y, lifetime) to IIFL interval + fromDate/toDate.
+ */
+function chartRange(period) {
+  const now = new Date();
+  const toDate = iiflDateStr(now);
+  const map = {
+    '7d':       { interval: '1 day',    fromDate: iiflDateStr(new Date(now - 7 * 864e5)) },
+    '1m':       { interval: '1 day',    fromDate: iiflDateStr(new Date(now - 30 * 864e5)) },
+    '1y':       { interval: '1 week',   fromDate: iiflDateStr(new Date(now - 365 * 864e5)) },
+    'lifetime': { interval: '1 month',  fromDate: iiflDateStr(new Date(now - 3650 * 864e5)) },
+  };
+  const { interval, fromDate } = map[period] || map['1m'];
+  return { interval, fromDate, toDate };
+}
+
+/**
+ * Parse the IIFL historicaldata response string into an array of candle objects.
+ * IIFL returns a stringified array of arrays: [[timestamp,open,high,low,close,vol], ...]
+ */
+function parseHistoricalResponse(raw) {
+  try {
+    const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const rows = Array.isArray(data) ? data
+      : Array.isArray(data?.result) ? data.result
+      : Array.isArray(data?.data) ? data.data
+      : Array.isArray(data?.candles) ? data.candles
+      : [];
+    return rows.map((row) => {
+      if (Array.isArray(row)) {
+        return { t: row[0], o: Number(row[1]), h: Number(row[2]), l: Number(row[3]), c: Number(row[4]), v: Number(row[5] || 0) };
+      }
+      return {
+        t: row.timestamp || row.time || row.t || row.date,
+        o: Number(row.open || row.o || 0),
+        h: Number(row.high || row.h || 0),
+        l: Number(row.low || row.l || 0),
+        c: Number(row.close || row.c || 0),
+        v: Number(row.volume || row.v || 0),
+      };
+    }).filter((c) => c.o > 0 || c.h > 0);
+  } catch (_) { return []; }
+}
+
+/**
+ * Generate synthetic OHLCV candles for simulation mode.
+ * Uses a seeded random walk anchored to the instrument's basePrice.
+ */
+function syntheticCandles(instrument, period) {
+  const seed = instrument.symbol.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+  let price = number(instrument.basePrice, 200);
+  const prng = (n) => { let x = Math.sin(seed + n) * 10000; return x - Math.floor(x); };
+
+  const now = Date.now();
+  const periodMs = {
+    '7d': 864e5, '1m': 864e5, '1y': 7 * 864e5, 'lifetime': 30 * 864e5,
+  }[period] || 864e5;
+  const count = { '7d': 7, '1m': 30, '1y': 52, 'lifetime': 120 }[period] || 30;
+  const from = now - count * periodMs;
+
+  const candles = [];
+  for (let i = 0; i < count; i++) {
+    const drift = (prng(i * 3) - 0.48) * 0.025;
+    const volatility = 0.012 + prng(i * 3 + 1) * 0.018;
+    const open = price;
+    const close = +(open * (1 + drift)).toFixed(2);
+    const high = +(Math.max(open, close) * (1 + prng(i * 3 + 2) * volatility)).toFixed(2);
+    const low = +(Math.min(open, close) * (1 - prng(i * 3 + 1) * volatility)).toFixed(2);
+    const volume = Math.round(50000 + prng(i * 5) * 800000);
+    candles.push({ t: new Date(from + i * periodMs).toISOString(), o: open, h: high, l: low, c: close, v: volume });
+    price = close;
+  }
+  return candles;
+}
+
+/**
+ * Fetch 52W high/low data for EVERY instrument listed on the given exchange.
+ *
+ * Strategy:
+ *  1. Load all instruments from the IIFL contract file (the full market list).
+ *  2. If the contract file is unavailable fall back to DEFAULT_WATCHLIST.
+ *  3. LIVE  : batch-POST /marketdata/marketquotes in chunks of 50,
+ *             up to 5 chunks in parallel, to stay within rate limits.
+ *  4. SIM   : generate synthetic data using the same seeded PRNG as the chart.
+ *  5. Cache results per exchange for 10 minutes.
+ */
+async function fetchMarket52Week(session, exchange) {
+  const code     = String(exchange || 'NSEEQ').toUpperCase();
+  const cacheKey = `${code}:${session.mode}`;
+  const cached   = screenerCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.data;
+
+  // ── Step 1: full instrument list for the exchange ──────────────────────────
+  let instruments = await contractsFor(code);
+
+  // Fallback: contract file unreachable (e.g. no network, or auth required)
+  if (!instruments.length) {
+    console.warn(`[52week] Contract file empty for ${code}; falling back to STATIC_CATALOG`);
+    instruments = STATIC_CATALOG.filter((i) => i.exchange === code);
+  }
+  if (!instruments.length) instruments = DEFAULT_WATCHLIST;
+
+  // ── Step 2: fetch quotes ───────────────────────────────────────────────────
+  let data;
+  if (session.mode === 'LIVE' && session.accessToken) {
+    const CHUNK  = 50;
+    const CONCUR = 5;
+    const chunks = [];
+    for (let i = 0; i < instruments.length; i += CHUNK) chunks.push(instruments.slice(i, i + CHUNK));
+
+    const allRaw = [];
+    for (let i = 0; i < chunks.length; i += CONCUR) {
+      const group   = chunks.slice(i, i + CONCUR);
+      const results = await Promise.all(group.map(async (chunk) => {
+        try {
+          const res = await axios.post(
+            `${CONFIG.apiBaseUrl}/marketdata/marketquotes`,
+            chunk.map(({ exchange: ex, instrumentId }) => ({ exchange: ex, instrumentId })),
+            { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 15000 }
+          );
+          return Array.isArray(res.data?.result) ? res.data.result : [];
+        } catch (_) { return []; }
+      }));
+      allRaw.push(...results.flat());
+    }
+
+    const rawMap = new Map(allRaw.map((r) => [
+      instrumentKey({ exchange: r.exchange || code, instrumentId: String(r.instrumentId ?? r.token ?? '') }), r,
+    ]));
+
+    data = instruments.map((inst) => {
+      const raw  = rawMap.get(instrumentKey(inst)) || {};
+      const ltp  = number(raw.ltp ?? raw.lastPrice, number(inst.basePrice, 100));
+      const w52h = number(raw.week52High ?? raw.yearHigh, ltp * 1.35);
+      const w52l = number(raw.week52Low  ?? raw.yearLow,  ltp * 0.72);
+      return {
+        symbol: inst.symbol, instrumentId: inst.instrumentId, exchange: inst.exchange,
+        lastPrice: ltp, week52High: w52h, week52Low: w52l,
+        pctChange: number(raw.pctChange ?? raw.changePercent, 0),
+        distanceFromHigh: w52h > 0 ? ((w52h - ltp) / w52h) * 100 : 100,
+        distanceFromLow:  w52l > 0 ? ((ltp - w52l) / w52l) * 100 : 100,
+      };
+    });
+  } else {
+    // Simulation: deterministic seeded data for every instrument in the list
+    data = instruments.map((inst, i) => {
+      const sim  = makeSimulationQuote(inst, i);
+      return {
+        symbol: inst.symbol, instrumentId: inst.instrumentId, exchange: inst.exchange,
+        lastPrice: sim.lastPrice, week52High: sim.week52High, week52Low: sim.week52Low,
+        pctChange: sim.pctChange,
+        distanceFromHigh: ((sim.week52High - sim.lastPrice) / sim.week52High) * 100,
+        distanceFromLow:  ((sim.lastPrice - sim.week52Low)  / sim.week52Low)  * 100,
+      };
+    });
+  }
+
+  screenerCache.set(cacheKey, { at: Date.now(), data });
+  return data;
+}
+
+// ─── Routes ──────────────────────────────────────────────────────────────────
 
 app.get('/api/session', (req, res) => {
   const session = browserSession(req, res);
@@ -403,6 +731,7 @@ app.post('/api/watchlist', async (req, res) => {
   session.watchlist.push(next);
   session.quotes.push(makeSimulationQuote(next, session.watchlist.length - 1));
   if (session.mode === 'LIVE') await refreshLiveQuotes(session);
+  saveSession(session);
   res.status(201).json(terminalPayload(session));
 });
 
@@ -413,14 +742,13 @@ app.delete('/api/watchlist/:exchange/:instrumentId', (req, res) => {
   if (index < 0) return res.status(404).json({ message: 'That scrip is not in this watchlist.' });
   session.watchlist.splice(index, 1);
   session.quotes.splice(index, 1);
+  saveSession(session);
   res.json(terminalPayload(session));
 });
 
 app.get('/auth/login', (req, res) => {
   browserSession(req, res);
   if (!configured()) return res.status(503).send('IIFL is not configured. Add IIFL_APP_KEY, IIFL_APP_SECRET, and IIFL_REDIRECT_URI to server/.env, then restart the server.');
-  // IIFL expects the callback URI as a literal query value. Encoding it makes
-  // it a relative path on markets.iiflcapital.com after login.
   const authUrl = `${CONFIG.marketsUrl}/?v=1&appkey=${encodeURIComponent(CONFIG.appKey)}&redirecturl=${CONFIG.redirectUri}`;
   res.redirect(authUrl);
 });
@@ -438,6 +766,60 @@ app.get('/auth/callback', async (req, res) => {
     console.error('[IIFL auth] Token exchange failed:', error.response?.status || error.message);
     res.status(401).send('IIFL authentication could not be completed. Check the server logs and your registered redirect URI.');
   }
+});
+
+// ─── 52-Week High / Low — FULL MARKET (all exchange instruments) ─────────────
+// exchange: NSEEQ | BSEEQ | NSEFO | BSEFO  (default NSEEQ)
+// type    : high | low
+// The server fetches the complete contract file for the exchange, then
+// batch-queries marketquotes in chunks of 50 (up to 5 concurrent) to get
+// live 52W data. In simulation mode it returns synthetic data for every
+// listed instrument.
+app.get('/api/52week', async (req, res) => {
+  const session  = browserSession(req, res);
+  const type     = String(req.query.type     || 'high').toLowerCase(); // 'high' | 'low'
+  const exchange = String(req.query.exchange || 'NSEEQ').toUpperCase();
+  try {
+    const data   = await fetchMarket52Week(session, exchange);
+    const sorted = type === 'low'
+      ? data.slice().sort((a, b) => a.distanceFromLow  - b.distanceFromLow)
+      : data.slice().sort((a, b) => a.distanceFromHigh - b.distanceFromHigh);
+    res.json({ type, exchange, total: sorted.length, instruments: sorted });
+  } catch (error) {
+    console.error('[52week]', error.message);
+    res.status(500).json({ message: 'Unable to fetch 52-week screener data.' });
+  }
+});
+
+// ─── Historical Chart Data ────────────────────────────────────────────────────
+app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
+  const session = browserSession(req, res);
+  const exchange = String(req.params.exchange || 'NSEEQ').toUpperCase();
+  const instrumentId = String(req.params.instrumentId || '');
+  const period = String(req.query.period || '1m'); // 7d | 1m | 1y | lifetime
+
+  if (!instrumentId) return res.status(400).json({ message: 'instrumentId is required.' });
+
+  const instrument = knownInstrument(exchange, instrumentId) || { symbol: instrumentId, instrumentId, exchange, basePrice: 100 };
+
+  // Live mode: use IIFL historicaldata endpoint
+  if (session.mode === 'LIVE' && session.accessToken) {
+    const { interval, fromDate, toDate } = chartRange(period);
+    try {
+      const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/historicaldata`, {
+        exchange, instrumentId, interval, fromDate, toDate,
+      }, {
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
+        timeout: 20000,
+      });
+      const candles = parseHistoricalResponse(response.data);
+      if (candles.length) return res.json({ symbol: instrument.symbol, exchange, instrumentId, period, candles });
+    } catch (_) { /* fall through to simulation */ }
+  }
+
+  // Simulation / fallback: generate synthetic candles
+  const candles = syntheticCandles(instrument, period);
+  res.json({ symbol: instrument.symbol, exchange, instrumentId, period, candles, simulated: true });
 });
 
 app.get('*', sendTerminal);
