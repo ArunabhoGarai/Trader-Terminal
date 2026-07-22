@@ -142,7 +142,7 @@ function makeInstrument([symbol, instrumentId, basePrice], index) {
   return { symbol, instrumentId: String(instrumentId), exchange: 'NSEEQ', segment: 'Equity', basePrice, index };
 }
 
-const DEFAULT_WATCHLIST = DEFAULT_SPECS.map(makeInstrument);
+const DEFAULT_WATCHLIST = []; // Users build their own watchlist via the Add Scrip menu
 const STATIC_CATALOG = [...DEFAULT_SPECS, ...EXTRA_NSE_SPECS].map(makeInstrument);
 const knownInstruments = new Map(STATIC_CATALOG.map((instrument) => [instrumentKey(instrument), instrument]));
 const contractCache  = new Map();
@@ -293,12 +293,24 @@ function createBrowserSession(savedRecord) {
   // Restore watchlist from disk if a saved record exists, otherwise use defaults.
   let watchlist;
   if (savedRecord && Array.isArray(savedRecord.watchlist) && savedRecord.watchlist.length) {
-    watchlist = savedRecord.watchlist.map((item) => ({ ...item }));
-    // Re-register any saved instruments into the known-instruments map so that
-    // add/remove operations continue to work after a server restart.
-    watchlist.forEach((instrument) => knownInstruments.set(instrumentKey(instrument), instrument));
+    // ── Migration: wipe sessions that contain ONLY old placeholder IDs (1–100) ──
+    // These were the fake default IDs assigned before real IIFL token resolution
+    // was implemented. Wiping them is safe — the user will re-add scrips from the
+    // Add Scrip menu and get correct real IDs from the IIFL contract file.
+    const allPlaceholder = savedRecord.watchlist.every(
+      (item) => Number(item.instrumentId) > 0 && Number(item.instrumentId) <= 100
+    );
+    if (allPlaceholder) {
+      console.log('[session] Detected old placeholder watchlist — resetting to empty for clean start');
+      watchlist = [];
+    } else {
+      watchlist = savedRecord.watchlist.map((item) => ({ ...item }));
+      // Re-register any saved instruments into the known-instruments map so that
+      // add/remove operations continue to work after a server restart.
+      watchlist.forEach((instrument) => knownInstruments.set(instrumentKey(instrument), instrument));
+    }
   } else {
-    watchlist = DEFAULT_WATCHLIST.map((instrument) => ({ ...instrument }));
+    watchlist = []; // Always start empty; users add scrips manually
   }
   const quotes = watchlist.map(makeSimulationQuote);
 
@@ -315,6 +327,7 @@ function createBrowserSession(savedRecord) {
     mode, lastError: null,
     watchlist, quotes, actionWatch: [],
     actionWatchDate: indiaTradingDate(),
+    idsResolved: false,
     // Initialise intraday ranges from the CURRENT PRICE, not the wide simulation high/low.
     // This ensures any genuine price movement from the opening price triggers an alert.
     intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.lastPrice, low: quote.lastPrice }])),
@@ -356,7 +369,16 @@ function browserSession(req, res) {
 }
 
 function publicSession(session) {
-  return { mode: session.mode, authenticated: Boolean(session.accessToken), configured: configured(), expiresAt: session.expiresAt, pollIntervalMs: CONFIG.quotePollMs };
+  // Use faster polling in LIVE mode (2 s) so the market watch feels real-time.
+  // In simulation mode 4 s is fine — no external API calls are needed.
+  const pollIntervalMs = session.mode === 'LIVE' ? 2000 : 4000;
+  return {
+    mode: session.mode,
+    authenticated: Boolean(session.accessToken),
+    configured: configured(),
+    expiresAt: session.expiresAt,
+    pollIntervalMs,
+  };
 }
 
 function publicWatchlist(session) {
@@ -682,31 +704,63 @@ function chartRange(period) {
 }
 
 /**
- * Parse the IIFL historicaldata response string into an array of candle objects.
- * IIFL returns a stringified array of arrays: [[timestamp,open,high,low,close,vol], ...]
+ * Parse the IIFL historicaldata response into an array of candle objects.
+ *
+ * IIFL response shapes observed in the wild:
+ *   A) { result: "[[ts,o,h,l,c,v],...]" }  ← result is a JSON *string*
+ *   B) { result: [[ts,o,h,l,c,v],...] }     ← result is already an array
+ *   C) { data:   [[ts,o,h,l,c,v],...] }
+ *   D) [[ts,o,h,l,c,v],...]                 ← top-level array
+ *   E) { result: { data: [...] } }           ← nested object
+ *
+ * Each row element may be:
+ *   - Array: [timestamp, open, high, low, close, volume]
+ *   - Object: { timestamp/time/date, open/o, high/h, low/l, close/c, volume/v }
  */
 function parseHistoricalResponse(raw) {
   try {
-    const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    const rows = Array.isArray(data) ? data
-      : Array.isArray(data?.result) ? data.result
-      : Array.isArray(data?.data) ? data.data
-      : Array.isArray(data?.candles) ? data.candles
-      : [];
+    // Step 1: If the entire response body was a string, parse it.
+    let data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+
+    // Step 2: Unwrap the result / data envelope.
+    let rows;
+    if (Array.isArray(data)) {
+      rows = data;
+    } else if (typeof data?.result === 'string') {
+      // Double-encoded: result is a JSON string containing the array
+      rows = JSON.parse(data.result);
+    } else if (Array.isArray(data?.result)) {
+      rows = data.result;
+    } else if (Array.isArray(data?.result?.data)) {
+      rows = data.result.data;
+    } else if (Array.isArray(data?.data)) {
+      rows = data.data;
+    } else if (Array.isArray(data?.candles)) {
+      rows = data.candles;
+    } else {
+      console.warn('[parseHistoricalResponse] Unrecognised shape:', JSON.stringify(data).slice(0, 200));
+      rows = [];
+    }
+
     return rows.map((row) => {
       if (Array.isArray(row)) {
-        return { t: row[0], o: Number(row[1]), h: Number(row[2]), l: Number(row[3]), c: Number(row[4]), v: Number(row[5] || 0) };
+        // ts can be epoch-ms number or ISO/IIFL date string
+        const ts = typeof row[0] === 'number' ? new Date(row[0]).toISOString() : String(row[0]);
+        return { t: ts, o: Number(row[1]), h: Number(row[2]), l: Number(row[3]), c: Number(row[4]), v: Number(row[5] || 0) };
       }
       return {
-        t: row.timestamp || row.time || row.t || row.date,
-        o: Number(row.open || row.o || 0),
-        h: Number(row.high || row.h || 0),
-        l: Number(row.low || row.l || 0),
-        c: Number(row.close || row.c || 0),
-        v: Number(row.volume || row.v || 0),
+        t: row.timestamp ?? row.time ?? row.t ?? row.date ?? '',
+        o: Number(row.open  ?? row.o ?? 0),
+        h: Number(row.high  ?? row.h ?? 0),
+        l: Number(row.low   ?? row.l ?? 0),
+        c: Number(row.close ?? row.c ?? 0),
+        v: Number(row.volume ?? row.v ?? 0),
       };
     }).filter((c) => c.o > 0 || c.h > 0);
-  } catch (_) { return []; }
+  } catch (err) {
+    console.error('[parseHistoricalResponse] Parse error:', err.message);
+    return [];
+  }
 }
 
 /**
