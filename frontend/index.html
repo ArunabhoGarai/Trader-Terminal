@@ -88,7 +88,7 @@
 
     <section class="analysis-window is-hidden" id="analysis-window" aria-modal="true" role="dialog" aria-labelledby="analysis-title">
       <header class="analysis-titlebar">
-        <strong id="analysis-title">Market AnalysisEquity <span>(Action Watch is shown for scrips added in market watch)</span></strong>
+        <strong id="analysis-title">Market Analysis — Equity <span>(Action Watch is shown for scrips added in market watch)</span></strong>
         <button id="close-analysis" aria-label="Close market analysis">×</button>
       </header>
       <div class="analysis-tabs" role="tablist">
@@ -102,15 +102,15 @@
         <button class="tab-scroll" aria-label="Next tabs">◀ ▶</button>
       </div>
       <div class="analysis-filters">
-        <label><input type="checkbox" checked data-filter="NSEEQ" /> NSE</label>
-        <label><input type="checkbox" checked data-filter="BSEEQ" /> BSE</label>
-        <label><input type="checkbox" /> MSSX</label>
-        <label><input type="checkbox" checked /> Cash</label>
-        <label><input type="checkbox" /> F&amp;O</label>
-        <label><input type="checkbox" /> Currency</label>
+        <label><input type="checkbox" checked data-analysis-filter="nse" /> NSE</label>
+        <label><input type="checkbox" checked data-analysis-filter="bse" /> BSE</label>
+        <label><input type="checkbox" data-analysis-filter="mssx" /> MSSX</label>
+        <label><input type="checkbox" checked data-analysis-filter="cash" /> Cash</label>
+        <label><input type="checkbox" data-analysis-filter="fo" /> F&amp;O</label>
+        <label><input type="checkbox" data-analysis-filter="currency" /> Currency</label>
         <span></span>
-        <label><input type="checkbox" checked id="high-filter" /> High</label>
-        <label><input type="checkbox" checked id="low-filter" /> Low</label>
+        <label><input type="checkbox" checked id="high-filter" data-analysis-filter="high" /> High</label>
+        <label><input type="checkbox" checked id="low-filter" data-analysis-filter="low" /> Low</label>
       </div>
       <div class="analysis-table-wrap">
         <table class="analysis-table">
