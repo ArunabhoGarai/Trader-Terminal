@@ -16,6 +16,7 @@ const state = {
   analysisTab: 'action',
   session: { mode: 'SIMULATION' },
   watchlist: { count: DEMO_QUOTES.length, max: 20, items: [] },
+  actionWatch: [],
   filters: { exchange: 'ALL', segment: 'ALL' },
   suggestions: [],
   selectedSuggestion: null,
@@ -140,6 +141,16 @@ function lowDistance(quote) { return Math.max(0, ((quote.lastPrice - quote.week5
 
 function analysisRows() {
   const options = analysisOptions();
+  if (state.analysisTab === 'action') {
+    return state.actionWatch.filter((event) => {
+      const exchange = String(event.exchange || '').toUpperCase();
+      const isFutureOption = (event.segment || '').toUpperCase() === 'F&O' || exchange.endsWith('FO');
+      const exchangeAllowed = exchange.startsWith('NSE') ? options.nse : exchange.startsWith('BSE') ? options.bse : false;
+      const typeAllowed = isFutureOption ? options.fo : options.cash;
+      const triggerAllowed = event.status === 'New High' ? options.high : options.low;
+      return exchangeAllowed && typeAllowed && triggerAllowed;
+    }).slice(0, 100);
+  }
   let rows = state.quotes.filter((quote) => {
     const exchange = String(quote.exchange || '').toUpperCase();
     const isFutureOption = (quote.segment || '').toUpperCase() === 'F&O' || exchange.endsWith('FO');
@@ -179,6 +190,10 @@ function renderAnalysis() {
   const tabName = document.querySelector(`[data-analysis-tab="${state.analysisTab}"]`)?.textContent || 'Action Watch';
   el('analysis-summary').textContent = `${tabName} · ${state.session.mode === 'LIVE' ? 'live IIFL market conditions' : 'simulation market conditions'}`;
   const rows = analysisRows();
+  if (state.analysisTab === 'action') {
+    el('analysis-body').innerHTML = rows.map((event) => `<tr class="analysis-tick-${escapeHtml(event.direction || 'flat')}"><td>${escapeHtml(event.exchange.slice(0, 1))}</td><td>${escapeHtml(event.segment === 'F&O' ? 'F' : 'C')}</td><td>${escapeHtml(event.instrumentId)}</td><td>${escapeHtml(event.symbol)}</td><td>${escapeHtml(event.status)}</td><td class="analysis-rate">${fmt(event.lastPrice)}</td><td>${new Date(event.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td></tr>`).join('') || '<tr><td colspan="7" class="analysis-empty">No new intraday highs or lows yet. Alerts appear when an active Market Watch scrip makes a new day high or low.</td></tr>';
+    return;
+  }
   el('analysis-body').innerHTML = rows.map((quote) => {
     const status = analysisStatus(quote);
     return `<tr><td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange)}</td><td>${escapeHtml(quote.instrumentId)}</td><td>${escapeHtml(quote.symbol)}</td><td class="${status[1]}">${status[0]}</td><td class="analysis-rate">${fmt(quote.lastPrice)}</td><td>${new Date(quote.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td></tr>`;
@@ -203,6 +218,7 @@ function setSession(session) {
 function applyTerminalPayload(data) {
   if (Array.isArray(data.quotes)) state.quotes = data.quotes.map(quoteFromPrice);
   if (data.watchlist) state.watchlist = data.watchlist;
+  if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
   setSession(data.session);
   if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
   renderMarket();
