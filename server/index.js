@@ -26,6 +26,7 @@ const CONFIG = {
 };
 
 const MAX_WATCHLIST_SIZE = 20;
+const ACTION_WATCH_LIMIT = 120;
 const SESSION_COOKIE = 'tt_session';
 const CONTRACT_CACHE_MS = 30 * 60 * 1000;
 
@@ -153,9 +154,10 @@ function quoteFromPayload(raw, fallback, position) {
 
 function createBrowserSession() {
   const watchlist = DEFAULT_WATCHLIST.map((instrument) => ({ ...instrument }));
+  const quotes = watchlist.map(makeSimulationQuote);
   return {
     id: crypto.randomUUID(), accessToken: null, expiresAt: null, authenticatedAt: null, mode: 'SIMULATION', lastError: null,
-    watchlist, quotes: watchlist.map(makeSimulationQuote),
+    watchlist, quotes, actionWatch: [], actionWatchDate: indiaTradingDate(), intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.high, low: quote.low }])),
   };
 }
 
@@ -185,7 +187,40 @@ function publicWatchlist(session) {
 }
 
 function terminalPayload(session) {
-  return { quotes: session.quotes, session: publicSession(session), watchlist: publicWatchlist(session) };
+  return { quotes: session.quotes, session: publicSession(session), watchlist: publicWatchlist(session), actionWatch: session.actionWatch };
+}
+
+function indiaTradingDate() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
+function updateActionWatch(session, previousQuotes, nextQuotes) {
+  const today = indiaTradingDate();
+  if (session.actionWatchDate !== today) {
+    session.actionWatchDate = today;
+    session.actionWatch = [];
+    session.intradayRanges.clear();
+  }
+  const previous = new Map(previousQuotes.map((quote) => [instrumentKey(quote), quote]));
+  for (const quote of nextQuotes) {
+    const key = instrumentKey(quote);
+    const priorQuote = previous.get(key);
+    const priorRange = session.intradayRanges.get(key);
+    const dayHigh = number(quote.high, quote.lastPrice);
+    const dayLow = number(quote.low, quote.lastPrice);
+    if (!priorRange) {
+      session.intradayRanges.set(key, { high: Math.max(dayHigh, quote.lastPrice), low: Math.min(dayLow, quote.lastPrice) });
+      continue;
+    }
+    const isNewHigh = dayHigh > priorRange.high || quote.lastPrice > priorRange.high;
+    const isNewLow = dayLow < priorRange.low || quote.lastPrice < priorRange.low;
+    const direction = quote.lastPrice > number(priorQuote?.lastPrice, quote.close) ? 'up' : quote.lastPrice < number(priorQuote?.lastPrice, quote.close) ? 'down' : 'flat';
+    if (isNewHigh || isNewLow) {
+      session.actionWatch.unshift({ instrumentId: String(quote.instrumentId), symbol: quote.symbol, exchange: quote.exchange, segment: quote.segment || segmentLabel(quote.exchange), status: isNewHigh ? 'New High' : 'New Low', lastPrice: quote.lastPrice, direction, timestamp: quote.updatedAt || new Date().toISOString() });
+      if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
+    }
+    session.intradayRanges.set(key, { high: Math.max(priorRange.high, dayHigh, quote.lastPrice), low: Math.min(priorRange.low, dayLow, quote.lastPrice) });
+  }
 }
 
 function clearSession(session, message) {
@@ -197,13 +232,16 @@ function clearSession(session, message) {
 }
 
 function advanceSimulation(session) {
-  session.quotes = session.quotes.map((quote) => {
+  const previousQuotes = session.quotes;
+  const nextQuotes = session.quotes.map((quote) => {
     const drift = (Math.random() - .497) * .0018;
     const lastPrice = +(quote.lastPrice * (1 + drift)).toFixed(2);
     const pctChange = +(((lastPrice - quote.close) / quote.close) * 100).toFixed(2);
     const spread = Math.max(lastPrice * .00035, .05);
     return { ...quote, lastPrice, pctChange, high: Math.max(quote.high, lastPrice), low: Math.min(quote.low, lastPrice), bestBidPrice: +(lastPrice - spread).toFixed(2), bestAskPrice: +(lastPrice + spread).toFixed(2), bestBidQty: Math.max(1, Math.round(quote.bestBidQty * (.96 + Math.random() * .08))), bestAskQty: Math.max(1, Math.round(quote.bestAskQty * (.96 + Math.random() * .08))), tradedVolume: quote.tradedVolume + Math.round(Math.random() * 2500), updatedAt: new Date().toISOString() };
   });
+  session.quotes = nextQuotes;
+  updateActionWatch(session, previousQuotes, nextQuotes);
 }
 
 function extractToken(payload) {
@@ -229,6 +267,10 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   session.expiresAt = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
   session.mode = 'LIVE';
   session.lastError = null;
+  // The first live snapshot establishes today's range. It is not an alert.
+  session.actionWatch = [];
+  session.actionWatchDate = indiaTradingDate();
+  session.intradayRanges.clear();
 }
 
 async function refreshLiveQuotes(session) {
@@ -242,11 +284,13 @@ async function refreshLiveQuotes(session) {
     if (!results.length) throw new Error(response.data?.message || 'The market quote response did not contain results.');
     const previous = new Map(session.quotes.map((quote) => [instrumentKey(quote), quote]));
     const resultsByKey = new Map(results.map((quote) => [instrumentKey({ exchange: quote.exchange || '', instrumentId: quote.instrumentId ?? quote.token }), quote]));
-    session.quotes = session.watchlist.map((instrument, index) => {
+    const nextQuotes = session.watchlist.map((instrument, index) => {
       const fallback = previous.get(instrumentKey(instrument)) || makeSimulationQuote(instrument, index);
       const raw = resultsByKey.get(instrumentKey(instrument)) || results.find((quote) => String(quote.instrumentId ?? quote.token) === String(instrument.instrumentId));
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
+    updateActionWatch(session, session.quotes, nextQuotes);
+    session.quotes = nextQuotes;
     return true;
   } catch (error) {
     if (error.response?.status === 401 || error.response?.status === 403) clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
