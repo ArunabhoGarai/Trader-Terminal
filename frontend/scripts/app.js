@@ -22,6 +22,13 @@ const state = {
   selectedSuggestion: null,
   searchTimer: null,
   searchRequest: 0,
+  // WebSocket state
+  ws: null,
+  wsReconnectTimer: null,
+  wsReconnectDelay: 1000,
+  wsConnected: false,
+  // Action watch alert flash tracking
+  lastAlertCount: 0,
 };
 
 const el = (id) => document.getElementById(id);
@@ -149,7 +156,7 @@ function analysisRows() {
       const typeAllowed = isFutureOption ? options.fo : options.cash;
       const triggerAllowed = event.status === 'New High' ? options.high : options.low;
       return exchangeAllowed && typeAllowed && triggerAllowed;
-    }).slice(0, 100);
+    }).slice(0, 200);
   }
   let rows = state.quotes.filter((quote) => {
     const exchange = String(quote.exchange || '').toUpperCase();
@@ -186,18 +193,57 @@ function analysisStatus(quote) {
   return quote.pctChange >= 0 ? ['Gaining', 'new-high'] : ['Losing', 'new-low'];
 }
 
+function formatEventTime(event) {
+  // Use server-provided time string if available, otherwise format from timestamp
+  if (event.time) return event.time;
+  try {
+    return new Date(event.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  } catch (_) {
+    return '--:--:--';
+  }
+}
+
 function renderAnalysis() {
   const tabName = document.querySelector(`[data-analysis-tab="${state.analysisTab}"]`)?.textContent || 'Action Watch';
-  el('analysis-summary').textContent = `${tabName} · ${state.session.mode === 'LIVE' ? 'live IIFL market conditions' : 'simulation market conditions'}`;
+  const modeLabel = state.session?.mode === 'LIVE' ? 'live IIFL market data' : 'simulation data';
+  const wsLabel = state.wsConnected ? '· WebSocket connected' : '· polling';
+  el('analysis-summary').textContent = `${tabName} · ${modeLabel} ${wsLabel}`;
+
   const rows = analysisRows();
   if (state.analysisTab === 'action') {
-    el('analysis-body').innerHTML = rows.map((event) => `<tr class="analysis-tick-${escapeHtml(event.direction || 'flat')}"><td>${escapeHtml(event.exchange.slice(0, 1))}</td><td>${escapeHtml(event.segment === 'F&O' ? 'F' : 'C')}</td><td>${escapeHtml(event.instrumentId)}</td><td>${escapeHtml(event.symbol)}</td><td>${escapeHtml(event.status)}</td><td class="analysis-rate">${fmt(event.lastPrice)}</td><td>${new Date(event.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td></tr>`).join('') || '<tr><td colspan="7" class="analysis-empty">No new intraday highs or lows yet. Alerts appear when an active Market Watch scrip makes a new day high or low.</td></tr>';
+    el('analysis-body').innerHTML = rows.map((event) => {
+      const dirClass = event.direction === 'up' ? 'analysis-tick-up' : event.direction === 'down' ? 'analysis-tick-down' : 'analysis-tick-flat';
+      return `<tr class="${dirClass}">
+        <td>${escapeHtml((event.exchange || 'N').slice(0, 1))}</td>
+        <td>${escapeHtml(event.segment === 'F&O' ? 'F' : 'C')}</td>
+        <td>${escapeHtml(event.instrumentId)}</td>
+        <td>${escapeHtml(event.symbol)}</td>
+        <td class="analysis-status-cell">${escapeHtml(event.status)}</td>
+        <td class="analysis-rate">${fmt(event.lastPrice)}</td>
+        <td>${formatEventTime(event)}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="7" class="analysis-empty">No new intraday highs or lows yet. Alerts appear when an active Market Watch scrip makes a new day high or low.</td></tr>';
+
+    // Update alert count badge
+    updateAlertBadge(rows.length);
     return;
   }
+
   el('analysis-body').innerHTML = rows.map((quote) => {
     const status = analysisStatus(quote);
     return `<tr><td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange)}</td><td>${escapeHtml(quote.instrumentId)}</td><td>${escapeHtml(quote.symbol)}</td><td class="${status[1]}">${status[0]}</td><td class="analysis-rate">${fmt(quote.lastPrice)}</td><td>${new Date(quote.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td></tr>`;
   }).join('') || '<tr><td colspan="7" class="analysis-empty">No scrips match the selected analysis filters.</td></tr>';
+}
+
+function updateAlertBadge(alertCount) {
+  const badge = el('alert-badge');
+  if (!badge) return;
+  if (alertCount > 0) {
+    badge.textContent = alertCount > 99 ? '99+' : String(alertCount);
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
 }
 
 function showAnalysis() { el('analysis-window').classList.remove('is-hidden'); renderAnalysis(); }
@@ -208,8 +254,9 @@ function setSession(session) {
   state.session = session || state.session;
   const live = state.session.mode === 'LIVE';
   const status = el('connection-status');
-  status.classList.toggle('live', live); status.classList.toggle('error', state.session.mode === 'ERROR');
-  status.querySelector('span').textContent = live ? 'IIFL connected' : state.session.mode === 'ERROR' ? 'Connection error' : 'Simulation';
+  status.classList.toggle('live', live || state.wsConnected);
+  status.classList.toggle('error', state.session.mode === 'ERROR');
+  status.querySelector('span').textContent = live ? 'IIFL Live' : state.session.mode === 'ERROR' ? 'Connection error' : state.wsConnected ? 'Real-time' : 'Simulation';
   const connect = el('connect-iifl');
   connect.textContent = live ? 'IIFL Connected' : 'Connect IIFL';
   connect.classList.toggle('connected', live);
@@ -225,6 +272,115 @@ function applyTerminalPayload(data) {
   renderAnalysis();
 }
 
+// ---------------------------------------------------------------------------
+// WebSocket client — real-time push from server
+// ---------------------------------------------------------------------------
+function connectWebSocket() {
+  if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) return;
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+  try {
+    state.ws = new WebSocket(wsUrl);
+  } catch (err) {
+    console.warn('[WS] Failed to create WebSocket:', err);
+    scheduleReconnect();
+    return;
+  }
+
+  state.ws.onopen = () => {
+    console.log('[WS] Connected');
+    state.wsConnected = true;
+    state.wsReconnectDelay = 1000;
+    setSession(state.session);
+    toast('Real-time feed connected');
+  };
+
+  state.ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      handleWebSocketMessage(data);
+    } catch (err) {
+      console.warn('[WS] Failed to parse message:', err);
+    }
+  };
+
+  state.ws.onclose = (event) => {
+    console.log('[WS] Disconnected:', event.code, event.reason);
+    state.wsConnected = false;
+    state.ws = null;
+    setSession(state.session);
+    scheduleReconnect();
+  };
+
+  state.ws.onerror = (err) => {
+    console.warn('[WS] Error:', err);
+    state.wsConnected = false;
+  };
+}
+
+function scheduleReconnect() {
+  if (state.wsReconnectTimer) return;
+  state.wsReconnectTimer = setTimeout(() => {
+    state.wsReconnectTimer = null;
+    connectWebSocket();
+  }, state.wsReconnectDelay);
+  // Exponential backoff capped at 15 seconds
+  state.wsReconnectDelay = Math.min(state.wsReconnectDelay * 1.5, 15000);
+}
+
+function handleWebSocketMessage(data) {
+  switch (data.type) {
+    case 'init':
+    case 'tick':
+    case 'watchlist':
+      // Apply full payload update
+      if (Array.isArray(data.quotes)) state.quotes = data.quotes.map(quoteFromPrice);
+      if (data.watchlist) state.watchlist = data.watchlist;
+      if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
+      if (data.session) setSession(data.session);
+
+      // Check for new action watch events and flash
+      if (data.type === 'tick' && Array.isArray(data.newEvents) && data.newEvents.length > 0) {
+        flashNewAlerts(data.newEvents);
+      }
+
+      if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
+      renderMarket();
+      renderAnalysis();
+      break;
+
+    case 'pong':
+      // Heartbeat response, no action needed
+      break;
+
+    default:
+      console.log('[WS] Unknown message type:', data.type);
+  }
+}
+
+function flashNewAlerts(events) {
+  // Flash the Market Analysis button to draw attention to new alerts
+  const btn = el('open-action-watch');
+  if (btn && !el('analysis-window').classList.contains('is-hidden') === false) {
+    btn.classList.add('alert-flash');
+    setTimeout(() => btn.classList.remove('alert-flash'), 1500);
+  }
+}
+
+// Keep WebSocket alive with periodic pings
+function startHeartbeat() {
+  setInterval(() => {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: 'ping' }));
+    }
+  }, 25000);
+}
+
+// ---------------------------------------------------------------------------
+// REST API calls (fallback when WebSocket unavailable)
+// ---------------------------------------------------------------------------
 async function getSession() {
   try { const response = await fetch('/api/session'); if (response.ok) setSession(await response.json()); } catch (_) { /* static UI remains available */ }
 }
@@ -238,6 +394,9 @@ async function loadWatchlist() {
 }
 
 async function refreshQuotes(silent = false) {
+  // Skip REST polling if WebSocket is providing real-time data
+  if (state.wsConnected) return;
+
   try {
     const response = await fetch('/api/market-watch/refresh', { method: 'POST' });
     if (!response.ok) throw new Error('Unable to refresh quotes');
@@ -317,6 +476,12 @@ async function initialize() {
   renderMarket(); renderNews(); renderCalls(); renderAnalysis(); bindEvents();
   await getSession();
   await loadWatchlist();
+
+  // Connect WebSocket for real-time push
+  connectWebSocket();
+  startHeartbeat();
+
+  // Fallback polling (only runs if WebSocket is disconnected)
   await refreshQuotes(true);
   setInterval(() => refreshQuotes(true), 4000);
 }
