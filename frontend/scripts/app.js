@@ -548,19 +548,31 @@ async function loadChart(period) {
   if (!instrumentId) return;
 
   el('chart-loading').style.display = 'flex';
+  el('chart-loading').textContent   = 'Loading chart data…';
   el('chart-tooltip').textContent   = '';
+  el('chart-stats').innerHTML       = '';
 
   try {
-    const r = await fetch(`/api/chart/${encodeURIComponent(exchange)}/${encodeURIComponent(instrumentId)}?period=${period}`);
-    if (!r.ok) throw new Error('Chart data unavailable');
-    const data = await r.json();
-    state.chart.candles  = data.candles || [];
+    const r    = await fetch(`/api/chart/${encodeURIComponent(exchange)}/${encodeURIComponent(instrumentId)}?period=${period}`);
+    const data = await r.json().catch(() => ({}));
+
+    if (!r.ok) {
+      // Server returned an error (e.g. 503 when IIFL has no historical data for this scrip)
+      const msg = data.message || `Chart data unavailable (HTTP ${r.status})`;
+      el('chart-loading').textContent = msg;
+      el('chart-loading').style.display = 'flex';
+      el('chart-mode-badge').textContent = state.session.mode === 'LIVE' ? '(Live — no data)' : '(Error)';
+      return;
+    }
+
+    state.chart.candles   = data.candles || [];
     state.chart.simulated = data.simulated || false;
-    el('chart-mode-badge').textContent = data.simulated ? '(Simulation)' : '(Live)';
+    el('chart-mode-badge').textContent = data.simulated ? '⚠ Simulation' : '● Live';
+    el('chart-mode-badge').style.color  = data.simulated ? '#c97a00' : '#22cc66';
     renderChart(data.candles, period);
     renderChartStats(data.candles);
   } catch (error) {
-    el('chart-loading').textContent = 'Chart data unavailable.';
+    el('chart-loading').textContent   = `Chart error: ${error.message}`;
     el('chart-loading').style.display = 'flex';
   }
 }
