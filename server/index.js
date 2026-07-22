@@ -3,6 +3,8 @@
  *
  * Credentials and access tokens remain server-side. Each browser receives an
  * isolated in-memory session containing its own active watchlist and token.
+ *
+ * Real-time updates are pushed to the browser via WebSocket.
  */
 'use strict';
 
@@ -12,6 +14,7 @@ const http = require('http');
 const path = require('path');
 const axios = require('axios');
 const express = require('express');
+const { WebSocketServer } = require('ws');
 
 loadDotEnv(path.join(__dirname, '.env'));
 
@@ -26,12 +29,13 @@ const CONFIG = {
 };
 
 const MAX_WATCHLIST_SIZE = 20;
-const ACTION_WATCH_LIMIT = 120;
+const ACTION_WATCH_LIMIT = 200;
 const SESSION_COOKIE = 'tt_session';
 const CONTRACT_CACHE_MS = 30 * 60 * 1000;
 
-// Built-in NSE Equity symbols keep the terminal immediately useful and provide
-// a verified fallback if the public contract-file endpoint is unavailable.
+// ---------------------------------------------------------------------------
+// Built-in NSE Equity symbols — keeps the terminal useful immediately
+// ---------------------------------------------------------------------------
 const DEFAULT_SPECS = [
   ['ABB', '13', 687.55], ['ACC', '22', 1345.15], ['SBILIFE', '21808', 3160.55],
   ['BHEL', '438', 832.05], ['BPCL', '526', 285.60], ['RELIANCE', '2885', 561.00],
@@ -71,6 +75,9 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '32kb' }));
 app.use(express.static(path.join(__dirname, '..', 'frontend'), { index: 'index.html' }));
 
+// ---------------------------------------------------------------------------
+// Utility helpers
+// ---------------------------------------------------------------------------
 function loadDotEnv(filePath) {
   if (!fs.existsSync(filePath)) return;
   for (const rawLine of fs.readFileSync(filePath, 'utf8').split(/\r?\n/)) {
@@ -114,6 +121,17 @@ function publicInstrument(instrument) {
   return { instrumentId: String(instrument.instrumentId), symbol: instrument.symbol, exchange: instrument.exchange, segment: instrument.segment || segmentLabel(instrument.exchange), displayName: instrument.displayName || instrument.symbol };
 }
 
+function indiaTradingDate() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
+function indiaTimeString() {
+  return new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date());
+}
+
+// ---------------------------------------------------------------------------
+// Quote builders
+// ---------------------------------------------------------------------------
 function makeSimulationQuote(instrument, position = 0) {
   const direction = [-.44, 1.43, .51, -1.11, -.83, 1.82, -2.85, .21, .32, .06, .35, 1.01, -.21, 2.14, 1.08, .82, .53, -.47, .16, .72][position % 20] || .1;
   const basePrice = number(instrument.basePrice, 100 + ((position + 1) * 41));
@@ -152,12 +170,21 @@ function quoteFromPayload(raw, fallback, position) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
 function createBrowserSession() {
   const watchlist = DEFAULT_WATCHLIST.map((instrument) => ({ ...instrument }));
   const quotes = watchlist.map(makeSimulationQuote);
   return {
     id: crypto.randomUUID(), accessToken: null, expiresAt: null, authenticatedAt: null, mode: 'SIMULATION', lastError: null,
-    watchlist, quotes, actionWatch: [], actionWatchDate: indiaTradingDate(), intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.high, low: quote.low }])),
+    watchlist, quotes, actionWatch: [], actionWatchDate: indiaTradingDate(),
+    // Per-instrument state for the action watch engine
+    intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.high, low: quote.low }])),
+    // WebSocket clients attached to this session
+    wsClients: new Set(),
+    // Track simulation cycle for varied drift
+    simCycle: 0,
   };
 }
 
@@ -190,10 +217,14 @@ function terminalPayload(session) {
   return { quotes: session.quotes, session: publicSession(session), watchlist: publicWatchlist(session), actionWatch: session.actionWatch };
 }
 
-function indiaTradingDate() {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-}
-
+// ---------------------------------------------------------------------------
+// ACTION WATCH ENGINE — The core alert detection logic
+// ---------------------------------------------------------------------------
+// Direction/sentiment is determined by comparing LTP against PREVIOUS DAY'S
+// CLOSE, NOT the previous tick. This is what creates the "pink New High"
+// paradox: a stock can hit a session high while still being below yesterday's
+// close (gap-down recovery), resulting in a New High alert colored pink.
+// ---------------------------------------------------------------------------
 function updateActionWatch(session, previousQuotes, nextQuotes) {
   const today = indiaTradingDate();
   if (session.actionWatchDate !== today) {
@@ -201,47 +232,71 @@ function updateActionWatch(session, previousQuotes, nextQuotes) {
     session.actionWatch = [];
     session.intradayRanges.clear();
   }
+
+  const newEvents = [];
   const previous = new Map(previousQuotes.map((quote) => [instrumentKey(quote), quote]));
+
   for (const quote of nextQuotes) {
     const key = instrumentKey(quote);
-    const priorQuote = previous.get(key);
     const priorRange = session.intradayRanges.get(key);
     const dayHigh = number(quote.high, quote.lastPrice);
     const dayLow = number(quote.low, quote.lastPrice);
+    const previousClose = number(quote.close, 0);
+
     if (!priorRange) {
-      session.intradayRanges.set(key, { high: Math.max(dayHigh, quote.lastPrice), low: Math.min(dayLow, quote.lastPrice) });
+      // First time seeing this instrument today — establish baseline, no alert
+      session.intradayRanges.set(key, {
+        high: Math.max(dayHigh, quote.lastPrice),
+        low: Math.min(dayLow, quote.lastPrice),
+      });
       continue;
     }
+
     const isNewHigh = dayHigh > priorRange.high || quote.lastPrice > priorRange.high;
     const isNewLow = dayLow < priorRange.low || quote.lastPrice < priorRange.low;
-    const direction = quote.lastPrice > number(priorQuote?.lastPrice, quote.close) ? 'up' : quote.lastPrice < number(priorQuote?.lastPrice, quote.close) ? 'down' : 'flat';
+
+    // Sentiment: compare LTP against PREVIOUS DAY'S CLOSE
+    // Green = LTP >= previous close (positive for the day)
+    // Pink  = LTP <  previous close (negative for the day)
+    const direction = previousClose > 0 && quote.lastPrice < previousClose ? 'down' : 'up';
+
     if (isNewHigh || isNewLow) {
-      session.actionWatch.unshift({ instrumentId: String(quote.instrumentId), symbol: quote.symbol, exchange: quote.exchange, segment: quote.segment || segmentLabel(quote.exchange), status: isNewHigh ? 'New High' : 'New Low', lastPrice: quote.lastPrice, direction, timestamp: quote.updatedAt || new Date().toISOString() });
+      const event = {
+        instrumentId: String(quote.instrumentId),
+        symbol: quote.symbol,
+        exchange: quote.exchange,
+        segment: quote.segment || segmentLabel(quote.exchange),
+        status: isNewHigh ? 'New High' : 'New Low',
+        lastPrice: quote.lastPrice,
+        close: previousClose,
+        direction,
+        timestamp: quote.updatedAt || new Date().toISOString(),
+        time: indiaTimeString(),
+      };
+      newEvents.push(event);
+      session.actionWatch.unshift(event);
       if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
     }
-    session.intradayRanges.set(key, { high: Math.max(priorRange.high, dayHigh, quote.lastPrice), low: Math.min(priorRange.low, dayLow, quote.lastPrice) });
+
+    // Update tracked range
+    session.intradayRanges.set(key, {
+      high: Math.max(priorRange.high, dayHigh, quote.lastPrice),
+      low: Math.min(priorRange.low, dayLow, quote.lastPrice),
+    });
   }
+
+  return newEvents;
 }
 
+// ---------------------------------------------------------------------------
+// IIFL API integration
+// ---------------------------------------------------------------------------
 function clearSession(session, message) {
   session.accessToken = null;
   session.expiresAt = null;
   session.authenticatedAt = null;
   session.mode = 'SIMULATION';
   session.lastError = message || null;
-}
-
-function advanceSimulation(session) {
-  const previousQuotes = session.quotes;
-  const nextQuotes = session.quotes.map((quote) => {
-    const drift = (Math.random() - .497) * .0018;
-    const lastPrice = +(quote.lastPrice * (1 + drift)).toFixed(2);
-    const pctChange = +(((lastPrice - quote.close) / quote.close) * 100).toFixed(2);
-    const spread = Math.max(lastPrice * .00035, .05);
-    return { ...quote, lastPrice, pctChange, high: Math.max(quote.high, lastPrice), low: Math.min(quote.low, lastPrice), bestBidPrice: +(lastPrice - spread).toFixed(2), bestAskPrice: +(lastPrice + spread).toFixed(2), bestBidQty: Math.max(1, Math.round(quote.bestBidQty * (.96 + Math.random() * .08))), bestAskQty: Math.max(1, Math.round(quote.bestAskQty * (.96 + Math.random() * .08))), tradedVolume: quote.tradedVolume + Math.round(Math.random() * 2500), updatedAt: new Date().toISOString() };
-  });
-  session.quotes = nextQuotes;
-  updateActionWatch(session, previousQuotes, nextQuotes);
 }
 
 function extractToken(payload) {
@@ -267,14 +322,14 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   session.expiresAt = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
   session.mode = 'LIVE';
   session.lastError = null;
-  // The first live snapshot establishes today's range. It is not an alert.
+  // First live snapshot establishes today's range — not an alert
   session.actionWatch = [];
   session.actionWatchDate = indiaTradingDate();
   session.intradayRanges.clear();
 }
 
 async function refreshLiveQuotes(session) {
-  if (!session.accessToken || !session.watchlist.length) return false;
+  if (!session.accessToken || !session.watchlist.length) return { success: false, events: [] };
   const instruments = session.watchlist.map(({ exchange, instrumentId }) => ({ exchange, instrumentId }));
   try {
     const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, instruments, {
@@ -289,16 +344,71 @@ async function refreshLiveQuotes(session) {
       const raw = resultsByKey.get(instrumentKey(instrument)) || results.find((quote) => String(quote.instrumentId ?? quote.token) === String(instrument.instrumentId));
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
-    updateActionWatch(session, session.quotes, nextQuotes);
+    const events = updateActionWatch(session, session.quotes, nextQuotes);
     session.quotes = nextQuotes;
-    return true;
+    return { success: true, events };
   } catch (error) {
     if (error.response?.status === 401 || error.response?.status === 403) clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
     else session.lastError = 'IIFL market data request failed.';
-    return false;
+    return { success: false, events: [] };
   }
 }
 
+// ---------------------------------------------------------------------------
+// Enhanced simulation — generates visible action watch events
+// ---------------------------------------------------------------------------
+function advanceSimulation(session) {
+  session.simCycle = (session.simCycle || 0) + 1;
+  const previousQuotes = session.quotes;
+
+  const nextQuotes = session.quotes.map((quote, index) => {
+    // Every few cycles, some stocks get a bigger push to break their day range
+    const isBigTick = session.simCycle % 3 === 0 && (index + session.simCycle) % 4 === 0;
+    // Occasionally simulate a gap-down recovery (pink + New High)
+    const isGapDownRecovery = session.simCycle % 7 === 0 && index % 5 === 2;
+
+    let drift;
+    if (isBigTick) {
+      // Force a breakout — push above high or below low
+      const breakDirection = (index + session.simCycle) % 2 === 0 ? 1 : -1;
+      drift = breakDirection * (0.003 + Math.random() * 0.004);
+    } else {
+      drift = (Math.random() - .497) * .0018;
+    }
+
+    let lastPrice = +(quote.lastPrice * (1 + drift)).toFixed(2);
+    let close = quote.close;
+
+    if (isGapDownRecovery && session.simCycle < 30) {
+      // Simulate: stock opened below yesterday's close but is recovering upward
+      // Set close higher than current price range to create "pink New High" scenario
+      close = lastPrice * 1.015;
+      lastPrice = +(lastPrice * 1.003).toFixed(2); // Push price up
+    }
+
+    const high = Math.max(quote.high, lastPrice);
+    const low = Math.min(quote.low, lastPrice);
+    const pctChange = close > 0 ? +(((lastPrice - close) / close) * 100).toFixed(2) : 0;
+    const spread = Math.max(lastPrice * .00035, .05);
+
+    return {
+      ...quote, lastPrice, pctChange, close, high, low,
+      bestBidPrice: +(lastPrice - spread).toFixed(2),
+      bestAskPrice: +(lastPrice + spread).toFixed(2),
+      bestBidQty: Math.max(1, Math.round(quote.bestBidQty * (.96 + Math.random() * .08))),
+      bestAskQty: Math.max(1, Math.round(quote.bestAskQty * (.96 + Math.random() * .08))),
+      tradedVolume: quote.tradedVolume + Math.round(Math.random() * 2500),
+      updatedAt: new Date().toISOString(),
+    };
+  });
+
+  session.quotes = nextQuotes;
+  return updateActionWatch(session, previousQuotes, nextQuotes);
+}
+
+// ---------------------------------------------------------------------------
+// Contract file search (instrument discovery)
+// ---------------------------------------------------------------------------
 function contractRows(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.result)) return payload.result;
@@ -342,8 +452,6 @@ async function searchInstruments(exchange, segment, query) {
     ? (requestedSegment === 'ALL' ? ['NSEEQ', 'BSEEQ', 'NSEFO', 'BSEFO'] : ['NSE', 'BSE'].map((value) => exchangeCode(value, segment)))
     : (requestedSegment === 'ALL' ? [exchangeCode(exchange, 'Equity'), exchangeCode(exchange, 'F&O')] : [exchangeCode(exchange, segment)]);
   let instruments = STATIC_CATALOG.filter((instrument) => codes.includes(instrument.exchange) && matches(instrument));
-  // BSE and F&O identifiers are resolved from IIFL's public contract files.
-  // Defer these larger files until the user enters at least two search letters.
   if (needle.length >= 2) {
     const catalogs = await Promise.all(codes.filter((code) => code !== 'NSEEQ' || instruments.length < 10).map(contractsFor));
     instruments = [...instruments, ...catalogs.flat().filter(matches)];
@@ -357,6 +465,64 @@ function knownInstrument(exchange, instrumentId) {
   return knownInstruments.get(instrumentKey({ exchange, instrumentId }));
 }
 
+// ---------------------------------------------------------------------------
+// WebSocket — real-time push to browser clients
+// ---------------------------------------------------------------------------
+function broadcastToSession(session, payload) {
+  const message = JSON.stringify(payload);
+  for (const ws of session.wsClients) {
+    if (ws.readyState === 1) { // WebSocket.OPEN
+      try { ws.send(message); } catch (_) { /* client will be cleaned up on close */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Server-side auto-poll loop
+// Runs continuously and pushes quote updates + action watch events to all
+// connected WebSocket clients.
+// ---------------------------------------------------------------------------
+let pollTimer = null;
+
+async function pollAllSessions() {
+  for (const [, session] of browserSessions) {
+    // Only poll if there are WebSocket clients listening OR if the session
+    // was recently active (keep simulation running for responsiveness)
+    if (session.wsClients.size === 0 && session.mode !== 'LIVE') continue;
+
+    let newEvents = [];
+
+    if (session.mode === 'LIVE') {
+      const result = await refreshLiveQuotes(session);
+      newEvents = result.events;
+    } else {
+      newEvents = advanceSimulation(session);
+    }
+
+    // Push updates to all connected WebSocket clients for this session
+    if (session.wsClients.size > 0) {
+      broadcastToSession(session, {
+        type: 'tick',
+        quotes: session.quotes,
+        actionWatch: session.actionWatch,
+        newEvents,
+        session: publicSession(session),
+        watchlist: publicWatchlist(session),
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(pollAllSessions, CONFIG.quotePollMs);
+  console.log(`Auto-poll started (every ${CONFIG.quotePollMs}ms)`);
+}
+
+// ---------------------------------------------------------------------------
+// Express routes
+// ---------------------------------------------------------------------------
 function sendTerminal(_req, res) {
   res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html'));
 }
@@ -403,6 +569,8 @@ app.post('/api/watchlist', async (req, res) => {
   session.watchlist.push(next);
   session.quotes.push(makeSimulationQuote(next, session.watchlist.length - 1));
   if (session.mode === 'LIVE') await refreshLiveQuotes(session);
+  // Notify WebSocket clients about the updated watchlist
+  broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
   res.status(201).json(terminalPayload(session));
 });
 
@@ -413,14 +581,14 @@ app.delete('/api/watchlist/:exchange/:instrumentId', (req, res) => {
   if (index < 0) return res.status(404).json({ message: 'That scrip is not in this watchlist.' });
   session.watchlist.splice(index, 1);
   session.quotes.splice(index, 1);
+  // Notify WebSocket clients
+  broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
   res.json(terminalPayload(session));
 });
 
 app.get('/auth/login', (req, res) => {
   browserSession(req, res);
   if (!configured()) return res.status(503).send('IIFL is not configured. Add IIFL_APP_KEY, IIFL_APP_SECRET, and IIFL_REDIRECT_URI to server/.env, then restart the server.');
-  // IIFL expects the callback URI as a literal query value. Encoding it makes
-  // it a relative path on markets.iiflcapital.com after login.
   const authUrl = `${CONFIG.marketsUrl}/?v=1&appkey=${encodeURIComponent(CONFIG.appKey)}&redirecturl=${CONFIG.redirectUri}`;
   res.redirect(authUrl);
 });
@@ -442,7 +610,65 @@ app.get('/auth/callback', async (req, res) => {
 
 app.get('*', sendTerminal);
 
-http.createServer(app).listen(CONFIG.port, () => {
+// ---------------------------------------------------------------------------
+// HTTP + WebSocket server startup
+// ---------------------------------------------------------------------------
+const server = http.createServer(app);
+
+const wss = new WebSocketServer({ server, path: '/ws' });
+
+wss.on('connection', (ws, req) => {
+  // Extract session ID from cookies
+  const cookies = Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map((pair) => {
+    const index = pair.indexOf('=');
+    return [pair.slice(0, index).trim(), decodeURIComponent(pair.slice(index + 1).trim())];
+  }).filter(([key]) => key));
+
+  const sessionId = cookies[SESSION_COOKIE];
+  let session = sessionId ? browserSessions.get(sessionId) : null;
+
+  if (!session) {
+    // Create a new session for this WebSocket client
+    session = createBrowserSession();
+    browserSessions.set(session.id, session);
+  }
+
+  session.wsClients.add(ws);
+  console.log(`[WS] Client connected (session ${session.id.slice(0, 8)}…, ${session.wsClients.size} client(s), mode: ${session.mode})`);
+
+  // Send initial state immediately
+  ws.send(JSON.stringify({
+    type: 'init',
+    sessionId: session.id,
+    quotes: session.quotes,
+    actionWatch: session.actionWatch,
+    session: publicSession(session),
+    watchlist: publicWatchlist(session),
+    timestamp: new Date().toISOString(),
+  }));
+
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data);
+      if (msg.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
+      }
+    } catch (_) { /* ignore malformed messages */ }
+  });
+
+  ws.on('close', () => {
+    session.wsClients.delete(ws);
+    console.log(`[WS] Client disconnected (session ${session.id.slice(0, 8)}…, ${session.wsClients.size} remaining)`);
+  });
+
+  ws.on('error', () => {
+    session.wsClients.delete(ws);
+  });
+});
+
+server.listen(CONFIG.port, () => {
   console.log(`Trader Terminal running at http://localhost:${CONFIG.port}`);
+  console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
   console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
+  startPolling();
 });
