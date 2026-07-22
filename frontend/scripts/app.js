@@ -130,25 +130,59 @@ function renderCalls() {
   el('calls-list').innerHTML = calls.map(([side, symbol, note]) => `<div class="call-row"><span class="call-side ${side.toLowerCase()}">${side}</span><strong>${symbol}</strong><span class="call-note">${note}</span></div>`).join('');
 }
 
+function analysisOptions() {
+  const enabled = (name) => document.querySelector(`[data-analysis-filter="${name}"]`)?.checked ?? false;
+  return { nse: enabled('nse'), bse: enabled('bse'), cash: enabled('cash'), fo: enabled('fo'), high: enabled('high'), low: enabled('low') };
+}
+
+function highDistance(quote) { return Math.max(0, ((quote.week52High - quote.lastPrice) / quote.week52High) * 100); }
+function lowDistance(quote) { return Math.max(0, ((quote.lastPrice - quote.week52Low) / quote.week52Low) * 100); }
+
 function analysisRows() {
-  const rows = [...state.quotes];
-  if (state.analysisTab === 'high' || state.analysisTab === 'action') rows.sort((a, b) => (b.lastPrice / b.week52High) - (a.lastPrice / a.week52High));
-  if (state.analysisTab === 'low') rows.sort((a, b) => (a.lastPrice / a.week52Low) - (b.lastPrice / b.week52Low));
-  if (state.analysisTab === 'gainers') rows.sort((a, b) => b.pctChange - a.pctChange);
-  if (state.analysisTab === 'losers') rows.sort((a, b) => a.pctChange - b.pctChange);
-  if (state.analysisTab === 'quantity' || state.analysisTab === 'traded') rows.sort((a, b) => b.totalQty - a.totalQty);
+  const options = analysisOptions();
+  let rows = state.quotes.filter((quote) => {
+    const exchange = String(quote.exchange || '').toUpperCase();
+    const isFutureOption = (quote.segment || '').toUpperCase() === 'F&O' || exchange.endsWith('FO');
+    const exchangeAllowed = exchange.startsWith('NSE') ? options.nse : exchange.startsWith('BSE') ? options.bse : false;
+    return exchangeAllowed && (isFutureOption ? options.fo : options.cash);
+  });
+  if (state.analysisTab === 'high') {
+    if (!options.high) return [];
+    rows = rows.filter((quote) => highDistance(quote) <= 5).sort((a, b) => highDistance(a) - highDistance(b));
+  } else if (state.analysisTab === 'low') {
+    if (!options.low) return [];
+    rows = rows.filter((quote) => lowDistance(quote) <= 5).sort((a, b) => lowDistance(a) - lowDistance(b));
+  } else if (state.analysisTab === 'gainers') {
+    rows = rows.filter((quote) => quote.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange);
+  } else if (state.analysisTab === 'losers') {
+    rows = rows.filter((quote) => quote.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange);
+  } else if (state.analysisTab === 'quantity' || state.analysisTab === 'traded') {
+    rows.sort((a, b) => b.totalQty - a.totalQty);
+  } else {
+    rows = rows.filter((quote) => (options.high && highDistance(quote) <= 5) || (options.low && lowDistance(quote) <= 5) || Math.abs(quote.pctChange) >= 1).sort((a, b) => Math.abs(b.pctChange) - Math.abs(a.pctChange));
+  }
   return rows.slice(0, 12);
+}
+
+function analysisStatus(quote) {
+  if (state.analysisTab === 'high') return ['Near 52W High', 'new-high'];
+  if (state.analysisTab === 'low') return ['Near 52W Low', 'new-low'];
+  if (state.analysisTab === 'gainers') return ['Gaining', 'new-high'];
+  if (state.analysisTab === 'losers') return ['Losing', 'new-low'];
+  if (state.analysisTab === 'quantity' || state.analysisTab === 'traded') return ['High Volume', 'analysis-neutral'];
+  if (highDistance(quote) <= 5) return ['Near 52W High', 'new-high'];
+  if (lowDistance(quote) <= 5) return ['Near 52W Low', 'new-low'];
+  return quote.pctChange >= 0 ? ['Gaining', 'new-high'] : ['Losing', 'new-low'];
 }
 
 function renderAnalysis() {
   const tabName = document.querySelector(`[data-analysis-tab="${state.analysisTab}"]`)?.textContent || 'Action Watch';
   el('analysis-summary').textContent = `${tabName} · ${state.session.mode === 'LIVE' ? 'live IIFL market conditions' : 'simulation market conditions'}`;
-  el('analysis-body').innerHTML = analysisRows().map((quote) => {
-    const highDistance = ((quote.week52High - quote.lastPrice) / quote.week52High) * 100;
-    const lowDistance = ((quote.lastPrice - quote.week52Low) / quote.week52Low) * 100;
-    const status = highDistance < 3 ? ['New High', 'new-high'] : lowDistance < 3 ? ['New Low', 'new-low'] : [quote.pctChange >= 0 ? 'Gaining' : 'Losing', quote.pctChange >= 0 ? 'new-high' : 'new-low'];
+  const rows = analysisRows();
+  el('analysis-body').innerHTML = rows.map((quote) => {
+    const status = analysisStatus(quote);
     return `<tr><td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange)}</td><td>${escapeHtml(quote.instrumentId)}</td><td>${escapeHtml(quote.symbol)}</td><td class="${status[1]}">${status[0]}</td><td class="analysis-rate">${fmt(quote.lastPrice)}</td><td>${new Date(quote.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td></tr>`;
-  }).join('');
+  }).join('') || '<tr><td colspan="7" class="analysis-empty">No scrips match the selected analysis filters.</td></tr>';
 }
 
 function showAnalysis() { el('analysis-window').classList.remove('is-hidden'); renderAnalysis(); }
@@ -259,6 +293,7 @@ function bindEvents() {
   el('news-refresh').addEventListener('click', () => { renderNews(); toast('News wire refreshed'); });
   el('connect-iifl').addEventListener('click', () => { if (state.session.mode !== 'LIVE') window.location.assign('/auth/login'); });
   document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { state.analysisTab = button.dataset.analysisTab; document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); renderAnalysis(); }));
+  document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAnalysis(); if (event.key === 'F7') { event.preventDefault(); showAnalysis(); } });
 }
 
