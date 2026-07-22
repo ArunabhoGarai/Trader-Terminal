@@ -13,7 +13,7 @@
       <header class="titlebar">
         <div class="brand-mark" aria-hidden="true">✺</div>
         <div class="app-title">IIFL Trader Terminal <span>3.0.0.18</span></div>
-        <div class="title-context">for Online Client &nbsp;•&nbsp; Market Watch :: <span id="watch-scope">All Instruments</span> :: <span id="script-count">0 / 400 Scripts</span></div>
+        <div class="title-context">for Online Client &nbsp;•&nbsp; Market Watch :: <span id="watch-scope">All Instruments</span> :: <span id="script-count">20 / 20 Scripts</span></div>
         <div class="window-controls" aria-hidden="true"><span>—</span><span>□</span><span>×</span></div>
       </header>
 
@@ -44,7 +44,7 @@
           <div id="symbol-results" class="symbol-results hidden" role="listbox" aria-label="Symbol search results"></div>
         </div>
         <button id="add-scrip" class="native-button">Add</button>
-        <span id="watchlist-capacity" class="watchlist-capacity" aria-live="polite">0 / 400 Scripts</span>
+        <span id="watchlist-capacity" class="watchlist-capacity" aria-live="polite">20 / 20 Scripts</span>
         <button id="open-action-watch" class="analysis-button">⌁ <span>Market Analysis</span></button>
         <div class="toolbar-spacer"></div>
         <button id="connect-iifl" class="connect-button">Connect IIFL</button>
@@ -56,7 +56,7 @@
             <thead>
               <tr>
                 <th>Ex</th><th>EX</th><th>DJ</th><th>Now</th><th>Ind</th><th class="symbol-head">Symbol</th>
-                <th>Last Rate</th><th>%chg</th><th>Bid Qty</th><th>Bid Rate</th><th>Offer Qty</th><th>Offer Rate</th>
+                <th>Last Rate</th><th>%chg</th><th>Bid Rate</th><th>Bid Rate</th><th>Offer Qty</th><th>Offer Rate</th>
                 <th>Open</th><th>High</th><th>Low</th><th>PC close</th><th>Total Qty</th><th>Remove</th>
               </tr>
             </thead>
@@ -101,7 +101,7 @@
         <button data-analysis-tab="quantity">Traded Qty</button>
         <button class="tab-scroll" aria-label="Next tabs">◀ ▶</button>
       </div>
-      <div class="analysis-filters" id="analysis-filters-bar">
+      <div class="analysis-filters">
         <label><input type="checkbox" checked data-analysis-filter="nse" /> NSE</label>
         <label><input type="checkbox" checked data-analysis-filter="bse" /> BSE</label>
         <label><input type="checkbox" data-analysis-filter="mssx" /> MSSX</label>
@@ -112,26 +112,9 @@
         <label><input type="checkbox" checked id="high-filter" data-analysis-filter="high" /> High</label>
         <label><input type="checkbox" checked id="low-filter" data-analysis-filter="low" /> Low</label>
       </div>
-      <!-- 52W screener controls (visible only on 52Wk High / Low tabs) -->
-      <div class="analysis-filters screener-bar is-hidden" id="screener-bar">
-        <label for="screener-exchange">Exchange</label>
-        <select id="screener-exchange" class="screener-select">
-          <option value="NSEEQ">NSE Equity</option>
-          <option value="BSEEQ">BSE Equity</option>
-          <option value="NSEFO">NSE F&amp;O</option>
-          <option value="BSEFO">BSE F&amp;O</option>
-        </select>
-        <input id="screener-search" type="search" autocomplete="off" placeholder="Search symbol…" class="screener-search-input" />
-        <span id="screener-count" class="screener-count"></span>
-        <span class="screener-hint">Sorted by proximity to 52-week level · cached 10 min</span>
-      </div>
       <div class="analysis-table-wrap">
         <table class="analysis-table">
-          <thead>
-            <tr id="analysis-thead-row">
-              <th>Ex</th><th>Exch</th><th>Token</th><th>Symbol</th><th>Status / Distance</th><th>Last Rate</th><th>52W Level</th>
-            </tr>
-          </thead>
+          <thead><tr><th>Ex</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr></thead>
           <tbody id="analysis-body"></tbody>
         </table>
       </div>
