@@ -36,6 +36,9 @@ const state = {
   searchRequest: 0,
   // Chart
   chart: { visible: false, symbol: null, exchange: null, instrumentId: null, period: '1m', candles: [], loading: false },
+  // Polling
+  pollTimer: null,
+  currentPollMs: 4000,
 };
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -402,6 +405,16 @@ function setSession(session) {
   saveSessionMeta(session);
 }
 
+function updatePollInterval(session) {
+  const desiredMs = (session?.pollIntervalMs) || (state.session.mode === 'LIVE' ? 2000 : 4000);
+  if (desiredMs !== state.currentPollMs) {
+    state.currentPollMs = desiredMs;
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    state.pollTimer = setInterval(() => refreshQuotes(true), state.currentPollMs);
+    console.log(`[poll] Interval updated to ${state.currentPollMs}ms (${state.session.mode})`); 
+  }
+}
+
 function applyTerminalPayload(data) {
   if (Array.isArray(data.quotes)) {
     // Build a map of previous quotes so we can compute per-tick direction
@@ -417,6 +430,7 @@ function applyTerminalPayload(data) {
   }
   if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
   setSession(data.session);
+  updatePollInterval(data.session); // Adapt poll speed if mode changed (e.g. just connected IIFL)
   if (state.selectedKey && !state.quotes.some((q) => keyFor(q) === state.selectedKey)) state.selectedKey = null;
   renderMarket();
   renderAnalysis();
@@ -868,7 +882,11 @@ async function initialize() {
   await getSession();
   await loadWatchlist();
   await refreshQuotes(true);
-  setInterval(() => refreshQuotes(true), 4000);
+  // Start polling at the rate appropriate for the current mode.
+  // updatePollInterval() will keep adjusting this whenever the mode changes.
+  const initMs = state.session.mode === 'LIVE' ? 2000 : 4000;
+  state.currentPollMs = initMs;
+  state.pollTimer = setInterval(() => refreshQuotes(true), initMs);
 }
 
 initialize();
