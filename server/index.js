@@ -294,7 +294,9 @@ function createBrowserSession(savedRecord) {
     mode, lastError: null,
     watchlist, quotes, actionWatch: [],
     actionWatchDate: indiaTradingDate(),
-    intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.high, low: quote.low }])),
+    // Initialise intraday ranges from the CURRENT PRICE, not the wide simulation high/low.
+    // This ensures any genuine price movement from the opening price triggers an alert.
+    intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.lastPrice, low: quote.lastPrice }])),
   };
 }
 
@@ -357,23 +359,54 @@ function updateActionWatch(session, previousQuotes, nextQuotes) {
   }
   const previous = new Map(previousQuotes.map((quote) => [instrumentKey(quote), quote]));
   for (const quote of nextQuotes) {
-    const key = instrumentKey(quote);
+    const key        = instrumentKey(quote);
     const priorQuote = previous.get(key);
     const priorRange = session.intradayRanges.get(key);
-    const dayHigh = number(quote.high, quote.lastPrice);
-    const dayLow = number(quote.low, quote.lastPrice);
+
     if (!priorRange) {
-      session.intradayRanges.set(key, { high: Math.max(dayHigh, quote.lastPrice), low: Math.min(dayLow, quote.lastPrice) });
+      // First time we see this instrument — set the baseline from the current price
+      session.intradayRanges.set(key, { high: quote.lastPrice, low: quote.lastPrice });
       continue;
     }
-    const isNewHigh = dayHigh > priorRange.high || quote.lastPrice > priorRange.high;
-    const isNewLow = dayLow < priorRange.low || quote.lastPrice < priorRange.low;
-    const direction = quote.lastPrice > number(priorQuote?.lastPrice, quote.close) ? 'up' : quote.lastPrice < number(priorQuote?.lastPrice, quote.close) ? 'down' : 'flat';
+
+    // Compare lastPrice directly against the running intraday high/low so that
+    // genuine price breaches (not just the wide initial simulation range) fire alerts.
+    const isNewHigh = quote.lastPrice > priorRange.high;
+    const isNewLow  = quote.lastPrice < priorRange.low;
+
+    // Tick direction: is the last price higher or lower than the previous tick?
+    const prevLtp  = number(priorQuote?.lastPrice, quote.lastPrice);
+    const direction = quote.lastPrice > prevLtp ? 'up' : quote.lastPrice < prevLtp ? 'down' : 'flat';
+
     if (isNewHigh || isNewLow) {
-      session.actionWatch.unshift({ instrumentId: String(quote.instrumentId), symbol: quote.symbol, exchange: quote.exchange, segment: quote.segment || segmentLabel(quote.exchange), status: isNewHigh ? 'New High' : 'New Low', lastPrice: quote.lastPrice, direction, timestamp: quote.updatedAt || new Date().toISOString() });
-      if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
+      const entry = {
+        instrumentId: String(quote.instrumentId),
+        symbol:       quote.symbol,
+        exchange:     quote.exchange,
+        segment:      quote.segment || segmentLabel(quote.exchange),
+        status:       isNewHigh ? 'New High' : 'New Low',
+        lastPrice:    quote.lastPrice,
+        direction,
+        timestamp:    quote.updatedAt || new Date().toISOString(),
+      };
+      // Deduplicate: if the same scrip already has an entry for the same status at the top,
+      // update it in-place instead of prepending a duplicate.
+      const topIdx = session.actionWatch.findIndex(
+        (e) => e.instrumentId === entry.instrumentId && e.exchange === entry.exchange && e.status === entry.status
+      );
+      if (topIdx >= 0) {
+        session.actionWatch[topIdx] = entry; // update price + timestamp in place
+      } else {
+        session.actionWatch.unshift(entry);
+        if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
+      }
     }
-    session.intradayRanges.set(key, { high: Math.max(priorRange.high, dayHigh, quote.lastPrice), low: Math.min(priorRange.low, dayLow, quote.lastPrice) });
+
+    // Update the running intraday range
+    session.intradayRanges.set(key, {
+      high: Math.max(priorRange.high, quote.lastPrice),
+      low:  Math.min(priorRange.low,  quote.lastPrice),
+    });
   }
 }
 
