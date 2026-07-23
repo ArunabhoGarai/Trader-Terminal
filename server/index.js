@@ -205,14 +205,66 @@ function createBrowserSession() {
     intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.high, low: quote.low }])),
     // WebSocket clients attached to this session
     wsClients: new Set(),
-    // Track simulation cycle for varied drift
-    simCycle: 0,
+    // Market Scanner state
+    marketScannerQuotes: new Map(),
+    marketScannerCursor: 0,
+    marketAnalysis: { highs: [], lows: [], gainers: [], losers: [] },
   };
+}
+
+const STATE_FILE = path.join(__dirname, 'terminal_state.json');
+
+function loadGlobalState() {
+  const session = createBrowserSession();
+  if (fs.existsSync(STATE_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      if (data.accessToken) session.accessToken = data.accessToken;
+      if (data.expiresAt) session.expiresAt = data.expiresAt;
+      if (data.authenticatedAt) session.authenticatedAt = data.authenticatedAt;
+      if (data.mode) session.mode = data.mode;
+      if (data.watchlist) session.watchlist = data.watchlist;
+      if (data.actionWatch) session.actionWatch = data.actionWatch;
+      if (data.actionWatchDate) session.actionWatchDate = data.actionWatchDate;
+      if (data.intradayRanges) session.intradayRanges = new Map(data.intradayRanges);
+      
+      // Rebuild initial quotes matching the loaded watchlist
+      session.quotes = session.watchlist.map(makeSimulationQuote);
+      if (!data.intradayRanges) {
+        session.intradayRanges = new Map(session.quotes.map((q) => [instrumentKey(q), { high: q.high, low: q.low }]));
+      }
+      console.log(`[STATE] Loaded terminal state with ${session.watchlist.length} scrips and ${session.actionWatch.length} alerts.`);
+    } catch (e) {
+      console.warn('[STATE] Failed to load terminal_state.json, starting fresh.', e);
+    }
+  }
+  return session;
+}
+
+let lastStateJson = '';
+function saveGlobalState() {
+  const session = browserSessions.get(GLOBAL_SESSION_ID);
+  if (!session) return;
+  const state = {
+    accessToken: session.accessToken,
+    expiresAt: session.expiresAt,
+    authenticatedAt: session.authenticatedAt,
+    mode: session.mode,
+    watchlist: session.watchlist,
+    actionWatch: session.actionWatch,
+    actionWatchDate: session.actionWatchDate,
+    intradayRanges: Array.from(session.intradayRanges.entries()),
+  };
+  const json = JSON.stringify(state);
+  if (json !== lastStateJson) {
+    fs.writeFileSync(STATE_FILE, json, 'utf8');
+    lastStateJson = json;
+  }
 }
 
 const GLOBAL_SESSION_ID = 'global_terminal_session';
 if (!browserSessions.has(GLOBAL_SESSION_ID)) {
-  browserSessions.set(GLOBAL_SESSION_ID, createBrowserSession());
+  browserSessions.set(GLOBAL_SESSION_ID, loadGlobalState());
 }
 
 function browserSession(req, res) {
@@ -233,7 +285,7 @@ function publicWatchlist(session) {
 }
 
 function terminalPayload(session) {
-  return { quotes: session.quotes, session: publicSession(session), watchlist: publicWatchlist(session), actionWatch: session.actionWatch };
+  return { quotes: session.quotes, session: publicSession(session), watchlist: publicWatchlist(session), actionWatch: session.actionWatch, marketAnalysis: session.marketAnalysis };
 }
 
 // ---------------------------------------------------------------------------
@@ -348,21 +400,60 @@ async function exchangeAuthorizationCode(code, clientId, session) {
 }
 
 async function refreshLiveQuotes(session) {
-  if (!session.accessToken || !session.watchlist.length) return { success: false, events: [] };
-  const instruments = session.watchlist.map(({ exchange, instrumentId }) => ({ exchange, instrumentId }));
+  if (!session.accessToken) return { success: false, events: [] };
+  
+  // Build request payload: Watchlist + Next 100 Market Scanner stocks
+  const requestInstruments = new Map();
+  session.watchlist.forEach((inst) => requestInstruments.set(instrumentKey(inst), { exchange: inst.exchange, instrumentId: inst.instrumentId, isWatchlist: true }));
+  
+  // Add market scanner chunk
+  const allNse = contractCache.get('NSEEQ')?.instruments || STATIC_CATALOG;
+  if (allNse.length > 0) {
+    if (session.marketScannerCursor >= allNse.length) session.marketScannerCursor = 0;
+    const chunk = allNse.slice(session.marketScannerCursor, session.marketScannerCursor + 100);
+    session.marketScannerCursor += 100;
+    chunk.forEach((inst) => {
+      const k = instrumentKey(inst);
+      if (!requestInstruments.has(k)) requestInstruments.set(k, { exchange: inst.exchange, instrumentId: inst.instrumentId, isWatchlist: false });
+    });
+  }
+  
+  if (requestInstruments.size === 0) return { success: false, events: [] };
+
   try {
-    const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, instruments, {
+    const payload = Array.from(requestInstruments.values()).map(({ exchange, instrumentId }) => ({ exchange, instrumentId }));
+    const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, payload, {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 15000,
     });
+    
     const results = Array.isArray(response.data?.result) ? response.data.result : [];
     if (!results.length) throw new Error(response.data?.message || 'The market quote response did not contain results.');
+    
     const previous = new Map(session.quotes.map((quote) => [instrumentKey(quote), quote]));
     const resultsByKey = new Map(results.map((quote) => [instrumentKey({ exchange: quote.exchange || '', instrumentId: quote.instrumentId ?? quote.token }), quote]));
+    
+    // Update active watchlist quotes
     const nextQuotes = session.watchlist.map((instrument, index) => {
       const fallback = previous.get(instrumentKey(instrument)) || makeSimulationQuote(instrument, index);
       const raw = resultsByKey.get(instrumentKey(instrument)) || results.find((quote) => String(quote.instrumentId ?? quote.token) === String(instrument.instrumentId));
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
+    
+    // Update Market Scanner map
+    requestInstruments.forEach((info, key) => {
+      if (!info.isWatchlist) {
+        const raw = resultsByKey.get(key);
+        if (raw) session.marketScannerQuotes.set(key, quoteFromPayload(raw, makeSimulationQuote({ exchange: info.exchange, instrumentId: info.instrumentId, symbol: raw.symbol }, 0), 0));
+      }
+    });
+
+    // Compute top market-wide analytics
+    const allMarketQuotes = Array.from(session.marketScannerQuotes.values());
+    session.marketAnalysis.highs = [...allMarketQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
+    session.marketAnalysis.lows = [...allMarketQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
+    session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
+    session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
+
     const events = updateActionWatch(session, session.quotes, nextQuotes);
     session.quotes = nextQuotes;
     return { success: true, events };
@@ -422,7 +513,12 @@ function advanceSimulation(session) {
   });
 
   session.quotes = nextQuotes;
-  return updateActionWatch(session, previousQuotes, nextQuotes);
+    session.marketAnalysis.highs = [...nextQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
+    session.marketAnalysis.lows = [...nextQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
+    session.marketAnalysis.gainers = [...nextQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
+    session.marketAnalysis.losers = [...nextQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
+
+    return updateActionWatch(session, previousQuotes, nextQuotes);
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +572,11 @@ async function searchInstruments(exchange, segment, query) {
     instruments = [...instruments, ...catalogs.flat().filter(matches)];
   }
   const unique = new Map();
-  instruments.forEach((instrument) => unique.set(instrumentKey(instrument), instrument));
+  instruments.forEach((instrument) => {
+    if (!unique.has(instrument.symbol)) {
+      unique.set(instrument.symbol, instrument);
+    }
+  });
   return [...unique.values()].sort((a, b) => a.symbol.localeCompare(b.symbol)).slice(0, 15);
 }
 
@@ -524,6 +624,7 @@ async function pollAllSessions() {
         type: 'tick',
         quotes: session.quotes,
         actionWatch: session.actionWatch,
+        marketAnalysis: session.marketAnalysis,
         newEvents,
         session: publicSession(session),
         watchlist: publicWatchlist(session),
@@ -531,6 +632,9 @@ async function pollAllSessions() {
       });
     }
   }
+  
+  // Persist state to disk after polling
+  saveGlobalState();
 }
 
 function startPolling() {
@@ -603,6 +707,121 @@ app.delete('/api/watchlist/:exchange/:instrumentId', (req, res) => {
   // Notify WebSocket clients
   broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
   res.json(terminalPayload(session));
+});
+
+app.post('/api/watchlist/reorder', (req, res) => {
+  const session = browserSession(req, res);
+  const keys = req.body.keys || [];
+  if (!Array.isArray(keys)) return res.status(400).json({ message: 'Expected an array of keys.' });
+
+  const watchMap = new Map(session.watchlist.map((i) => [instrumentKey(i), i]));
+  const quoteMap = new Map(session.quotes.map((q) => [instrumentKey(q), q]));
+
+  const nextWatchlist = [];
+  const nextQuotes = [];
+
+  for (const k of keys) {
+    if (watchMap.has(k)) {
+      nextWatchlist.push(watchMap.get(k));
+      nextQuotes.push(quoteMap.get(k));
+      watchMap.delete(k);
+      quoteMap.delete(k);
+    }
+  }
+
+  // Append any missing ones (in case frontend missed something)
+  for (const [k, i] of watchMap.entries()) {
+    nextWatchlist.push(i);
+    nextQuotes.push(quoteMap.get(k));
+  }
+
+  session.watchlist = nextWatchlist;
+  session.quotes = nextQuotes;
+
+  // Notify WebSocket clients
+  broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
+  res.json(terminalPayload(session));
+});
+
+app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
+  const session = browserSession(req, res);
+  const { exchange, instrumentId } = req.params;
+  const { timeframe } = req.query; // '1D', '1M', '1Y', '10Y', '20Y'
+  
+  const end = new Date();
+  const start = new Date();
+  let compression = 60; // 1 min for intraday
+  
+  switch(timeframe) {
+    case '1D': start.setDate(end.getDate() - 1); compression = 60; break;
+    case '1M': start.setMonth(end.getMonth() - 1); compression = 86400; break; // 1 day in seconds
+    case '1Y': start.setFullYear(end.getFullYear() - 1); compression = 86400; break;
+    case '10Y': start.setFullYear(end.getFullYear() - 10); compression = 86400; break;
+    case '20Y': start.setFullYear(end.getFullYear() - 20); compression = 86400; break;
+    default: start.setDate(end.getDate() - 1); break;
+  }
+
+  const payload = {
+    ExchangeSegment: exchange.includes('FO') ? 'NSEFO' : (exchange.startsWith('BSE') ? 'BSECM' : 'NSECM'),
+    ExchangeInstrumentID: Number(instrumentId),
+    StartTime: start.toISOString().split('.')[0],
+    EndTime: end.toISOString().split('.')[0],
+    CompressionValue: compression
+  };
+
+  try {
+    if (!session.accessToken) throw new Error('Not authenticated');
+    
+    const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/historicaldata`, payload, {
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 15000,
+    });
+    
+    if (response.data && response.data.result && response.data.result.length > 0) {
+      // Map IIFL response to standard lightweight-charts format
+      const formatted = response.data.result.map(c => ({
+        time: new Date(c.time || c.Date || c.Timestamp).getTime() / 1000,
+        open: Number(c.open || c.Open),
+        high: Number(c.high || c.High),
+        low: Number(c.low || c.Low),
+        close: Number(c.close || c.Close)
+      }));
+      return res.json({ success: true, data: formatted });
+    }
+    throw new Error('Empty or invalid response from IIFL');
+  } catch (err) {
+    console.warn('[CHART API] IIFL Historical Data failed, falling back to simulated data.', err.response?.data || err.message);
+    
+    // Simulate beautiful chart data as fallback if IIFL restricts historical access
+    const simulatedData = [];
+    let currentPrice = 1000 + (Math.random() * 500);
+    let currentDate = new Date(start);
+    const step = timeframe === '1D' ? 5 * 60000 : (timeframe === '1M' ? 24 * 60 * 60000 : 7 * 24 * 60 * 60000); 
+    
+    // For 20Y we need weekly/monthly steps so we don't blow up the browser
+    if (timeframe === '10Y' || timeframe === '20Y') {
+      currentDate.setDate(1); // align to month start
+    }
+    
+    while(currentDate <= end) {
+      const open = currentPrice;
+      const close = currentPrice * (1 + (Math.random() - 0.48) * (timeframe === '1D' ? 0.005 : 0.05)); // upward bias
+      const high = Math.max(open, close) * (1 + Math.random() * (timeframe === '1D' ? 0.002 : 0.02));
+      const low = Math.min(open, close) * (1 - Math.random() * (timeframe === '1D' ? 0.002 : 0.02));
+      simulatedData.push({
+        time: Math.floor(currentDate.getTime() / 1000),
+        open: +open.toFixed(2),
+        high: +high.toFixed(2),
+        low: +low.toFixed(2),
+        close: +close.toFixed(2)
+      });
+      currentPrice = close;
+      
+      if (timeframe === '1D') currentDate = new Date(currentDate.getTime() + step);
+      else if (timeframe === '1M' || timeframe === '1Y') currentDate = new Date(currentDate.getTime() + 24 * 60 * 60000); // 1 day steps
+      else currentDate.setMonth(currentDate.getMonth() + 1); // 1 month steps for 10Y/20Y
+    }
+    return res.json({ success: true, simulated: true, data: simulatedData });
+  }
 });
 
 app.get('/auth/login', (req, res) => {
