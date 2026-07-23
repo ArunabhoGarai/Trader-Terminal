@@ -452,41 +452,74 @@ async function openChart(key) {
   el('chart-window').classList.remove('is-hidden');
   
   if (!chartInstance) {
-    chartInstance = LightweightCharts.createChart(el('chart-container'), {
-      layout: { background: { color: '#000' }, textColor: '#d1d4dc' },
-      grid: { vertLines: { color: '#2b2b43' }, horzLines: { color: '#2b2b43' } },
-      timeScale: { timeVisible: true, secondsVisible: false }
-    });
-    candleSeries = chartInstance.addCandlestickSeries({
-      upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
-      wickUpColor: '#26a69a', wickDownColor: '#ef5350'
-    });
-    
-    new ResizeObserver(entries => {
-      if (entries.length === 0 || entries[0].target !== el('chart-container')) return;
-      const newRect = entries[0].contentRect;
-      chartInstance.applyOptions({ width: newRect.width, height: newRect.height });
-    }).observe(el('chart-container'));
+    try {
+      const container = el('chart-container');
+      chartInstance = LightweightCharts.createChart(container, {
+        layout: { background: { color: '#000' }, textColor: '#d1d4dc' },
+        grid: { vertLines: { color: '#2b2b43' }, horzLines: { color: '#2b2b43' } },
+        timeScale: { timeVisible: true, secondsVisible: false },
+        width: container.clientWidth || 760,
+        height: container.clientHeight || 420,
+      });
+      // v3 API: addCandlestickSeries(); v4 API: addSeries(type)
+      if (typeof chartInstance.addCandlestickSeries === 'function') {
+        candleSeries = chartInstance.addCandlestickSeries({
+          upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+          wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+        });
+      } else if (typeof chartInstance.addSeries === 'function' && LightweightCharts.CandlestickSeries) {
+        candleSeries = chartInstance.addSeries(LightweightCharts.CandlestickSeries, {
+          upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+          wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+        });
+      } else {
+        console.error('LightweightCharts API not compatible');
+        toast('Chart library error — please refresh');
+        return;
+      }
+      
+      new ResizeObserver(entries => {
+        if (entries.length === 0 || entries[0].target !== container) return;
+        const newRect = entries[0].contentRect;
+        if (newRect.width > 0 && newRect.height > 0) {
+          chartInstance.applyOptions({ width: newRect.width, height: newRect.height });
+        }
+      }).observe(container);
+    } catch (err) {
+      console.error('Chart creation failed:', err);
+      toast('Chart initialization error');
+      chartInstance = null;
+      candleSeries = null;
+      return;
+    }
   }
-  
+
+  setTimeout(() => {
+    if (chartInstance && el('chart-container')) {
+      const w = el('chart-container').clientWidth || 760;
+      const h = el('chart-container').clientHeight || 420;
+      chartInstance.applyOptions({ width: w, height: h });
+    }
+  }, 50);
+
   loadChartData();
 }
 
 async function loadChartData() {
-  if (!activeChartQuote) return;
+  if (!activeChartQuote || !candleSeries) return;
   el('chart-loader').style.display = 'block';
   try {
     const res = await fetch(`/api/chart/${activeChartQuote.exchange}/${activeChartQuote.instrumentId}?timeframe=${activeTimeframe}`);
     const result = await res.json();
-    if (result.success && result.data) {
+    if (result.success && Array.isArray(result.data) && result.data.length > 0) {
       candleSeries.setData(result.data);
       chartInstance.timeScale().fitContent();
     } else {
-      toast('Failed to load chart data');
+      toast('No chart data available for this timeframe');
     }
   } catch (err) {
-    console.error(err);
-    toast('Error loading chart');
+    console.error('Chart data load error:', err);
+    toast('Error loading chart data');
   } finally {
     el('chart-loader').style.display = 'none';
   }
