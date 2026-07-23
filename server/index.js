@@ -137,11 +137,13 @@ function makeSimulationQuote(instrument, position = 0) {
   const basePrice = number(instrument.basePrice, 100 + ((position + 1) * 41));
   const close = basePrice / (1 + direction / 100);
   const spread = Math.max(basePrice * .00035, .05);
+  const high = Math.max(basePrice, close * (1 + ((position % 5) - 2) / 1000), basePrice + spread) * 1.001;
+  const low = Math.max(0, Math.min(basePrice, close * (1 + ((position % 5) - 2) / 1000), basePrice - spread)) * 0.999;
   return {
     instrumentId: String(instrument.instrumentId), symbol: instrument.symbol, exchange: instrument.exchange, segment: instrument.segment || segmentLabel(instrument.exchange),
     lastPrice: basePrice, pctChange: direction, close,
-    open: close * (1 + ((position % 5) - 2) / 1000), high: basePrice,
-    low: basePrice, bestBidPrice: basePrice - spread,
+    open: close * (1 + ((position % 5) - 2) / 1000), high,
+    low, bestBidPrice: Math.max(0, basePrice - spread),
     bestBidQty: 80 + position * 53, bestAskPrice: basePrice + spread,
     bestAskQty: 100 + position * 61, tradedVolume: 70000 + position * 12431,
     week52High: basePrice * (1.035 + (position % 3) * .02),
@@ -404,7 +406,7 @@ async function refreshLiveQuotes(session) {
   
   // Build request payload: Watchlist + Next 100 Market Scanner stocks
   const requestInstruments = new Map();
-  session.watchlist.forEach((inst) => requestInstruments.set(instrumentKey(inst), { exchange: inst.exchange, instrumentId: inst.instrumentId, isWatchlist: true }));
+  session.watchlist.forEach((inst) => requestInstruments.set(instrumentKey(inst), { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: true }));
   
   // Add market scanner chunk
   const allNse = contractCache.get('NSEEQ')?.instruments || STATIC_CATALOG;
@@ -414,7 +416,7 @@ async function refreshLiveQuotes(session) {
     session.marketScannerCursor += 100;
     chunk.forEach((inst) => {
       const k = instrumentKey(inst);
-      if (!requestInstruments.has(k)) requestInstruments.set(k, { exchange: inst.exchange, instrumentId: inst.instrumentId, isWatchlist: false });
+      if (!requestInstruments.has(k)) requestInstruments.set(k, { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: false });
     });
   }
   
@@ -443,7 +445,7 @@ async function refreshLiveQuotes(session) {
     requestInstruments.forEach((info, key) => {
       if (!info.isWatchlist) {
         const raw = resultsByKey.get(key);
-        if (raw) session.marketScannerQuotes.set(key, quoteFromPayload(raw, makeSimulationQuote({ exchange: info.exchange, instrumentId: info.instrumentId, symbol: raw.symbol }, 0), 0));
+        if (raw) session.marketScannerQuotes.set(key, quoteFromPayload(raw, makeSimulationQuote({ exchange: info.exchange, instrumentId: info.instrumentId, symbol: info.symbol || raw.symbol || 'Unknown' }, 0), 0));
       }
     });
 
@@ -487,6 +489,7 @@ function advanceSimulation(session) {
     }
 
     let lastPrice = +(quote.lastPrice * (1 + drift)).toFixed(2);
+    if (lastPrice <= 0) lastPrice = quote.close > 0 ? quote.close : 100; // prevent zero/negative death spiral
     let close = quote.close;
 
     if (isGapDownRecovery && session.simCycle < 30) {
@@ -496,15 +499,19 @@ function advanceSimulation(session) {
       lastPrice = +(lastPrice * 1.003).toFixed(2); // Push price up
     }
 
-    const high = Math.max(quote.high, lastPrice);
-    const low = Math.min(quote.low, lastPrice);
-    const pctChange = close > 0 ? +(((lastPrice - close) / close) * 100).toFixed(2) : 0;
     const spread = Math.max(lastPrice * .00035, .05);
+    const bestBidPrice = Math.max(0, +(lastPrice - spread).toFixed(2));
+    const bestAskPrice = +(lastPrice + spread).toFixed(2);
+    
+    // Bounds must strictly encapsulate the Bid/Ask spread
+    const high = Math.max(quote.high, lastPrice, bestAskPrice);
+    const low = Math.min(quote.low || lastPrice, lastPrice, bestBidPrice);
+    const pctChange = close > 0 ? +(((lastPrice - close) / close) * 100).toFixed(2) : 0;
 
     return {
       ...quote, lastPrice, pctChange, close, high, low,
-      bestBidPrice: +(lastPrice - spread).toFixed(2),
-      bestAskPrice: +(lastPrice + spread).toFixed(2),
+      bestBidPrice,
+      bestAskPrice,
       bestBidQty: Math.max(1, Math.round(quote.bestBidQty * (.96 + Math.random() * .08))),
       bestAskQty: Math.max(1, Math.round(quote.bestAskQty * (.96 + Math.random() * .08))),
       tradedVolume: quote.tradedVolume + Math.round(Math.random() * 2500),
@@ -778,13 +785,23 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
     
     if (response.data && response.data.result && response.data.result.length > 0) {
       // Map IIFL response to standard lightweight-charts format
-      const formatted = response.data.result.map(c => ({
-        time: new Date(c.time || c.Date || c.Timestamp).getTime() / 1000,
-        open: Number(c.open || c.Open),
-        high: Number(c.high || c.High),
-        low: Number(c.low || c.Low),
-        close: Number(c.close || c.Close)
-      }));
+      const isIntraday = timeframe === '1D';
+      let formatted = response.data.result.map(c => {
+        const d = new Date(c.time || c.Date || c.Timestamp);
+        return {
+          time: isIntraday ? Math.floor(d.getTime() / 1000) : d.toISOString().split('T')[0],
+          open: Number(c.open || c.Open),
+          high: Number(c.high || c.High),
+          low: Number(c.low || c.Low),
+          close: Number(c.close || c.Close)
+        };
+      });
+      
+      // TradingView demands strictly unique and ascending times
+      const uniqueMap = new Map();
+      formatted.forEach(item => uniqueMap.set(item.time, item));
+      formatted = Array.from(uniqueMap.values()).sort((a, b) => a.time > b.time ? 1 : -1);
+      
       return res.json({ success: true, data: formatted });
     }
     throw new Error('Empty or invalid response from IIFL');
@@ -792,7 +809,7 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
     console.warn('[CHART API] IIFL Historical Data failed, falling back to simulated data.', err.response?.data || err.message);
     
     // Simulate beautiful chart data as fallback if IIFL restricts historical access
-    const simulatedData = [];
+    let simulatedData = [];
     let currentPrice = 1000 + (Math.random() * 500);
     let currentDate = new Date(start);
     const step = timeframe === '1D' ? 5 * 60000 : (timeframe === '1M' ? 24 * 60 * 60000 : 7 * 24 * 60 * 60000); 
@@ -807,8 +824,10 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
       const close = currentPrice * (1 + (Math.random() - 0.48) * (timeframe === '1D' ? 0.005 : 0.05)); // upward bias
       const high = Math.max(open, close) * (1 + Math.random() * (timeframe === '1D' ? 0.002 : 0.02));
       const low = Math.min(open, close) * (1 - Math.random() * (timeframe === '1D' ? 0.002 : 0.02));
+      
+      const timeVal = timeframe === '1D' ? Math.floor(currentDate.getTime() / 1000) : currentDate.toISOString().split('T')[0];
       simulatedData.push({
-        time: Math.floor(currentDate.getTime() / 1000),
+        time: timeVal,
         open: +open.toFixed(2),
         high: +high.toFixed(2),
         low: +low.toFixed(2),
@@ -820,6 +839,12 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
       else if (timeframe === '1M' || timeframe === '1Y') currentDate = new Date(currentDate.getTime() + 24 * 60 * 60000); // 1 day steps
       else currentDate.setMonth(currentDate.getMonth() + 1); // 1 month steps for 10Y/20Y
     }
+    
+    // Deduplicate and sort fallback as well
+    const uniqueMap = new Map();
+    simulatedData.forEach(item => uniqueMap.set(item.time, item));
+    simulatedData = Array.from(uniqueMap.values()).sort((a, b) => a.time > b.time ? 1 : -1);
+
     return res.json({ success: true, simulated: true, data: simulatedData });
   }
 });
