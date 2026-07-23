@@ -139,6 +139,24 @@ function makeSimulationQuote(instrument, position = 0) {
   const spread = Math.max(basePrice * .00035, .05);
   const high = Math.max(basePrice, close * (1 + ((position % 5) - 2) / 1000), basePrice + spread) * 1.001;
   const low = Math.max(0, Math.min(basePrice, close * (1 + ((position % 5) - 2) / 1000), basePrice - spread)) * 0.999;
+
+  // Distribute stocks: ~1/3 near 52W high, ~1/3 near 52W low, ~1/3 in between
+  const category = position % 3;
+  let week52High, week52Low;
+  if (category === 0) {
+    // Near 52W high: LTP is within 1-3% of the yearly peak
+    week52High = +(basePrice * (1.01 + (position % 7) * 0.004)).toFixed(2);
+    week52Low  = +(basePrice * (0.55 + (position % 5) * 0.03)).toFixed(2);
+  } else if (category === 1) {
+    // Near 52W low: LTP is within 1-3% of the yearly floor
+    week52High = +(basePrice * (1.30 + (position % 7) * 0.05)).toFixed(2);
+    week52Low  = +(basePrice * (0.97 + (position % 5) * 0.004)).toFixed(2);
+  } else {
+    // In between: neither near high nor low
+    week52High = +(basePrice * (1.15 + (position % 7) * 0.03)).toFixed(2);
+    week52Low  = +(basePrice * (0.70 + (position % 5) * 0.025)).toFixed(2);
+  }
+
   return {
     instrumentId: String(instrument.instrumentId), symbol: instrument.symbol, exchange: instrument.exchange, segment: instrument.segment || segmentLabel(instrument.exchange),
     lastPrice: basePrice, pctChange: direction, close,
@@ -146,8 +164,7 @@ function makeSimulationQuote(instrument, position = 0) {
     low, bestBidPrice: Math.max(0, basePrice - spread),
     bestBidQty: 80 + position * 53, bestAskPrice: basePrice + spread,
     bestAskQty: 100 + position * 61, tradedVolume: 70000 + position * 12431,
-    week52High: basePrice * (1.035 + (position % 3) * .02),
-    week52Low: basePrice * (.70 + (position % 4) * .025), updatedAt: new Date().toISOString(),
+    week52High, week52Low, updatedAt: new Date().toISOString(),
   };
 }
 
@@ -161,8 +178,8 @@ function extract(obj, keys, fallback) {
 }
 
 function quoteFromPayload(raw, fallback, position) {
-  const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP'], fallback.lastPrice);
-  const close = extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice'], fallback.close);
+  const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], fallback.lastPrice);
+  const close = extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], fallback.close);
   const pctChange = close ? ((ltp - close) / close) * 100 : 0;
   
   // Extract Bid/Ask handling nested structures from IIFL OpenAPI
@@ -179,24 +196,47 @@ function quoteFromPayload(raw, fallback, position) {
     if (Math.abs(askPrice - ltp) / ltp > 0.05) askPrice = +(ltp + spread).toFixed(2);
   }
 
+  // Extract 52W High & Low with all possible IIFL key aliases
+  let week52High = extract(raw, [
+    'week52High', 'FiftyTwoWeekHighPrice', 'FiftyTwoWeekHigh', 'High52Week', 'High52', 
+    '52WHigh', '52WeekHigh', 'FiftyTwoWkHigh', 'High52WK', 'High52W', 'High52WeekPrice', 'FiftyTwoWeekHighRate'
+  ], 0);
+
+  let week52Low = extract(raw, [
+    'week52Low', 'FiftyTwoWeekLowPrice', 'FiftyTwoWeekLow', 'Low52Week', 'Low52', 
+    '52WLow', '52WeekLow', 'FiftyTwoWkLow', 'Low52WK', 'Low52W', 'Low52WeekPrice', 'FiftyTwoWeekLowRate'
+  ], 0);
+
+  // If live IIFL payload or raw object doesn't supply valid 52W bounds, ensure fallback is anchored to real LTP
+  if (!week52High || week52High <= 0) {
+    week52High = fallback.week52High > 0 && Math.abs(fallback.week52High - ltp) / ltp < 0.5 
+      ? fallback.week52High 
+      : +(ltp * 1.03).toFixed(2);
+  }
+  if (!week52Low || week52Low <= 0) {
+    week52Low = fallback.week52Low > 0 && Math.abs(fallback.week52Low - ltp) / ltp < 0.5 
+      ? fallback.week52Low 
+      : +(ltp * 0.85).toFixed(2);
+  }
+
   return {
     ...fallback,
     instrumentId: String(raw.instrumentId ?? raw.token ?? raw.ExchangeInstrumentID ?? raw.ExchangeInstrumentId ?? fallback.instrumentId),
-    symbol: raw.symbol ?? raw.tradingSymbol ?? raw.TradingSymbol ?? fallback.symbol,
+    symbol: raw.symbol ?? raw.tradingSymbol ?? raw.TradingSymbol ?? raw.DisplayName ?? raw.displayName ?? fallback.symbol,
     exchange: raw.exchange ?? raw.ExchangeSegment ?? fallback.exchange,
     lastPrice: ltp,
-    pctChange: extract(raw, ['pctChange', 'changePercent', 'PercentChange'], pctChange),
+    pctChange: extract(raw, ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'priceChangePercent', 'NetChangePercentage', 'PcntChg'], pctChange),
     close,
-    open: extract(raw, ['open', 'Open', 'OpenPrice'], fallback.open), 
-    high: extract(raw, ['high', 'High', 'HighPrice'], fallback.high), 
-    low: extract(raw, ['low', 'Low', 'LowPrice'], fallback.low),
+    open: extract(raw, ['open', 'Open', 'OpenPrice', 'OpeningPrice', 'LastOpenPrice'], fallback.open), 
+    high: extract(raw, ['high', 'High', 'HighPrice', 'DayHigh', 'DayHighPrice', 'SessionHigh'], fallback.high), 
+    low: extract(raw, ['low', 'Low', 'LowPrice', 'DayLow', 'DayLowPrice', 'SessionLow'], fallback.low),
     bestBidPrice: bidPrice, 
     bestBidQty: bidQty,
     bestAskPrice: askPrice, 
     bestAskQty: askQty,
-    tradedVolume: extract(raw, ['tradedVolume', 'totalQty', 'totalTradedQuantity', 'TotalQty', 'Volume', 'TotalTradedQuantity'], fallback.tradedVolume),
-    week52High: extract(raw, ['week52High', 'FiftyTwoWeekHighPrice'], fallback.week52High), 
-    week52Low: extract(raw, ['week52Low', 'FiftyTwoWeekLowPrice'], fallback.week52Low),
+    tradedVolume: extract(raw, ['tradedVolume', 'totalQty', 'totalTradedQuantity', 'TotalQty', 'Volume', 'TotalTradedQuantity', 'TotalTradedQty', 'TradedVolume', 'VolumeTraded', 'TTQ'], fallback.tradedVolume),
+    week52High, 
+    week52Low,
     updatedAt: new Date().toISOString(), position,
   };
 }
@@ -222,6 +262,7 @@ function createBrowserSession() {
 }
 
 const STATE_FILE = path.join(__dirname, 'terminal_state.json');
+const STATE_VERSION = 2; // Bump this when simulation logic changes to force regeneration
 
 function loadGlobalState() {
   const session = createBrowserSession();
@@ -232,13 +273,20 @@ function loadGlobalState() {
       if (data.expiresAt) session.expiresAt = data.expiresAt;
       if (data.authenticatedAt) session.authenticatedAt = data.authenticatedAt;
       if (data.mode) session.mode = data.mode;
-      if (data.watchlist) session.watchlist = data.watchlist;
       if (data.actionWatch) session.actionWatch = data.actionWatch;
       if (data.actionWatchDate) session.actionWatchDate = data.actionWatchDate;
+
+      // Restore watchlist, ensuring basePrice is available from catalog
+      if (data.watchlist) {
+        session.watchlist = data.watchlist.map((savedInst) => {
+          const catalogInst = knownInstruments.get(instrumentKey(savedInst));
+          return { ...savedInst, basePrice: savedInst.basePrice || catalogInst?.basePrice || 100 };
+        });
+      }
       if (data.intradayRanges) session.intradayRanges = new Map(data.intradayRanges);
       
       // Rebuild initial quotes matching the loaded watchlist
-      session.quotes = session.watchlist.map(makeSimulationQuote);
+      session.quotes = session.watchlist.map((inst, idx) => makeSimulationQuote(inst, idx));
       if (!data.intradayRanges) {
         session.intradayRanges = new Map(session.quotes.map((q) => [instrumentKey(q), { high: q.high, low: q.low }]));
       }
@@ -421,9 +469,9 @@ async function refreshLiveQuotes(session) {
     if (session.marketScannerCursor >= allNse.length) session.marketScannerCursor = 0;
     const chunk = allNse.slice(session.marketScannerCursor, session.marketScannerCursor + 100);
     session.marketScannerCursor += 100;
-    chunk.forEach((inst) => {
+    chunk.forEach((inst, idx) => {
       const k = instrumentKey(inst);
-      if (!requestInstruments.has(k)) requestInstruments.set(k, { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: false });
+      if (!requestInstruments.has(k)) requestInstruments.set(k, { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, basePrice: inst.basePrice, index: inst.index ?? idx, isWatchlist: false });
     });
   }
   
@@ -452,7 +500,11 @@ async function refreshLiveQuotes(session) {
     requestInstruments.forEach((info, key) => {
       if (!info.isWatchlist) {
         const raw = resultsByKey.get(key);
-        if (raw) session.marketScannerQuotes.set(key, quoteFromPayload(raw, makeSimulationQuote({ exchange: info.exchange, instrumentId: info.instrumentId, symbol: info.symbol || raw.symbol || 'Unknown' }, 0), 0));
+        if (raw) {
+          const knownInst = knownInstruments.get(key) || { exchange: info.exchange, instrumentId: info.instrumentId, symbol: info.symbol || raw.symbol || 'Unknown', basePrice: info.basePrice };
+          const fallback = makeSimulationQuote(knownInst, info.index || 0);
+          session.marketScannerQuotes.set(key, quoteFromPayload(raw, fallback, info.index || 0));
+        }
       }
     });
 
@@ -554,9 +606,9 @@ function advanceSimulation(session) {
         bestBidPrice: Math.max(0, +(ltp - sp).toFixed(2)),
         bestAskPrice: +(ltp + sp).toFixed(2),
         tradedVolume: existing.tradedVolume + Math.round(Math.random() * 1500),
-        // Keep 52W bounds realistic: if LTP exceeds old 52W high, update it; same for low
-        week52High: Math.max(existing.week52High || ltp, ltp * (1 + Math.random() * 0.01)),
-        week52Low: Math.min(existing.week52Low || ltp, ltp * (1 - Math.random() * 0.01)),
+        // Only update 52W bounds if LTP breaks through them (mirrors real market)
+        week52High: ltp > existing.week52High ? +(ltp * 1.001).toFixed(2) : existing.week52High,
+        week52Low: ltp < existing.week52Low ? +(ltp * 0.999).toFixed(2) : existing.week52Low,
         updatedAt: new Date().toISOString(),
       });
     } else {
@@ -797,6 +849,50 @@ app.post('/api/watchlist/reorder', (req, res) => {
   res.json(terminalPayload(session));
 });
 
+function parseIIFLHistoricalCandles(rawResult, isIntraday) {
+  if (!Array.isArray(rawResult)) return [];
+  const candles = [];
+  for (const c of rawResult) {
+    let t, o, h, l, cl;
+    if (Array.isArray(c)) {
+      t = c[0]; o = c[1]; h = c[2]; l = c[3]; cl = c[4];
+    } else if (typeof c === 'string') {
+      const parts = c.split(',');
+      if (parts.length >= 5) {
+        t = parts[0]; o = parts[1]; h = parts[2]; l = parts[3]; cl = parts[4];
+      } else continue;
+    } else if (c && typeof c === 'object') {
+      t = c.time ?? c.Time ?? c.Date ?? c.date ?? c.Timestamp ?? c.timestamp;
+      o = c.open ?? c.Open;
+      h = c.high ?? c.High;
+      l = c.low ?? c.Low;
+      cl = c.close ?? c.Close;
+    } else continue;
+
+    const rawTimeStr = String(t || '');
+    let dateObj;
+    if (/^\d+$/.test(rawTimeStr)) {
+      const num = Number(rawTimeStr);
+      dateObj = new Date(num > 2000000000 ? num : num * 1000);
+    } else {
+      dateObj = new Date(rawTimeStr.includes('T') ? rawTimeStr : rawTimeStr.replace(' ', 'T'));
+    }
+
+    if (isNaN(dateObj.getTime())) continue;
+
+    const timeVal = isIntraday ? Math.floor(dateObj.getTime() / 1000) : dateObj.toISOString().split('T')[0];
+    const openNum = Number(o);
+    const highNum = Number(h);
+    const lowNum = Number(l);
+    const closeNum = Number(cl);
+
+    if (Number.isFinite(openNum) && Number.isFinite(highNum) && Number.isFinite(lowNum) && Number.isFinite(closeNum)) {
+      candles.push({ time: timeVal, open: openNum, high: highNum, low: lowNum, close: closeNum });
+    }
+  }
+  return candles;
+}
+
 app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
   const session = browserSession(req, res);
   const { exchange, instrumentId } = req.params;
@@ -830,28 +926,18 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 15000,
     });
     
-    if (response.data && response.data.result && response.data.result.length > 0) {
-      // Map IIFL response to standard lightweight-charts format
-      const isIntraday = timeframe === '1D';
-      let formatted = response.data.result.map(c => {
-        const d = new Date(c.time || c.Date || c.Timestamp);
-        return {
-          time: isIntraday ? Math.floor(d.getTime() / 1000) : d.toISOString().split('T')[0],
-          open: Number(c.open || c.Open),
-          high: Number(c.high || c.High),
-          low: Number(c.low || c.Low),
-          close: Number(c.close || c.Close)
-        };
-      });
-      
+    const rawResult = response.data?.result || response.data?.Data?.Candles || response.data?.data || response.data;
+    const isIntraday = timeframe === '1D';
+    let formatted = parseIIFLHistoricalCandles(rawResult, isIntraday);
+
+    if (formatted.length > 0) {
       // TradingView demands strictly unique and ascending times
       const uniqueMap = new Map();
       formatted.forEach(item => uniqueMap.set(item.time, item));
       formatted = Array.from(uniqueMap.values()).sort((a, b) => a.time > b.time ? 1 : -1);
-      
       return res.json({ success: true, data: formatted });
     }
-    throw new Error('Empty or invalid response from IIFL');
+    throw new Error('Empty or invalid historical candles response from IIFL');
   } catch (err) {
     console.warn('[CHART API] IIFL Historical Data failed, falling back to simulated data.', err.response?.data || err.message);
     
@@ -859,11 +945,8 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
     const instKey = instrumentKey({ exchange, instrumentId });
     const liveQuote = session.quotes.find(q => instrumentKey(q) === instKey) || session.marketScannerQuotes.get(instKey);
     const knownInst = knownInstruments.get(instKey);
-    // Use the actual current price, or fall back to the instrument's basePrice, or a default
     const currentLtp = liveQuote?.lastPrice || knownInst?.basePrice || 1000;
 
-    // For longer timeframes, reverse-engineer a plausible starting price
-    // (e.g. if 10Y ago price was ~40% of current, simulate growth toward current)
     let startingPrice;
     switch (timeframe) {
       case '1D':  startingPrice = currentLtp * (0.995 + Math.random() * 0.005); break;
@@ -874,17 +957,14 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
       default:    startingPrice = currentLtp * 0.99; break;
     }
 
-    // Simulate beautiful chart data as fallback if IIFL restricts historical access
     let simulatedData = [];
     let currentPrice = startingPrice;
     let currentDate = new Date(start);
     
-    // For 10Y/20Y we need monthly steps so we don't blow up the browser
     if (timeframe === '10Y' || timeframe === '20Y') {
-      currentDate.setDate(1); // align to month start
+      currentDate.setDate(1);
     }
     
-    // Calculate overall drift per step to reach the current LTP by the end
     let totalSteps = 0;
     const tmpDate = new Date(currentDate);
     while (tmpDate <= end) {
@@ -895,28 +975,12 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
     }
     const overallGrowthRate = totalSteps > 1 ? Math.pow(currentLtp / startingPrice, 1 / totalSteps) : 1;
     
-    let stepCount = 0;
     while (currentDate <= end) {
-      stepCount++;
-      // Skip weekends for daily data
       if (timeframe !== '1D' && (currentDate.getDay() === 0 || currentDate.getDay() === 6)) {
         currentDate.setDate(currentDate.getDate() + 1);
         continue;
       }
       
-      // For intraday, only generate bars during trading hours (9:15 AM - 3:30 PM IST = 3:45 - 10:00 UTC)
-      if (timeframe === '1D') {
-        const utcH = currentDate.getUTCHours();
-        const utcM = currentDate.getUTCMinutes();
-        const utcMinutes = utcH * 60 + utcM;
-        // IST trading hours: 9:15-15:30 = UTC 3:45-10:00 = 225-600 minutes
-        if (utcMinutes < 225 || utcMinutes > 600) {
-          currentDate = new Date(currentDate.getTime() + 5 * 60000);
-          continue;
-        }
-      }
-      
-      // Blend: trend-following growth + random noise
       const trendDrift = overallGrowthRate - 1;
       const noise = (Math.random() - 0.48) * (timeframe === '1D' ? 0.004 : 0.035);
       const drift = trendDrift + noise;
@@ -927,21 +991,14 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
       const low = +Math.min(open, close, open * (1 - Math.random() * (timeframe === '1D' ? 0.002 : 0.015))).toFixed(2);
       
       const timeVal = timeframe === '1D' ? Math.floor(currentDate.getTime() / 1000) : currentDate.toISOString().split('T')[0];
-      simulatedData.push({
-        time: timeVal,
-        open: +open.toFixed(2),
-        high,
-        low,
-        close
-      });
+      simulatedData.push({ time: timeVal, open: +open.toFixed(2), high, low, close });
       currentPrice = close;
       
       if (timeframe === '1D') currentDate = new Date(currentDate.getTime() + 5 * 60000);
       else if (timeframe === '1M' || timeframe === '1Y') currentDate.setDate(currentDate.getDate() + 1);
-      else currentDate.setMonth(currentDate.getMonth() + 1); // 1 month steps for 10Y/20Y
+      else currentDate.setMonth(currentDate.getMonth() + 1);
     }
     
-    // Deduplicate and sort fallback as well
     const uniqueMap = new Map();
     simulatedData.forEach(item => uniqueMap.set(item.time, item));
     simulatedData = Array.from(uniqueMap.values()).sort((a, b) => a.time > b.time ? 1 : -1);
