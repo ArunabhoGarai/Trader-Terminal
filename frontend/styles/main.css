@@ -57,3 +57,18 @@ button { cursor: pointer; }
   .watchlist-capacity { margin-right: auto; }.watch-actions .details-label { display: none; }.bottom-dock { padding-bottom: env(safe-area-inset-bottom); }
   .analysis-window { grid-template-rows: 31px 31px 30px minmax(160px, 1fr) 28px; }.analysis-titlebar strong span { display: none; }
 }
+
+/* Drag & Drop */
+.market-table tbody tr.dragging { opacity: 0.5; background-color: #3e4a4d !important; }
+
+/* Chart Modal */
+#chart-window { display: flex; flex-direction: column; width: min(800px, calc(100vw - 80px)); height: min(500px, calc(100vh - 100px)); border: 2px solid #758083; background: #000; z-index: 5; }
+#chart-window.is-hidden { display: none; }
+.chart-timeframes { display: flex; gap: 4px; margin-left: auto; margin-right: 15px; }
+.chart-timeframes button { padding: 2px 8px; font-size: 11px; font-weight: 700; color: #3c4c51; background: transparent; border: 1px solid #5a6669; border-radius: 3px; }
+.chart-timeframes button:hover { background: #3b4648; color: white; }
+.chart-timeframes button.active { background: #1a73e8; border-color: #1a73e8; color: white; }
+#chart-window .analysis-titlebar { background: linear-gradient(#f4f8f9,#bdced2); }
+#close-chart { width:26px; height:22px; margin-right:4px; border:1px solid #8c999c; background:linear-gradient(#fff,#d4e0e2); font-size:17px; }
+.market-table .symbol { cursor: pointer; text-decoration: underline; text-decoration-color: #6d787a; }
+.market-table .symbol:hover { color: #5dbce3; }
