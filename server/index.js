@@ -527,12 +527,49 @@ function advanceSimulation(session) {
   });
 
   session.quotes = nextQuotes;
-    session.marketAnalysis.highs = [...nextQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
-    session.marketAnalysis.lows = [...nextQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
-    session.marketAnalysis.gainers = [...nextQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
-    session.marketAnalysis.losers = [...nextQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
 
-    return updateActionWatch(session, previousQuotes, nextQuotes);
+  // --- MARKET-WIDE SCANNER: simulate quotes for ALL known instruments, not just watchlist ---
+  const watchlistKeys = new Set(nextQuotes.map(q => instrumentKey(q)));
+  // Seed watchlist quotes into scanner map
+  for (const q of nextQuotes) {
+    session.marketScannerQuotes.set(instrumentKey(q), q);
+  }
+  // Simulate all catalog stocks that aren't already in the watchlist
+  for (const inst of STATIC_CATALOG) {
+    const key = instrumentKey(inst);
+    if (watchlistKeys.has(key)) continue; // already covered by watchlist
+    const existing = session.marketScannerQuotes.get(key);
+    if (existing) {
+      // Drift existing scanner quote
+      const d = (Math.random() - 0.48) * 0.004;
+      const ltp = +(existing.lastPrice * (1 + d)).toFixed(2);
+      const cl = existing.close || ltp;
+      const sp = Math.max(ltp * 0.00035, 0.05);
+      session.marketScannerQuotes.set(key, {
+        ...existing,
+        lastPrice: ltp,
+        pctChange: cl > 0 ? +(((ltp - cl) / cl) * 100).toFixed(2) : 0,
+        high: Math.max(existing.high, ltp),
+        low: Math.min(existing.low || ltp, ltp),
+        bestBidPrice: Math.max(0, +(ltp - sp).toFixed(2)),
+        bestAskPrice: +(ltp + sp).toFixed(2),
+        tradedVolume: existing.tradedVolume + Math.round(Math.random() * 1500),
+        updatedAt: new Date().toISOString(),
+      });
+    } else {
+      // First time — create initial simulated quote for this scanner stock
+      session.marketScannerQuotes.set(key, makeSimulationQuote(inst, inst.index || 0));
+    }
+  }
+
+  // Compute market-wide analytics from the FULL scanner map (not just watchlist)
+  const allMarketQuotes = Array.from(session.marketScannerQuotes.values());
+  session.marketAnalysis.highs = [...allMarketQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
+  session.marketAnalysis.lows = [...allMarketQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
+  session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
+  session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
+
+  return updateActionWatch(session, previousQuotes, nextQuotes);
 }
 
 // ---------------------------------------------------------------------------
@@ -815,35 +852,89 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
   } catch (err) {
     console.warn('[CHART API] IIFL Historical Data failed, falling back to simulated data.', err.response?.data || err.message);
     
+    // --- Look up actual LTP for this stock so the chart anchors to real prices ---
+    const instKey = instrumentKey({ exchange, instrumentId });
+    const liveQuote = session.quotes.find(q => instrumentKey(q) === instKey) || session.marketScannerQuotes.get(instKey);
+    const knownInst = knownInstruments.get(instKey);
+    // Use the actual current price, or fall back to the instrument's basePrice, or a default
+    const currentLtp = liveQuote?.lastPrice || knownInst?.basePrice || 1000;
+
+    // For longer timeframes, reverse-engineer a plausible starting price
+    // (e.g. if 10Y ago price was ~40% of current, simulate growth toward current)
+    let startingPrice;
+    switch (timeframe) {
+      case '1D':  startingPrice = currentLtp * (0.995 + Math.random() * 0.005); break;
+      case '1M':  startingPrice = currentLtp * (0.90 + Math.random() * 0.05); break;
+      case '1Y':  startingPrice = currentLtp * (0.65 + Math.random() * 0.15); break;
+      case '10Y': startingPrice = currentLtp * (0.15 + Math.random() * 0.15); break;
+      case '20Y': startingPrice = currentLtp * (0.05 + Math.random() * 0.10); break;
+      default:    startingPrice = currentLtp * 0.99; break;
+    }
+
     // Simulate beautiful chart data as fallback if IIFL restricts historical access
     let simulatedData = [];
-    let currentPrice = 1000 + (Math.random() * 500);
+    let currentPrice = startingPrice;
     let currentDate = new Date(start);
-    const step = timeframe === '1D' ? 5 * 60000 : (timeframe === '1M' ? 24 * 60 * 60000 : 7 * 24 * 60 * 60000); 
     
-    // For 20Y we need weekly/monthly steps so we don't blow up the browser
+    // For 10Y/20Y we need monthly steps so we don't blow up the browser
     if (timeframe === '10Y' || timeframe === '20Y') {
       currentDate.setDate(1); // align to month start
     }
     
-    while(currentDate <= end) {
+    // Calculate overall drift per step to reach the current LTP by the end
+    let totalSteps = 0;
+    const tmpDate = new Date(currentDate);
+    while (tmpDate <= end) {
+      totalSteps++;
+      if (timeframe === '1D') tmpDate.setMinutes(tmpDate.getMinutes() + 5);
+      else if (timeframe === '1M' || timeframe === '1Y') tmpDate.setDate(tmpDate.getDate() + 1);
+      else tmpDate.setMonth(tmpDate.getMonth() + 1);
+    }
+    const overallGrowthRate = totalSteps > 1 ? Math.pow(currentLtp / startingPrice, 1 / totalSteps) : 1;
+    
+    let stepCount = 0;
+    while (currentDate <= end) {
+      stepCount++;
+      // Skip weekends for daily data
+      if (timeframe !== '1D' && (currentDate.getDay() === 0 || currentDate.getDay() === 6)) {
+        currentDate.setDate(currentDate.getDate() + 1);
+        continue;
+      }
+      
+      // For intraday, only generate bars during trading hours (9:15 AM - 3:30 PM IST = 3:45 - 10:00 UTC)
+      if (timeframe === '1D') {
+        const utcH = currentDate.getUTCHours();
+        const utcM = currentDate.getUTCMinutes();
+        const utcMinutes = utcH * 60 + utcM;
+        // IST trading hours: 9:15-15:30 = UTC 3:45-10:00 = 225-600 minutes
+        if (utcMinutes < 225 || utcMinutes > 600) {
+          currentDate = new Date(currentDate.getTime() + 5 * 60000);
+          continue;
+        }
+      }
+      
+      // Blend: trend-following growth + random noise
+      const trendDrift = overallGrowthRate - 1;
+      const noise = (Math.random() - 0.48) * (timeframe === '1D' ? 0.004 : 0.035);
+      const drift = trendDrift + noise;
+      
       const open = currentPrice;
-      const close = currentPrice * (1 + (Math.random() - 0.48) * (timeframe === '1D' ? 0.005 : 0.05)); // upward bias
-      const high = Math.max(open, close) * (1 + Math.random() * (timeframe === '1D' ? 0.002 : 0.02));
-      const low = Math.min(open, close) * (1 - Math.random() * (timeframe === '1D' ? 0.002 : 0.02));
+      const close = +(currentPrice * (1 + drift)).toFixed(2);
+      const high = +Math.max(open, close, open * (1 + Math.random() * (timeframe === '1D' ? 0.002 : 0.015))).toFixed(2);
+      const low = +Math.min(open, close, open * (1 - Math.random() * (timeframe === '1D' ? 0.002 : 0.015))).toFixed(2);
       
       const timeVal = timeframe === '1D' ? Math.floor(currentDate.getTime() / 1000) : currentDate.toISOString().split('T')[0];
       simulatedData.push({
         time: timeVal,
         open: +open.toFixed(2),
-        high: +high.toFixed(2),
-        low: +low.toFixed(2),
-        close: +close.toFixed(2)
+        high,
+        low,
+        close
       });
       currentPrice = close;
       
-      if (timeframe === '1D') currentDate = new Date(currentDate.getTime() + step);
-      else if (timeframe === '1M' || timeframe === '1Y') currentDate = new Date(currentDate.getTime() + 24 * 60 * 60000); // 1 day steps
+      if (timeframe === '1D') currentDate = new Date(currentDate.getTime() + 5 * 60000);
+      else if (timeframe === '1M' || timeframe === '1Y') currentDate.setDate(currentDate.getDate() + 1);
       else currentDate.setMonth(currentDate.getMonth() + 1); // 1 month steps for 10Y/20Y
     }
     
