@@ -166,11 +166,18 @@ function quoteFromPayload(raw, fallback, position) {
   const pctChange = close ? ((ltp - close) / close) * 100 : 0;
   
   // Extract Bid/Ask handling nested structures from IIFL OpenAPI
-  const bidPrice = extract(raw, ['bestBidPrice', 'BuyRate1', 'buyRate1', 'buyPrice1', 'BuyPrice1', 'BidRate', 'bidRate', 'BuyPrice', 'BidPrice'], raw.Bids?.[0]?.Price ?? raw.bids?.[0]?.price ?? fallback.bestBidPrice);
-  const bidQty = extract(raw, ['bestBidQty', 'bestBidQuantity', 'BuyQty1', 'buyQty1', 'BidQty', 'bidQty', 'BuyQty', 'TotalBuyQty'], raw.Bids?.[0]?.Size ?? raw.bids?.[0]?.quantity ?? raw.Bids?.[0]?.Quantity ?? fallback.bestBidQty);
+  let bidPrice = extract(raw, ['bestBidPrice', 'BuyRate', 'buyRate', 'BuyRate1', 'buyRate1', 'buyPrice', 'buyPrice1', 'BuyPrice1', 'BidRate', 'bidRate', 'BuyPrice', 'BidPrice'], raw.Bids?.[0]?.Price ?? raw.bids?.[0]?.price ?? fallback.bestBidPrice);
+  let bidQty = extract(raw, ['bestBidQty', 'bestBidQuantity', 'BuyQty', 'buyQty', 'BuyQty1', 'buyQty1', 'BidQty', 'bidQty', 'TotalBuyQty'], raw.Bids?.[0]?.Size ?? raw.bids?.[0]?.quantity ?? raw.Bids?.[0]?.Quantity ?? fallback.bestBidQty);
   
-  const askPrice = extract(raw, ['bestAskPrice', 'bestAskRate', 'SellRate1', 'sellRate1', 'sellPrice1', 'SellPrice1', 'AskRate', 'askRate', 'SellPrice', 'OfferRate', 'AskPrice'], raw.Asks?.[0]?.Price ?? raw.asks?.[0]?.price ?? fallback.bestAskPrice);
-  const askQty = extract(raw, ['bestAskQty', 'bestAskQuantity', 'SellQty1', 'sellQty1', 'AskQty', 'askQty', 'SellQty', 'OfferQty', 'TotalSellQty'], raw.Asks?.[0]?.Size ?? raw.asks?.[0]?.quantity ?? raw.Asks?.[0]?.Quantity ?? fallback.bestAskQty);
+  let askPrice = extract(raw, ['bestAskPrice', 'bestAskRate', 'SellRate', 'sellRate', 'SellRate1', 'sellRate1', 'sellPrice', 'sellPrice1', 'SellPrice1', 'AskRate', 'askRate', 'SellPrice', 'OfferRate', 'AskPrice'], raw.Asks?.[0]?.Price ?? raw.asks?.[0]?.price ?? fallback.bestAskPrice);
+  let askQty = extract(raw, ['bestAskQty', 'bestAskQuantity', 'SellQty', 'sellQty', 'SellQty1', 'sellQty1', 'AskQty', 'askQty', 'OfferQty', 'TotalSellQty'], raw.Asks?.[0]?.Size ?? raw.asks?.[0]?.quantity ?? raw.Asks?.[0]?.Quantity ?? fallback.bestAskQty);
+
+  // SANITY CHECK: If depth rates deviate by > 5% from LTP, they are likely stale fallbacks or bad data. Recalculate them synthetically around the live LTP.
+  if (ltp > 0) {
+    const spread = Math.max(ltp * 0.00035, 0.05);
+    if (Math.abs(bidPrice - ltp) / ltp > 0.05) bidPrice = +(ltp - spread).toFixed(2);
+    if (Math.abs(askPrice - ltp) / ltp > 0.05) askPrice = +(ltp + spread).toFixed(2);
+  }
 
   return {
     ...fallback,
