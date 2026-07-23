@@ -38,8 +38,8 @@ let activeChartQuote = null;
 let activeTimeframe = '1D';
 
 const el = (id) => document.getElementById(id);
-const fmt = (value, digits = 2) => Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
-const qty = (value) => Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+const fmt = (value, digits = 2) => (!value || value <= 0) ? '-' : Number(value).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const qty = (value) => (!value || value <= 0) ? '-' : Number(value).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const keyFor = (quote) => `${quote.exchange || 'NSEEQ'}:${quote.instrumentId || quote.id}`;
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 
@@ -53,8 +53,10 @@ function quoteFromPrice(quote, index = 0) {
     symbol: quote.symbol || quote.tradingSymbol || `SCRIP${index + 1}`,
     exchange: quote.exchange || 'NSEEQ', segment: quote.segment || ((quote.exchange || '').endsWith('FO') ? 'F&O' : 'Equity'),
     lastPrice, pctChange, pcClose,
-    bidPrice: Number(quote.bestBidPrice ?? lastPrice - spread), bidQty: Number(quote.bestBidQty ?? quote.bestBidQuantity ?? 100 + index * 17),
-    offerPrice: Number(quote.bestAskPrice ?? lastPrice + spread), offerQty: Number(quote.bestAskQty ?? quote.bestAskQuantity ?? 120 + index * 19),
+    bidPrice: quote.bestBidPrice === 0 ? 0 : Number(quote.bestBidPrice ?? Math.max(0, lastPrice - spread)), 
+    bidQty: Number(quote.bestBidQty ?? quote.bestBidQuantity ?? 100 + index * 17),
+    offerPrice: quote.bestAskPrice === 0 ? 0 : Number(quote.bestAskPrice ?? lastPrice + spread), 
+    offerQty: Number(quote.bestAskQty ?? quote.bestAskQuantity ?? 120 + index * 19),
     open: Number(quote.open ?? pcClose * .996), high: Number(quote.high ?? lastPrice * 1.013), low: Number(quote.low ?? lastPrice * .988),
     totalQty: Number(quote.tradedVolume ?? quote.totalQty ?? 80000 + index * 11457),
     week52High: Number(quote.week52High ?? lastPrice * (1.02 + (index % 3) * .025)),
