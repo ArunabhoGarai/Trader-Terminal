@@ -15,8 +15,9 @@ const state = {
   selectedKey: null,
   analysisTab: 'action',
   session: { mode: 'SIMULATION' },
-  watchlist: { count: DEMO_QUOTES.length, max: 20, items: [] },
+  watchlist: { count: DEMO_QUOTES.length, max: 400, items: [] },
   actionWatch: [],
+  marketAnalysis: { highs: [], lows: [], gainers: [], losers: [] },
   filters: { exchange: 'ALL', segment: 'ALL' },
   suggestions: [],
   selectedSuggestion: null,
@@ -30,6 +31,11 @@ const state = {
   // Action watch alert flash tracking
   lastAlertCount: 0,
 };
+
+let chartInstance = null;
+let candleSeries = null;
+let activeChartQuote = null;
+let activeTimeframe = '1D';
 
 const el = (id) => document.getElementById(id);
 const fmt = (value, digits = 2) => Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -81,7 +87,7 @@ function renderMarket() {
     const move = quote.pctChange >= 0 ? 'up' : 'down';
     const rateClass = Math.abs(quote.pctChange) > .25 ? `rate-${move}` : 'plain-rate';
     const selected = keyFor(quote) === state.selectedKey ? ' selected' : '';
-    return `<tr class="${selected}" data-key="${escapeHtml(keyFor(quote))}">
+    return `<tr class="${selected}" data-key="${escapeHtml(keyFor(quote))}" draggable="true">
       <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${quote.pctChange >= 0 ? '▲' : '▼'}</td><td></td>
       <td class="symbol">${escapeHtml(quote.symbol)}</td><td class="${rateClass}">${fmt(quote.lastPrice)}</td><td class="${move === 'up' ? 'positive-text' : 'negative-text'}">${quote.pctChange.toFixed(2)}</td>
       <td>${qty(quote.bidQty)}</td><td>${fmt(quote.bidPrice)}</td><td>${qty(quote.offerQty)}</td><td>${fmt(quote.offerPrice)}</td>
@@ -158,28 +164,28 @@ function analysisRows() {
       return exchangeAllowed && typeAllowed && triggerAllowed;
     }).slice(0, 200);
   }
-  let rows = state.quotes.filter((quote) => {
+  const filterRows = (sourceRows) => sourceRows.filter((quote) => {
     const exchange = String(quote.exchange || '').toUpperCase();
     const isFutureOption = (quote.segment || '').toUpperCase() === 'F&O' || exchange.endsWith('FO');
     const exchangeAllowed = exchange.startsWith('NSE') ? options.nse : exchange.startsWith('BSE') ? options.bse : false;
     return exchangeAllowed && (isFutureOption ? options.fo : options.cash);
   });
+
   if (state.analysisTab === 'high') {
     if (!options.high) return [];
-    rows = rows.filter((quote) => highDistance(quote) <= 5).sort((a, b) => highDistance(a) - highDistance(b));
+    return filterRows(state.marketAnalysis?.highs || []).slice(0, 15);
   } else if (state.analysisTab === 'low') {
     if (!options.low) return [];
-    rows = rows.filter((quote) => lowDistance(quote) <= 5).sort((a, b) => lowDistance(a) - lowDistance(b));
+    return filterRows(state.marketAnalysis?.lows || []).slice(0, 15);
   } else if (state.analysisTab === 'gainers') {
-    rows = rows.filter((quote) => quote.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange);
+    return filterRows(state.marketAnalysis?.gainers || []).slice(0, 15);
   } else if (state.analysisTab === 'losers') {
-    rows = rows.filter((quote) => quote.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange);
+    return filterRows(state.marketAnalysis?.losers || []).slice(0, 15);
   } else if (state.analysisTab === 'quantity' || state.analysisTab === 'traded') {
-    rows.sort((a, b) => b.totalQty - a.totalQty);
+    return filterRows(state.quotes).sort((a, b) => b.totalQty - a.totalQty).slice(0, 12);
   } else {
-    rows = rows.filter((quote) => (options.high && highDistance(quote) <= 5) || (options.low && lowDistance(quote) <= 5) || Math.abs(quote.pctChange) >= 1).sort((a, b) => Math.abs(b.pctChange) - Math.abs(a.pctChange));
+    return filterRows(state.quotes).filter((quote) => (options.high && highDistance(quote) <= 5) || (options.low && lowDistance(quote) <= 5) || Math.abs(quote.pctChange) >= 1).sort((a, b) => Math.abs(b.pctChange) - Math.abs(a.pctChange)).slice(0, 12);
   }
-  return rows.slice(0, 12);
 }
 
 function analysisStatus(quote) {
@@ -266,6 +272,7 @@ function applyTerminalPayload(data) {
   if (Array.isArray(data.quotes)) state.quotes = data.quotes.map(quoteFromPrice);
   if (data.watchlist) state.watchlist = data.watchlist;
   if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
+  if (data.marketAnalysis) state.marketAnalysis = data.marketAnalysis;
   setSession(data.session);
   if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
   renderMarket();
@@ -339,6 +346,7 @@ function handleWebSocketMessage(data) {
       if (Array.isArray(data.quotes)) state.quotes = data.quotes.map(quoteFromPrice);
       if (data.watchlist) state.watchlist = data.watchlist;
       if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
+      if (data.marketAnalysis) state.marketAnalysis = data.marketAnalysis;
       if (data.session) setSession(data.session);
 
       // Check for new action watch events and flash
@@ -391,6 +399,69 @@ async function loadWatchlist() {
     if (!response.ok) throw new Error('Unable to load watchlist');
     applyTerminalPayload(await response.json());
   } catch (_) { renderMarket(); }
+}
+
+async function reorderWatchlist(keys) {
+  try {
+    const res = await fetch('/api/watchlist/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys }),
+    });
+    if (res.ok) {
+      applyTerminalPayload(await res.json());
+    }
+  } catch (err) {
+    console.error('Failed to reorder', err);
+  }
+}
+
+async function openChart(key) {
+  const quote = state.quotes.find(q => keyFor(q) === key) || state.marketAnalysis?.highs?.find(q => keyFor(q) === key);
+  if (!quote) return;
+  activeChartQuote = quote;
+  el('chart-title').textContent = `${quote.symbol} - Historical Data`;
+  el('chart-window').classList.remove('is-hidden');
+  
+  if (!chartInstance) {
+    chartInstance = LightweightCharts.createChart(el('chart-container'), {
+      layout: { background: { color: '#000' }, textColor: '#d1d4dc' },
+      grid: { vertLines: { color: '#2b2b43' }, horzLines: { color: '#2b2b43' } },
+      timeScale: { timeVisible: true, secondsVisible: false }
+    });
+    candleSeries = chartInstance.addCandlestickSeries({
+      upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+      wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+    });
+    
+    new ResizeObserver(entries => {
+      if (entries.length === 0 || entries[0].target !== el('chart-container')) return;
+      const newRect = entries[0].contentRect;
+      chartInstance.applyOptions({ width: newRect.width, height: newRect.height });
+    }).observe(el('chart-container'));
+  }
+  
+  loadChartData();
+}
+
+async function loadChartData() {
+  if (!activeChartQuote) return;
+  el('chart-loader').style.display = 'block';
+  try {
+    const res = await fetch(`/api/chart/${activeChartQuote.exchange}/${activeChartQuote.instrumentId}?timeframe=${activeTimeframe}`);
+    const result = await res.json();
+    if (result.success && result.data) {
+      candleSeries.setData(result.data);
+      chartInstance.timeScale().fitContent();
+    } else {
+      toast('Failed to load chart data');
+    }
+  } catch (err) {
+    console.error(err);
+    toast('Error loading chart');
+  } finally {
+    el('chart-loader').style.display = 'none';
+  }
 }
 
 async function refreshQuotes(silent = false) {
@@ -455,6 +526,14 @@ function bindEvents() {
   el('market-body').addEventListener('click', (event) => {
     const remove = event.target.closest('.remove-scrip');
     if (remove) { removeScrip(remove.dataset.key); return; }
+    
+    const symbolCell = event.target.closest('.symbol');
+    if (symbolCell) {
+      const row = event.target.closest('tr[data-key]');
+      if (row) openChart(row.dataset.key);
+      return;
+    }
+
     const row = event.target.closest('tr[data-key]');
     if (row) { state.selectedKey = row.dataset.key; renderMarket(); }
   });
@@ -469,6 +548,54 @@ function bindEvents() {
   document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { state.analysisTab = button.dataset.analysisTab; document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); renderAnalysis(); }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAnalysis(); if (event.key === 'F7') { event.preventDefault(); showAnalysis(); } });
+  
+  // Drag and Drop ordering
+  const tbody = el('market-body');
+  let dragKey = null;
+  
+  tbody.addEventListener('dragstart', (e) => {
+    const tr = e.target.closest('tr');
+    if (!tr) return;
+    dragKey = tr.dataset.key;
+    e.dataTransfer.effectAllowed = 'move';
+    tr.classList.add('dragging');
+  });
+  
+  tbody.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const tr = e.target.closest('tr');
+    const dragging = document.querySelector('.dragging');
+    if (tr && dragging && tr.dataset.key !== dragKey) {
+      const rect = tr.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (e.clientY < mid) {
+        tr.parentNode.insertBefore(dragging, tr);
+      } else {
+        tr.parentNode.insertBefore(dragging, tr.nextSibling);
+      }
+    }
+  });
+  
+  tbody.addEventListener('dragend', (e) => {
+    const tr = e.target.closest('tr');
+    if (tr) tr.classList.remove('dragging');
+    dragKey = null;
+    
+    // Save new order
+    const newKeys = Array.from(tbody.querySelectorAll('tr[data-key]')).map(row => row.dataset.key);
+    if (newKeys.length > 0) reorderWatchlist(newKeys);
+  });
+  
+  el('close-chart').addEventListener('click', () => { el('chart-window').classList.add('is-hidden'); activeChartQuote = null; });
+  document.querySelectorAll('.chart-timeframes button').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      document.querySelectorAll('.chart-timeframes button').forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      activeTimeframe = e.target.dataset.tf;
+      loadChartData();
+    });
+  });
 }
 
 async function initialize() {
