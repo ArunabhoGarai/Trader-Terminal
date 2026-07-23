@@ -1,1022 +1,649 @@
-/**
- * IIFL Markets API gateway for the trader-terminal UI.
- *
- * Credentials and access tokens remain server-side. Each browser receives an
- * isolated in-memory session containing its own active watchlist and token.
- *
- * Real-time updates are pushed to the browser via WebSocket.
- */
 'use strict';
 
-const crypto = require('crypto');
-const fs = require('fs');
-const http = require('http');
-const path = require('path');
-const axios = require('axios');
-const express = require('express');
-const { WebSocketServer } = require('ws');
+const DEMO_QUOTES = [
+  ['ABB', 687.55, .44], ['ACC', 1345.15, 1.43], ['SBILIFE', 3160.55, .51],
+  ['BHEL', 832.05, -1.11], ['BPCL', 285.60, -.83], ['RELIANCE', 561.00, 1.82],
+  ['GRASIM', 96.70, -2.85], ['AMBUJACEM', 313.90, .21], ['HDFC', 1299.00, .32],
+  ['HEROMOTOCO', 160.30, .06], ['HINDALCO', 306.00, .35], ['HINDUNILVR', 418.00, 1.01],
+  ['INFY', 669.00, -.21], ['ITC', 65.00, 2.14], ['M&M', 720.00, 1.08],
+  ['ONGC', 720.00, .82], ['RANBAXY', 724.00, .27], ['RELCAPITAL', 706.00, -.31],
+  ['TCS', 3802.40, .53], ['ICICIBANK', 1270.70, -.47],
+].map(([symbol, lastPrice, pctChange], index) => quoteFromPrice({ symbol, lastPrice, pctChange, id: String(1000 + index) }, index));
 
-loadDotEnv(path.join(__dirname, '.env'));
-
-const CONFIG = {
-  port: Number(process.env.PORT || 3001),
-  apiBaseUrl: (process.env.IIFL_API_BASE_URL || 'https://api.iiflcapital.com/v1').replace(/\/$/, ''),
-  marketsUrl: (process.env.IIFL_MARKETS_URL || 'https://markets.iiflcapital.com').replace(/\/$/, ''),
-  appKey: process.env.IIFL_APP_KEY || '',
-  appSecret: process.env.IIFL_APP_SECRET || '',
-  redirectUri: process.env.IIFL_REDIRECT_URI || `http://localhost:${process.env.PORT || 3001}/auth/callback`,
-  quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 2500), 1000),
+const state = {
+  quotes: DEMO_QUOTES,
+  selectedKey: null,
+  analysisTab: 'action',
+  session: { mode: 'SIMULATION' },
+  watchlist: { count: DEMO_QUOTES.length, max: 400, items: [] },
+  actionWatch: [],
+  marketAnalysis: { highs: [], lows: [], gainers: [], losers: [] },
+  filters: { exchange: 'ALL', segment: 'ALL' },
+  suggestions: [],
+  selectedSuggestion: null,
+  searchTimer: null,
+  searchRequest: 0,
+  // WebSocket state
+  ws: null,
+  wsReconnectTimer: null,
+  wsReconnectDelay: 1000,
+  wsConnected: false,
+  // Action watch alert flash tracking
+  lastAlertCount: 0,
 };
 
-const MAX_WATCHLIST_SIZE = 400;
-const ACTION_WATCH_LIMIT = 200;
-const SESSION_COOKIE = 'tt_session';
-const CONTRACT_CACHE_MS = 30 * 60 * 1000;
+let chartInstance = null;
+let candleSeries = null;
+let activeChartQuote = null;
+let activeTimeframe = '1D';
 
-// ---------------------------------------------------------------------------
-// Built-in NSE Equity symbols — keeps the terminal useful immediately
-// ---------------------------------------------------------------------------
-const DEFAULT_SPECS = [
-  ['ABB', '13', 687.55], ['ACC', '22', 1345.15], ['SBILIFE', '21808', 3160.55],
-  ['BHEL', '438', 832.05], ['BPCL', '526', 285.60], ['RELIANCE', '2885', 561.00],
-  ['GRASIM', '1232', 96.70], ['AMBUJACEM', '1270', 313.90], ['HDFCBANK', '1333', 1299.00],
-  ['HEROMOTOCO', '1348', 160.30], ['HINDALCO', '1363', 306.00], ['HINDUNILVR', '1394', 418.00],
-  ['INFY', '1594', 669.00], ['ITC', '1660', 65.00], ['M&M', '2031', 720.00],
-  ['ONGC', '2475', 720.00], ['TCS', '11536', 3802.40], ['ICICIBANK', '4963', 1270.70],
-  ['TATAMOTORS', '3456', 760.15], ['SUNPHARMA', '3351', 1680.80],
-];
+const el = (id) => document.getElementById(id);
+const fmt = (value, digits = 2) => (!value || value <= 0) ? '-' : Number(value).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const qty = (value) => (!value || value <= 0) ? '-' : Number(value).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+const keyFor = (quote) => `${quote.exchange || 'NSEEQ'}:${quote.instrumentId || quote.id}`;
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 
-const EXTRA_NSE_SPECS = [
-  ['KOTAKBANK', '1922', 1920], ['LT', '11483', 3580], ['AXISBANK', '5900', 1180],
-  ['ASIANPAINT', '236', 2350], ['MARUTI', '10999', 12800], ['BAJFINANCE', '317', 7200],
-  ['TITAN', '3506', 3650], ['WIPRO', '3787', 545], ['HCLTECH', '7229', 1650],
-  ['ULTRACEMCO', '11532', 11600], ['NESTLEIND', '17963', 2200], ['POWERGRID', '14977', 342],
-  ['NTPC', '11630', 375], ['COALINDIA', '20374', 438], ['ADANIENT', '25', 2600],
-  ['ADANIPORTS', '15083', 1380], ['JSWSTEEL', '11723', 945], ['TATASTEEL', '3499', 153],
-  ['DRREDDY', '881', 6250], ['CIPLA', '694', 1520], ['DIVISLAB', '10940', 4800],
-  ['BAJAJFINSV', '16675', 1850], ['INDUSINDBK', '5258', 1560], ['TECHM', '13538', 1680],
-  ['BRITANNIA', '547', 5200], ['EICHERMOT', '910', 4800], ['APOLLOHOSP', '157', 6900],
-  ['HDFCLIFE', '467', 680], ['HDFCAMC', '4306', 3950], ['TATACONSUM', '3432', 995],
-  ['UPL', '2142', 540], ['SHREECEM', '3103', 28500], ['BAJAJ-AUTO', '16669', 9200],
-];
-
-function makeInstrument([symbol, instrumentId, basePrice], index) {
-  return { symbol, instrumentId: String(instrumentId), exchange: 'NSEEQ', segment: 'Equity', basePrice, index };
-}
-
-const DEFAULT_WATCHLIST = DEFAULT_SPECS.map(makeInstrument);
-const STATIC_CATALOG = [...DEFAULT_SPECS, ...EXTRA_NSE_SPECS].map(makeInstrument);
-const knownInstruments = new Map(STATIC_CATALOG.map((instrument) => [instrumentKey(instrument), instrument]));
-const contractCache = new Map();
-const browserSessions = new Map();
-
-const app = express();
-app.disable('x-powered-by');
-app.use(express.json({ limit: '32kb' }));
-app.use(express.static(path.join(__dirname, '..', 'frontend'), { index: 'index.html' }));
-
-// ---------------------------------------------------------------------------
-// Utility helpers
-// ---------------------------------------------------------------------------
-function loadDotEnv(filePath) {
-  if (!fs.existsSync(filePath)) return;
-  for (const rawLine of fs.readFileSync(filePath, 'utf8').split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    const equalAt = line.indexOf('=');
-    if (equalAt < 1) continue;
-    const key = line.slice(0, equalAt).trim();
-    let value = line.slice(equalAt + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
-    if (!process.env[key]) process.env[key] = value;
-  }
-}
-
-function configured() {
-  return Boolean(CONFIG.appKey && CONFIG.appSecret && CONFIG.redirectUri);
-}
-
-function instrumentKey(instrument) {
-  return `${String(instrument.exchange).toUpperCase()}:${String(instrument.instrumentId)}`;
-}
-
-function number(value, fallback = 0) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function exchangeCode(exchange, segment) {
-  const normalizedExchange = String(exchange || 'NSE').toUpperCase();
-  const normalizedSegment = String(segment || 'Equity').toUpperCase();
-  if (normalizedExchange === 'NSEEQ' || normalizedExchange === 'BSEEQ' || normalizedExchange === 'NSEFO' || normalizedExchange === 'BSEFO') return normalizedExchange;
-  const prefix = normalizedExchange === 'BSE' ? 'BSE' : 'NSE';
-  return normalizedSegment === 'F&O' || normalizedSegment === 'FO' || normalizedSegment === 'FNO' ? `${prefix}FO` : `${prefix}EQ`;
-}
-
-function segmentLabel(code) {
-  return code.endsWith('FO') ? 'F&O' : 'Equity';
-}
-
-function publicInstrument(instrument) {
-  return { instrumentId: String(instrument.instrumentId), symbol: instrument.symbol, exchange: instrument.exchange, segment: instrument.segment || segmentLabel(instrument.exchange), displayName: instrument.displayName || instrument.symbol };
-}
-
-function indiaTradingDate() {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-}
-
-function indiaTimeString() {
-  return new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date());
-}
-
-// ---------------------------------------------------------------------------
-// Quote builders
-// ---------------------------------------------------------------------------
-function makeSimulationQuote(instrument, position = 0) {
-  const direction = [-.44, 1.43, .51, -1.11, -.83, 1.82, -2.85, .21, .32, .06, .35, 1.01, -.21, 2.14, 1.08, .82, .53, -.47, .16, .72][position % 20] || .1;
-  const basePrice = number(instrument.basePrice, 100 + ((position + 1) * 41));
-  const close = basePrice / (1 + direction / 100);
-  const spread = Math.max(basePrice * .00035, .05);
-  const high = Math.max(basePrice, close * (1 + ((position % 5) - 2) / 1000), basePrice + spread) * 1.001;
-  const low = Math.max(0, Math.min(basePrice, close * (1 + ((position % 5) - 2) / 1000), basePrice - spread)) * 0.999;
+function quoteFromPrice(quote, index = 0) {
+  const lastPrice = Number(quote.lastPrice ?? quote.ltp ?? 0);
+  const pctChange = Number(quote.pctChange ?? quote.changePercent ?? 0);
+  const pcClose = Number((quote.close ?? quote.previousClose ?? (lastPrice / (1 + pctChange / 100))) || lastPrice);
+  const spread = Math.max(lastPrice * .001, .05);
   return {
-    instrumentId: String(instrument.instrumentId), symbol: instrument.symbol, exchange: instrument.exchange, segment: instrument.segment || segmentLabel(instrument.exchange),
-    lastPrice: basePrice, pctChange: direction, close,
-    open: close * (1 + ((position % 5) - 2) / 1000), high,
-    low, bestBidPrice: Math.max(0, basePrice - spread),
-    bestBidQty: 80 + position * 53, bestAskPrice: basePrice + spread,
-    bestAskQty: 100 + position * 61, tradedVolume: 70000 + position * 12431,
-    week52High: basePrice * (1.035 + (position % 3) * .02),
-    week52Low: basePrice * (.70 + (position % 4) * .025), updatedAt: new Date().toISOString(),
+    id: quote.id || quote.instrumentId || String(index), instrumentId: String(quote.instrumentId || quote.id || index),
+    symbol: quote.symbol || quote.tradingSymbol || `SCRIP${index + 1}`,
+    exchange: quote.exchange || 'NSEEQ', segment: quote.segment || ((quote.exchange || '').endsWith('FO') ? 'F&O' : 'Equity'),
+    lastPrice, pctChange, pcClose,
+    bidPrice: quote.bestBidPrice === 0 ? 0 : Number(quote.bestBidPrice ?? Math.max(0, lastPrice - spread)), 
+    bidQty: Number(quote.bestBidQty ?? quote.bestBidQuantity ?? 100 + index * 17),
+    offerPrice: quote.bestAskPrice === 0 ? 0 : Number(quote.bestAskPrice ?? lastPrice + spread), 
+    offerQty: Number(quote.bestAskQty ?? quote.bestAskQuantity ?? 120 + index * 19),
+    open: Number(quote.open ?? pcClose * .996), high: Number(quote.high ?? lastPrice * 1.013), low: Number(quote.low ?? lastPrice * .988),
+    totalQty: Number(quote.tradedVolume ?? quote.totalQty ?? 80000 + index * 11457),
+    week52High: Number(quote.week52High ?? lastPrice * (1.02 + (index % 3) * .025)),
+    week52Low: Number(quote.week52Low ?? lastPrice * (.72 - (index % 3) * .02)),
+    updatedAt: quote.updatedAt || new Date().toISOString(),
   };
 }
 
-function extract(obj, keys, fallback) {
-  for (const k of keys) {
-    if (obj[k] !== undefined && obj[k] !== null && obj[k] !== 0 && obj[k] !== '0' && obj[k] !== '') {
-      return Number(obj[k]);
-    }
-  }
-  return fallback;
+function matchesFilters(quote) {
+  const exchange = String(quote.exchange || '').toUpperCase();
+  const segment = quote.segment || (exchange.endsWith('FO') ? 'F&O' : 'Equity');
+  return (state.filters.exchange === 'ALL' || exchange.startsWith(state.filters.exchange))
+    && (state.filters.segment === 'ALL' || segment === state.filters.segment);
 }
 
-function quoteFromPayload(raw, fallback, position) {
-  const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP'], fallback.lastPrice);
-  const close = extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice'], fallback.close);
-  const pctChange = close ? ((ltp - close) / close) * 100 : 0;
-  
-  // Extract Bid/Ask handling nested structures from IIFL OpenAPI
-  let bidPrice = extract(raw, ['bestBidPrice', 'BuyRate', 'buyRate', 'BuyRate1', 'buyRate1', 'buyPrice', 'buyPrice1', 'BuyPrice1', 'BidRate', 'bidRate', 'BuyPrice', 'BidPrice'], raw.Bids?.[0]?.Price ?? raw.bids?.[0]?.price ?? fallback.bestBidPrice);
-  let bidQty = extract(raw, ['bestBidQty', 'bestBidQuantity', 'BuyQty', 'buyQty', 'BuyQty1', 'buyQty1', 'BidQty', 'bidQty', 'TotalBuyQty'], raw.Bids?.[0]?.Size ?? raw.bids?.[0]?.quantity ?? raw.Bids?.[0]?.Quantity ?? fallback.bestBidQty);
-  
-  let askPrice = extract(raw, ['bestAskPrice', 'bestAskRate', 'SellRate', 'sellRate', 'SellRate1', 'sellRate1', 'sellPrice', 'sellPrice1', 'SellPrice1', 'AskRate', 'askRate', 'SellPrice', 'OfferRate', 'AskPrice'], raw.Asks?.[0]?.Price ?? raw.asks?.[0]?.price ?? fallback.bestAskPrice);
-  let askQty = extract(raw, ['bestAskQty', 'bestAskQuantity', 'SellQty', 'sellQty', 'SellQty1', 'sellQty1', 'AskQty', 'askQty', 'OfferQty', 'TotalSellQty'], raw.Asks?.[0]?.Size ?? raw.asks?.[0]?.quantity ?? raw.Asks?.[0]?.Quantity ?? fallback.bestAskQty);
-
-  // SANITY CHECK: If depth rates deviate by > 5% from LTP, they are likely stale fallbacks or bad data. Recalculate them synthetically around the live LTP.
-  if (ltp > 0) {
-    const spread = Math.max(ltp * 0.00035, 0.05);
-    if (Math.abs(bidPrice - ltp) / ltp > 0.05) bidPrice = +(ltp - spread).toFixed(2);
-    if (Math.abs(askPrice - ltp) / ltp > 0.05) askPrice = +(ltp + spread).toFixed(2);
-  }
-
-  return {
-    ...fallback,
-    instrumentId: String(raw.instrumentId ?? raw.token ?? raw.ExchangeInstrumentID ?? raw.ExchangeInstrumentId ?? fallback.instrumentId),
-    symbol: raw.symbol ?? raw.tradingSymbol ?? raw.TradingSymbol ?? fallback.symbol,
-    exchange: raw.exchange ?? raw.ExchangeSegment ?? fallback.exchange,
-    lastPrice: ltp,
-    pctChange: extract(raw, ['pctChange', 'changePercent', 'PercentChange'], pctChange),
-    close,
-    open: extract(raw, ['open', 'Open', 'OpenPrice'], fallback.open), 
-    high: extract(raw, ['high', 'High', 'HighPrice'], fallback.high), 
-    low: extract(raw, ['low', 'Low', 'LowPrice'], fallback.low),
-    bestBidPrice: bidPrice, 
-    bestBidQty: bidQty,
-    bestAskPrice: askPrice, 
-    bestAskQty: askQty,
-    tradedVolume: extract(raw, ['tradedVolume', 'totalQty', 'totalTradedQuantity', 'TotalQty', 'Volume', 'TotalTradedQuantity'], fallback.tradedVolume),
-    week52High: extract(raw, ['week52High', 'FiftyTwoWeekHighPrice'], fallback.week52High), 
-    week52Low: extract(raw, ['week52Low', 'FiftyTwoWeekLowPrice'], fallback.week52Low),
-    updatedAt: new Date().toISOString(), position,
-  };
+function renderWatchlistMeta() {
+  const { count = state.quotes.length, max = 20 } = state.watchlist;
+  const label = `${count} / ${max} Scripts`;
+  const capacity = el('watchlist-capacity');
+  capacity.textContent = label;
+  capacity.classList.toggle('full', count >= max);
+  el('script-count').textContent = label;
+  el('watch-scope').textContent = `${state.filters.exchange === 'ALL' ? 'All Exchanges' : state.filters.exchange} · ${state.filters.segment}`;
 }
 
-// ---------------------------------------------------------------------------
-// Session management
-// ---------------------------------------------------------------------------
-function createBrowserSession() {
-  const watchlist = DEFAULT_WATCHLIST.map((instrument) => ({ ...instrument }));
-  const quotes = watchlist.map(makeSimulationQuote);
-  return {
-    id: crypto.randomUUID(), accessToken: null, expiresAt: null, authenticatedAt: null, mode: 'SIMULATION', lastError: null,
-    watchlist, quotes, actionWatch: [], actionWatchDate: indiaTradingDate(),
-    // Per-instrument state for the action watch engine
-    intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.high, low: quote.low }])),
-    // WebSocket clients attached to this session
-    wsClients: new Set(),
-    // Market Scanner state
-    marketScannerQuotes: new Map(),
-    marketScannerCursor: 0,
-    marketAnalysis: { highs: [], lows: [], gainers: [], losers: [] },
-  };
+function renderMarket() {
+  const quotes = state.quotes.filter(matchesFilters);
+  renderWatchlistMeta();
+  el('market-body').innerHTML = quotes.map((quote) => {
+    const move = quote.pctChange >= 0 ? 'up' : 'down';
+    const rateClass = Math.abs(quote.pctChange) > .25 ? `rate-${move}` : 'plain-rate';
+    const selected = keyFor(quote) === state.selectedKey ? ' selected' : '';
+    return `<tr class="${selected}" data-key="${escapeHtml(keyFor(quote))}" draggable="true">
+      <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${quote.pctChange >= 0 ? '▲' : '▼'}</td><td></td>
+      <td class="symbol">${escapeHtml(quote.symbol)}</td><td class="${rateClass}">${fmt(quote.lastPrice)}</td><td class="${move === 'up' ? 'positive-text' : 'negative-text'}">${quote.pctChange.toFixed(2)}</td>
+      <td>${qty(quote.bidQty)}</td><td>${fmt(quote.bidPrice)}</td><td>${qty(quote.offerQty)}</td><td>${fmt(quote.offerPrice)}</td>
+      <td>${fmt(quote.open)}</td><td>${fmt(quote.high)}</td><td>${fmt(quote.low)}</td><td>${fmt(quote.pcClose)}</td><td>${qty(quote.totalQty)}</td>
+      <td class="find-cell"><button class="remove-scrip" data-key="${escapeHtml(keyFor(quote))}" title="Remove ${escapeHtml(quote.symbol)}" aria-label="Remove ${escapeHtml(quote.symbol)}">×</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="18" class="empty-watchlist">No scrips match these filters.</td></tr>';
 }
 
-const STATE_FILE = path.join(__dirname, 'terminal_state.json');
-
-function loadGlobalState() {
-  const session = createBrowserSession();
-  if (fs.existsSync(STATE_FILE)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      if (data.accessToken) session.accessToken = data.accessToken;
-      if (data.expiresAt) session.expiresAt = data.expiresAt;
-      if (data.authenticatedAt) session.authenticatedAt = data.authenticatedAt;
-      if (data.mode) session.mode = data.mode;
-      if (data.watchlist) session.watchlist = data.watchlist;
-      if (data.actionWatch) session.actionWatch = data.actionWatch;
-      if (data.actionWatchDate) session.actionWatchDate = data.actionWatchDate;
-      if (data.intradayRanges) session.intradayRanges = new Map(data.intradayRanges);
-      
-      // Rebuild initial quotes matching the loaded watchlist
-      session.quotes = session.watchlist.map(makeSimulationQuote);
-      if (!data.intradayRanges) {
-        session.intradayRanges = new Map(session.quotes.map((q) => [instrumentKey(q), { high: q.high, low: q.low }]));
-      }
-      console.log(`[STATE] Loaded terminal state with ${session.watchlist.length} scrips and ${session.actionWatch.length} alerts.`);
-    } catch (e) {
-      console.warn('[STATE] Failed to load terminal_state.json, starting fresh.', e);
-    }
-  }
-  return session;
+function renderSearchResults() {
+  const results = el('symbol-results');
+  const items = state.suggestions;
+  results.classList.toggle('hidden', !items.length);
+  el('symbol-search').setAttribute('aria-expanded', String(Boolean(items.length)));
+  results.innerHTML = items.map((item, index) => `<button class="symbol-result${state.selectedSuggestion === item ? ' active' : ''}" type="button" data-result-index="${index}" role="option" aria-selected="${state.selectedSuggestion === item}">
+    <strong>${escapeHtml(item.symbol)}</strong><span>${escapeHtml(item.exchange)} · ${escapeHtml(item.segment || 'Equity')} · Token ${escapeHtml(item.instrumentId)}</span>
+  </button>`).join('');
 }
 
-let lastStateJson = '';
-function saveGlobalState() {
-  const session = browserSessions.get(GLOBAL_SESSION_ID);
-  if (!session) return;
-  const state = {
-    accessToken: session.accessToken,
-    expiresAt: session.expiresAt,
-    authenticatedAt: session.authenticatedAt,
-    mode: session.mode,
-    watchlist: session.watchlist,
-    actionWatch: session.actionWatch,
-    actionWatchDate: session.actionWatchDate,
-    intradayRanges: Array.from(session.intradayRanges.entries()),
-  };
-  const json = JSON.stringify(state);
-  if (json !== lastStateJson) {
-    fs.writeFileSync(STATE_FILE, json, 'utf8');
-    lastStateJson = json;
-  }
+function chooseSuggestion(item) {
+  state.selectedSuggestion = item;
+  el('symbol-search').value = item.symbol;
+  state.suggestions = [];
+  renderSearchResults();
 }
 
-const GLOBAL_SESSION_ID = 'global_terminal_session';
-if (!browserSessions.has(GLOBAL_SESSION_ID)) {
-  browserSessions.set(GLOBAL_SESSION_ID, loadGlobalState());
-}
-
-function browserSession(req, res) {
-  const session = browserSessions.get(GLOBAL_SESSION_ID);
-  if (res) {
-    const secure = CONFIG.redirectUri.startsWith('https://') ? '; Secure' : '';
-    res.append('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(GLOBAL_SESSION_ID)}; Path=/; HttpOnly; SameSite=Lax${secure}`);
-  }
-  return session;
-}
-
-function publicSession(session) {
-  return { mode: session.mode, authenticated: Boolean(session.accessToken), configured: configured(), expiresAt: session.expiresAt, pollIntervalMs: CONFIG.quotePollMs };
-}
-
-function publicWatchlist(session) {
-  return { count: session.watchlist.length, max: MAX_WATCHLIST_SIZE, items: session.watchlist.map(publicInstrument) };
-}
-
-function terminalPayload(session) {
-  return { quotes: session.quotes, session: publicSession(session), watchlist: publicWatchlist(session), actionWatch: session.actionWatch, marketAnalysis: session.marketAnalysis };
-}
-
-// ---------------------------------------------------------------------------
-// ACTION WATCH ENGINE — The core alert detection logic
-// ---------------------------------------------------------------------------
-// Direction/sentiment is determined by comparing LTP against PREVIOUS DAY'S
-// CLOSE, NOT the previous tick. This is what creates the "pink New High"
-// paradox: a stock can hit a session high while still being below yesterday's
-// close (gap-down recovery), resulting in a New High alert colored pink.
-// ---------------------------------------------------------------------------
-function updateActionWatch(session, previousQuotes, nextQuotes) {
-  const today = indiaTradingDate();
-  if (session.actionWatchDate !== today) {
-    session.actionWatchDate = today;
-    session.actionWatch = [];
-    session.intradayRanges.clear();
-  }
-
-  const newEvents = [];
-  const previous = new Map(previousQuotes.map((quote) => [instrumentKey(quote), quote]));
-
-  for (const quote of nextQuotes) {
-    const key = instrumentKey(quote);
-    const priorRange = session.intradayRanges.get(key);
-    const dayHigh = number(quote.high, quote.lastPrice);
-    const dayLow = number(quote.low, quote.lastPrice);
-    const previousClose = number(quote.close, 0);
-
-    if (!priorRange) {
-      // First time seeing this instrument today — establish baseline, no alert
-      session.intradayRanges.set(key, {
-        high: Math.max(dayHigh, quote.lastPrice),
-        low: Math.min(dayLow, quote.lastPrice),
-      });
-      continue;
-    }
-
-    const isNewHigh = dayHigh > priorRange.high || quote.lastPrice > priorRange.high;
-    const isNewLow = dayLow < priorRange.low || quote.lastPrice < priorRange.low;
-
-    // Sentiment: compare LTP against PREVIOUS DAY'S CLOSE
-    // Green = LTP >= previous close (positive for the day)
-    // Pink  = LTP <  previous close (negative for the day)
-    const direction = previousClose > 0 && quote.lastPrice < previousClose ? 'down' : 'up';
-
-    if (isNewHigh || isNewLow) {
-      const event = {
-        instrumentId: String(quote.instrumentId),
-        symbol: quote.symbol,
-        exchange: quote.exchange,
-        segment: quote.segment || segmentLabel(quote.exchange),
-        status: isNewHigh ? 'New High' : 'New Low',
-        lastPrice: quote.lastPrice,
-        close: previousClose,
-        direction,
-        timestamp: quote.updatedAt || new Date().toISOString(),
-        time: indiaTimeString(),
-      };
-      newEvents.push(event);
-      session.actionWatch.unshift(event);
-      if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
-    }
-
-    // Update tracked range
-    session.intradayRanges.set(key, {
-      high: Math.max(priorRange.high, dayHigh, quote.lastPrice),
-      low: Math.min(priorRange.low, dayLow, quote.lastPrice),
-    });
-  }
-
-  return newEvents;
-}
-
-// ---------------------------------------------------------------------------
-// IIFL API integration
-// ---------------------------------------------------------------------------
-function clearSession(session, message) {
-  session.accessToken = null;
-  session.expiresAt = null;
-  session.authenticatedAt = null;
-  session.mode = 'SIMULATION';
-  session.lastError = message || null;
-}
-
-function extractToken(payload) {
-  return payload?.access_token || payload?.accessToken || payload?.result?.access_token || payload?.result?.accessToken || payload?.result?.userSession || payload?.userSession || payload?.token || null;
-}
-
-function callbackClientId(req) {
-  const value = req.query.clientId || req.query.clientid || req.query.clientCode || req.query.clientcode || req.query.client_id;
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-async function exchangeAuthorizationCode(code, clientId, session) {
-  if (!clientId) throw new Error('The IIFL callback did not include a client ID. Confirm the current /getusersession request schema with IIFL before enabling live login.');
-  const checksum = crypto.createHash('sha256').update(`${clientId}${code}${CONFIG.appSecret}`).digest('hex');
-  const response = await axios.post(`${CONFIG.apiBaseUrl}/getusersession`, { clientId, checkSum: checksum }, {
-    headers: { 'Content-Type': 'application/json', AppKey: CONFIG.appKey }, timeout: 15000,
-  });
-  const token = extractToken(response.data);
-  if (!token) throw new Error('IIFL did not return an access token. Verify the app key, client ID, redirect URI, and token endpoint settings.');
-  session.accessToken = token;
-  session.authenticatedAt = new Date().toISOString();
-  const expiresIn = number(response.data?.expires_in ?? response.data?.result?.expires_in, 0);
-  session.expiresAt = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
-  session.mode = 'LIVE';
-  session.lastError = null;
-  // First live snapshot establishes today's range — not an alert
-  session.actionWatch = [];
-  session.actionWatchDate = indiaTradingDate();
-  session.intradayRanges.clear();
-}
-
-async function refreshLiveQuotes(session) {
-  if (!session.accessToken) return { success: false, events: [] };
-  
-  // Build request payload: Watchlist + Next 100 Market Scanner stocks
-  const requestInstruments = new Map();
-  session.watchlist.forEach((inst) => requestInstruments.set(instrumentKey(inst), { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: true }));
-  
-  // Add market scanner chunk
-  const allNse = contractCache.get('NSEEQ')?.instruments || STATIC_CATALOG;
-  if (allNse.length > 0) {
-    if (session.marketScannerCursor >= allNse.length) session.marketScannerCursor = 0;
-    const chunk = allNse.slice(session.marketScannerCursor, session.marketScannerCursor + 100);
-    session.marketScannerCursor += 100;
-    chunk.forEach((inst) => {
-      const k = instrumentKey(inst);
-      if (!requestInstruments.has(k)) requestInstruments.set(k, { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: false });
-    });
-  }
-  
-  if (requestInstruments.size === 0) return { success: false, events: [] };
-
+async function searchInstruments() {
+  const query = el('symbol-search').value.trim();
+  state.selectedSuggestion = null;
+  if (query.length < 2) { state.suggestions = []; renderSearchResults(); return; }
+  const request = ++state.searchRequest;
   try {
-    const payload = Array.from(requestInstruments.values()).map(({ exchange, instrumentId }) => ({ exchange, instrumentId }));
-    const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, payload, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 15000,
-    });
-    
-    const results = Array.isArray(response.data?.result) ? response.data.result : [];
-    if (!results.length) throw new Error(response.data?.message || 'The market quote response did not contain results.');
-    
-    const previous = new Map(session.quotes.map((quote) => [instrumentKey(quote), quote]));
-    const resultsByKey = new Map(results.map((quote) => [instrumentKey({ exchange: quote.exchange || '', instrumentId: quote.instrumentId ?? quote.token }), quote]));
-    
-    // Update active watchlist quotes
-    const nextQuotes = session.watchlist.map((instrument, index) => {
-      const fallback = previous.get(instrumentKey(instrument)) || makeSimulationQuote(instrument, index);
-      const raw = resultsByKey.get(instrumentKey(instrument)) || results.find((quote) => String(quote.instrumentId ?? quote.token) === String(instrument.instrumentId));
-      return raw ? quoteFromPayload(raw, fallback, index) : fallback;
-    });
-    
-    // Update Market Scanner map
-    requestInstruments.forEach((info, key) => {
-      if (!info.isWatchlist) {
-        const raw = resultsByKey.get(key);
-        if (raw) session.marketScannerQuotes.set(key, quoteFromPayload(raw, makeSimulationQuote({ exchange: info.exchange, instrumentId: info.instrumentId, symbol: info.symbol || raw.symbol || 'Unknown' }, 0), 0));
-      }
-    });
-
-    // Compute top market-wide analytics
-    const allMarketQuotes = Array.from(session.marketScannerQuotes.values());
-    session.marketAnalysis.highs = [...allMarketQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
-    session.marketAnalysis.lows = [...allMarketQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
-    session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
-    session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
-
-    const events = updateActionWatch(session, session.quotes, nextQuotes);
-    session.quotes = nextQuotes;
-    return { success: true, events };
-  } catch (error) {
-    if (error.response?.status === 401 || error.response?.status === 403) clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
-    else session.lastError = 'IIFL market data request failed.';
-    return { success: false, events: [] };
+    const params = new URLSearchParams({ q: query, exchange: state.filters.exchange, segment: state.filters.segment });
+    const response = await fetch(`/api/instruments?${params}`);
+    if (!response.ok) throw new Error('Search unavailable');
+    const data = await response.json();
+    if (request !== state.searchRequest) return;
+    state.suggestions = Array.isArray(data.instruments) ? data.instruments.slice(0, 12) : [];
+    renderSearchResults();
+  } catch (_) {
+    if (request !== state.searchRequest) return;
+    state.suggestions = [];
+    renderSearchResults();
   }
 }
 
-// ---------------------------------------------------------------------------
-// Enhanced simulation — generates visible action watch events
-// ---------------------------------------------------------------------------
-function advanceSimulation(session) {
-  session.simCycle = (session.simCycle || 0) + 1;
-  const previousQuotes = session.quotes;
+function renderNews() {
+  const items = [['DJ', '12:21:00 PM', 'BBTC: Market breadth remains positive in early trade'], ['DJ', '12:27:00 PM', 'Shares move higher as banking stocks extend gains'], ['DJ', '12:35:00 PM', 'Global cues and commodity prices guide afternoon session'], ['DL', '12:42:00 PM', 'NSE market update: volume leaders refresh']];
+  el('news-list').innerHTML = items.map(([source, time, text]) => `<div class="news-row"><span class="source">${source}</span><time>${time}</time><span>${text}</span></div>`).join('');
+}
 
-  const nextQuotes = session.quotes.map((quote, index) => {
-    // Every few cycles, some stocks get a bigger push to break their day range
-    const isBigTick = (index + session.simCycle) % 3 === 0;
-    // Occasionally simulate a gap-down recovery (pink + New High)
-    const isGapDownRecovery = session.simCycle % 7 === 0 && index % 5 === 2;
+function renderCalls() {
+  const calls = [['BUY', 'RELIANCE', 'Strength above day high · Target ₹3,200'], ['BUY', 'INFY', 'Momentum watch · Target ₹1,800'], ['SELL', 'TATASTEEL', 'Weak below support · Stop ₹155'], ['BUY', 'HDFCBANK', 'Accumulation zone · Medium term']];
+  el('calls-list').innerHTML = calls.map(([side, symbol, note]) => `<div class="call-row"><span class="call-side ${side.toLowerCase()}">${side}</span><strong>${symbol}</strong><span class="call-note">${note}</span></div>`).join('');
+}
 
-    let drift;
-    if (isBigTick) {
-      // Force a breakout — push above high or below low
-      const breakDirection = (index + session.simCycle) % 2 === 0 ? 1 : -1;
-      drift = breakDirection * (0.004 + Math.random() * 0.006);
-    } else {
-      drift = (Math.random() - .48) * .005;
-    }
+function analysisOptions() {
+  const enabled = (name) => document.querySelector(`[data-analysis-filter="${name}"]`)?.checked ?? false;
+  return { nse: enabled('nse'), bse: enabled('bse'), cash: enabled('cash'), fo: enabled('fo'), high: enabled('high'), low: enabled('low') };
+}
 
-    let lastPrice = +(quote.lastPrice * (1 + drift)).toFixed(2);
-    if (lastPrice <= 0) lastPrice = quote.close > 0 ? quote.close : 100; // prevent zero/negative death spiral
-    let close = quote.close;
+function highDistance(quote) { return Math.max(0, ((quote.week52High - quote.lastPrice) / quote.week52High) * 100); }
+function lowDistance(quote) { return Math.max(0, ((quote.lastPrice - quote.week52Low) / quote.week52Low) * 100); }
 
-    if (isGapDownRecovery && session.simCycle < 30) {
-      // Simulate: stock opened below yesterday's close but is recovering upward
-      // Set close higher than current price range to create "pink New High" scenario
-      close = lastPrice * 1.015;
-      lastPrice = +(lastPrice * 1.003).toFixed(2); // Push price up
-    }
-
-    const spread = Math.max(lastPrice * .00035, .05);
-    const bestBidPrice = Math.max(0, +(lastPrice - spread).toFixed(2));
-    const bestAskPrice = +(lastPrice + spread).toFixed(2);
-    
-    // Bounds must strictly encapsulate the Bid/Ask spread
-    const high = Math.max(quote.high, lastPrice, bestAskPrice);
-    const low = Math.min(quote.low || lastPrice, lastPrice, bestBidPrice);
-    const pctChange = close > 0 ? +(((lastPrice - close) / close) * 100).toFixed(2) : 0;
-
-    return {
-      ...quote, lastPrice, pctChange, close, high, low,
-      bestBidPrice,
-      bestAskPrice,
-      bestBidQty: Math.max(1, Math.round(quote.bestBidQty * (.96 + Math.random() * .08))),
-      bestAskQty: Math.max(1, Math.round(quote.bestAskQty * (.96 + Math.random() * .08))),
-      tradedVolume: quote.tradedVolume + Math.round(Math.random() * 2500),
-      updatedAt: new Date().toISOString(),
-    };
+function analysisRows() {
+  const options = analysisOptions();
+  if (state.analysisTab === 'action') {
+    return state.actionWatch.filter((event) => {
+      const exchange = String(event.exchange || '').toUpperCase();
+      const isFutureOption = (event.segment || '').toUpperCase() === 'F&O' || exchange.endsWith('FO');
+      const exchangeAllowed = exchange.startsWith('NSE') ? options.nse : exchange.startsWith('BSE') ? options.bse : false;
+      const typeAllowed = isFutureOption ? options.fo : options.cash;
+      const triggerAllowed = event.status === 'New High' ? options.high : options.low;
+      return exchangeAllowed && typeAllowed && triggerAllowed;
+    }).slice(0, 200);
+  }
+  const filterRows = (sourceRows) => sourceRows.filter((quote) => {
+    const exchange = String(quote.exchange || '').toUpperCase();
+    const isFutureOption = (quote.segment || '').toUpperCase() === 'F&O' || exchange.endsWith('FO');
+    const exchangeAllowed = exchange.startsWith('NSE') ? options.nse : exchange.startsWith('BSE') ? options.bse : false;
+    return exchangeAllowed && (isFutureOption ? options.fo : options.cash);
   });
 
-  session.quotes = nextQuotes;
-
-  // --- MARKET-WIDE SCANNER: simulate quotes for ALL known instruments, not just watchlist ---
-  const watchlistKeys = new Set(nextQuotes.map(q => instrumentKey(q)));
-  // Seed watchlist quotes into scanner map
-  for (const q of nextQuotes) {
-    session.marketScannerQuotes.set(instrumentKey(q), q);
+  if (state.analysisTab === 'high') {
+    if (!options.high) return [];
+    return filterRows(state.marketAnalysis?.highs || []).slice(0, 15);
+  } else if (state.analysisTab === 'low') {
+    if (!options.low) return [];
+    return filterRows(state.marketAnalysis?.lows || []).slice(0, 15);
+  } else if (state.analysisTab === 'gainers') {
+    return filterRows(state.marketAnalysis?.gainers || []).slice(0, 15);
+  } else if (state.analysisTab === 'losers') {
+    return filterRows(state.marketAnalysis?.losers || []).slice(0, 15);
+  } else if (state.analysisTab === 'quantity' || state.analysisTab === 'traded') {
+    return filterRows(state.quotes).sort((a, b) => b.totalQty - a.totalQty).slice(0, 12);
+  } else {
+    return filterRows(state.quotes).filter((quote) => (options.high && highDistance(quote) <= 5) || (options.low && lowDistance(quote) <= 5) || Math.abs(quote.pctChange) >= 1).sort((a, b) => Math.abs(b.pctChange) - Math.abs(a.pctChange)).slice(0, 12);
   }
-  // Simulate all catalog stocks that aren't already in the watchlist
-  for (const inst of STATIC_CATALOG) {
-    const key = instrumentKey(inst);
-    if (watchlistKeys.has(key)) continue; // already covered by watchlist
-    const existing = session.marketScannerQuotes.get(key);
-    if (existing) {
-      // Drift existing scanner quote
-      const d = (Math.random() - 0.48) * 0.004;
-      const ltp = +(existing.lastPrice * (1 + d)).toFixed(2);
-      const cl = existing.close || ltp;
-      const sp = Math.max(ltp * 0.00035, 0.05);
-      session.marketScannerQuotes.set(key, {
-        ...existing,
-        lastPrice: ltp,
-        pctChange: cl > 0 ? +(((ltp - cl) / cl) * 100).toFixed(2) : 0,
-        high: Math.max(existing.high, ltp),
-        low: Math.min(existing.low || ltp, ltp),
-        bestBidPrice: Math.max(0, +(ltp - sp).toFixed(2)),
-        bestAskPrice: +(ltp + sp).toFixed(2),
-        tradedVolume: existing.tradedVolume + Math.round(Math.random() * 1500),
-        updatedAt: new Date().toISOString(),
-      });
-    } else {
-      // First time — create initial simulated quote for this scanner stock
-      session.marketScannerQuotes.set(key, makeSimulationQuote(inst, inst.index || 0));
-    }
-  }
-
-  // Compute market-wide analytics from the FULL scanner map (not just watchlist)
-  const allMarketQuotes = Array.from(session.marketScannerQuotes.values());
-  session.marketAnalysis.highs = [...allMarketQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
-  session.marketAnalysis.lows = [...allMarketQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
-  session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
-  session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
-
-  return updateActionWatch(session, previousQuotes, nextQuotes);
 }
 
-// ---------------------------------------------------------------------------
-// Contract file search (instrument discovery)
-// ---------------------------------------------------------------------------
-function contractRows(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.result)) return payload.result;
-  if (Array.isArray(payload?.data)) return payload.data;
-  if (Array.isArray(payload?.instruments)) return payload.instruments;
-  return [];
+function analysisStatus(quote) {
+  if (state.analysisTab === 'high') return ['Near 52W High', 'new-high'];
+  if (state.analysisTab === 'low') return ['Near 52W Low', 'new-low'];
+  if (state.analysisTab === 'gainers') return ['Gaining', 'new-high'];
+  if (state.analysisTab === 'losers') return ['Losing', 'new-low'];
+  if (state.analysisTab === 'quantity' || state.analysisTab === 'traded') return ['High Volume', 'analysis-neutral'];
+  if (highDistance(quote) <= 5) return ['Near 52W High', 'new-high'];
+  if (lowDistance(quote) <= 5) return ['Near 52W Low', 'new-low'];
+  return quote.pctChange >= 0 ? ['Gaining', 'new-high'] : ['Losing', 'new-low'];
 }
 
-function normaliseContract(row, code, index) {
-  const instrumentId = row.instrumentId ?? row.instrumentID ?? row.InstrumentId ?? row.InstrumentID ?? row.exchangeInstrumentId ?? row.exchangeInstrumentID ?? row.ExchangeInstrumentId ?? row.ExchangeInstrumentID ?? row.token ?? row.Token ?? row.securityId ?? row.securityID ?? row.SecurityId ?? row.SecurityID;
-  const symbol = row.symbol ?? row.Symbol ?? row.tradingSymbol ?? row.TradingSymbol ?? row.tradingSymbolName ?? row.TradingSymbolName ?? row.scripName ?? row.ScripName ?? row.name ?? row.Name ?? row.displayName ?? row.DisplayName;
-  if (!instrumentId || !symbol) return null;
-  const instrument = {
-    instrumentId: String(instrumentId), symbol: String(symbol).trim().toUpperCase(), exchange: code,
-    segment: segmentLabel(code), displayName: String(row.displayName ?? row.name ?? row.scripName ?? symbol).trim(),
-    basePrice: number(row.lastPrice ?? row.close ?? row.strikePrice, 100 + ((index + 1) * 17)),
-  };
-  knownInstruments.set(instrumentKey(instrument), instrument);
-  return instrument;
-}
-
-async function contractsFor(code) {
-  const cached = contractCache.get(code);
-  if (cached && Date.now() - cached.at < CONTRACT_CACHE_MS) return cached.instruments;
+function formatEventTime(event) {
+  // Use server-provided time string if available, otherwise format from timestamp
+  if (event.time) return event.time;
   try {
-    const response = await axios.get(`${CONFIG.apiBaseUrl}/contractfiles/${code}.json`, { timeout: 20000 });
-    const instruments = contractRows(response.data).map((row, index) => normaliseContract(row, code, index)).filter(Boolean);
-    contractCache.set(code, { at: Date.now(), instruments });
-    return instruments;
-  } catch (error) {
-    return [];
+    return new Date(event.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  } catch (_) {
+    return '--:--:--';
   }
 }
 
-async function searchInstruments(exchange, segment, query) {
-  const needle = String(query || '').trim().toUpperCase();
-  const matches = (instrument) => !needle || instrument.symbol.includes(needle) || String(instrument.displayName || '').toUpperCase().includes(needle);
-  const requestedExchange = String(exchange || 'NSE').toUpperCase();
-  const requestedSegment = String(segment || 'Equity').toUpperCase();
-  const codes = requestedExchange === 'ALL'
-    ? (requestedSegment === 'ALL' ? ['NSEEQ', 'BSEEQ', 'NSEFO', 'BSEFO'] : ['NSE', 'BSE'].map((value) => exchangeCode(value, segment)))
-    : (requestedSegment === 'ALL' ? [exchangeCode(exchange, 'Equity'), exchangeCode(exchange, 'F&O')] : [exchangeCode(exchange, segment)]);
-  let instruments = STATIC_CATALOG.filter((instrument) => codes.includes(instrument.exchange) && matches(instrument));
-  if (needle.length >= 2) {
-    const catalogs = await Promise.all(codes.filter((code) => code !== 'NSEEQ' || instruments.length < 10).map(contractsFor));
-    instruments = [...instruments, ...catalogs.flat().filter(matches)];
-  }
-  const unique = new Map();
-  instruments.forEach((instrument) => {
-    if (!unique.has(instrument.symbol)) {
-      unique.set(instrument.symbol, instrument);
-    }
-  });
-  return [...unique.values()].sort((a, b) => a.symbol.localeCompare(b.symbol)).slice(0, 15);
-}
+function renderAnalysis() {
+  const tabName = document.querySelector(`[data-analysis-tab="${state.analysisTab}"]`)?.textContent || 'Action Watch';
+  const modeLabel = state.session?.mode === 'LIVE' ? 'live IIFL market data' : 'simulation data';
+  const wsLabel = state.wsConnected ? '· WebSocket connected' : '· polling';
+  el('analysis-summary').textContent = `${tabName} · ${modeLabel} ${wsLabel}`;
 
-function knownInstrument(exchange, instrumentId) {
-  return knownInstruments.get(instrumentKey({ exchange, instrumentId }));
-}
-
-// ---------------------------------------------------------------------------
-// WebSocket — real-time push to browser clients
-// ---------------------------------------------------------------------------
-function broadcastToSession(session, payload) {
-  const message = JSON.stringify(payload);
-  for (const ws of session.wsClients) {
-    if (ws.readyState === 1) { // WebSocket.OPEN
-      try { ws.send(message); } catch (_) { /* client will be cleaned up on close */ }
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Server-side auto-poll loop
-// Runs continuously and pushes quote updates + action watch events to all
-// connected WebSocket clients.
-// ---------------------------------------------------------------------------
-let pollTimer = null;
-
-async function pollAllSessions() {
-  for (const [, session] of browserSessions) {
-    // Only poll if there are WebSocket clients listening OR if the session
-    // was recently active (keep simulation running for responsiveness)
-    // Always poll — even without WS clients — so REST /refresh picks up fresh data
-
-    let newEvents = [];
-
-    if (session.mode === 'LIVE') {
-      const result = await refreshLiveQuotes(session);
-      newEvents = result.events;
+  const isActionTab = state.analysisTab === 'action';
+  
+  const thead = el('analysis-head');
+  if (thead) {
+    if (isActionTab) {
+      thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr>`;
     } else {
-      newEvents = advanceSimulation(session);
-    }
-
-    // Push updates to all connected WebSocket clients for this session
-    if (session.wsClients.size > 0) {
-      broadcastToSession(session, {
-        type: 'tick',
-        quotes: session.quotes,
-        actionWatch: session.actionWatch,
-        marketAnalysis: session.marketAnalysis,
-        newEvents,
-        session: publicSession(session),
-        watchlist: publicWatchlist(session),
-        timestamp: new Date().toISOString(),
-      });
+      thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W High</th><th>52W Low</th><th>Time</th></tr>`;
     }
   }
-  
-  // Persist state to disk after polling
-  saveGlobalState();
+
+  const rows = analysisRows();
+  if (isActionTab) {
+    el('analysis-body').innerHTML = rows.map((event) => {
+      const dirClass = event.direction === 'up' ? 'analysis-tick-up' : event.direction === 'down' ? 'analysis-tick-down' : 'analysis-tick-flat';
+      return `<tr class="${dirClass}">
+        <td>${escapeHtml((event.exchange || 'N').slice(0, 1))}</td>
+        <td>${escapeHtml(event.segment === 'F&O' ? 'F' : 'C')}</td>
+        <td>${escapeHtml(event.instrumentId)}</td>
+        <td>${escapeHtml(event.symbol)}</td>
+        <td class="analysis-status-cell">${escapeHtml(event.status)}</td>
+        <td class="analysis-rate">${fmt(event.lastPrice)}</td>
+        <td class="analysis-time">${formatEventTime(event)}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="7" class="analysis-empty">No new intraday highs or lows yet. Alerts appear when an active Market Watch scrip makes a new day high or low.</td></tr>';
+
+    // Update alert count badge
+    updateAlertBadge(rows.length);
+    return;
+  }
+
+  el('analysis-body').innerHTML = rows.map((quote) => {
+    const status = analysisStatus(quote);
+    const qKey = `${quote.exchange || 'NSEEQ'}:${quote.instrumentId}`;
+    return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
+      <td>${escapeHtml(quote.exchange.slice(0, 1))}</td>
+      <td>${escapeHtml(quote.exchange)}</td>
+      <td>${escapeHtml(quote.instrumentId)}</td>
+      <td>${escapeHtml(quote.symbol)}</td>
+      <td class="${status[1]}">${status[0]}</td>
+      <td class="analysis-rate">${fmt(quote.lastPrice)}</td>
+      <td class="analysis-rate" style="color: #149339">${fmt(quote.week52High)}</td>
+      <td class="analysis-rate" style="color: #bf1019">${fmt(quote.week52Low)}</td>
+      <td class="analysis-time">${new Date(quote.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="9" class="analysis-empty">No scrips match the selected analysis filters.</td></tr>';
 }
 
-function startPolling() {
-  if (pollTimer) return;
-  pollTimer = setInterval(pollAllSessions, CONFIG.quotePollMs);
-  console.log(`Auto-poll started (every ${CONFIG.quotePollMs}ms)`);
+function updateAlertBadge(alertCount) {
+  const badge = el('alert-badge');
+  if (!badge) return;
+  if (alertCount > 0) {
+    badge.textContent = alertCount > 99 ? '99+' : String(alertCount);
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+function showAnalysis() { el('analysis-window').classList.remove('is-hidden'); renderAnalysis(); }
+function closeAnalysis() { el('analysis-window').classList.add('is-hidden'); }
+function toast(message) { const target = el('toast'); target.textContent = message; target.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => target.classList.remove('show'), 2600); }
+
+function setSession(session) {
+  state.session = session || state.session;
+  const live = state.session.mode === 'LIVE';
+  const status = el('connection-status');
+  status.classList.toggle('live', live || state.wsConnected);
+  status.classList.toggle('error', state.session.mode === 'ERROR');
+  status.querySelector('span').textContent = live ? 'IIFL Live' : state.session.mode === 'ERROR' ? 'Connection error' : state.wsConnected ? 'Real-time' : 'Simulation';
+  const connect = el('connect-iifl');
+  connect.textContent = live ? 'IIFL Connected' : 'Connect IIFL';
+  connect.classList.toggle('connected', live);
+}
+
+function applyTerminalPayload(data) {
+  if (Array.isArray(data.quotes)) state.quotes = data.quotes.map(quoteFromPrice);
+  if (data.watchlist) state.watchlist = data.watchlist;
+  if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
+  if (data.marketAnalysis) state.marketAnalysis = data.marketAnalysis;
+  setSession(data.session);
+  if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
+  renderMarket();
+  renderAnalysis();
 }
 
 // ---------------------------------------------------------------------------
-// Express routes
+// WebSocket client — real-time push from server
 // ---------------------------------------------------------------------------
-function sendTerminal(_req, res) {
-  res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html'));
-}
+function connectWebSocket() {
+  if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) return;
 
-app.get('/api/session', (req, res) => {
-  const session = browserSession(req, res);
-  res.json({ ...publicSession(session), watchlist: publicWatchlist(session) });
-});
-
-app.get('/api/market-watch', (req, res) => {
-  const session = browserSession(req, res);
-  res.json(terminalPayload(session));
-});
-
-app.post('/api/market-watch/refresh', async (req, res) => {
-  const session = browserSession(req, res);
-  if (session.mode === 'LIVE') await refreshLiveQuotes(session);
-  if (session.mode !== 'LIVE') advanceSimulation(session);
-  res.json(terminalPayload(session));
-});
-
-app.get('/api/instruments', async (req, res) => {
-  const exchange = String(req.query.exchange || 'NSE');
-  const segment = String(req.query.segment || 'Equity');
-  const query = String(req.query.q || '').slice(0, 48);
-  const instruments = await searchInstruments(exchange, segment, query);
-  res.json({ exchange, segment, instruments: instruments.map(publicInstrument) });
-});
-
-app.get('/api/watchlist', (req, res) => {
-  const session = browserSession(req, res);
-  res.json(terminalPayload(session));
-});
-
-app.post('/api/watchlist', async (req, res) => {
-  const session = browserSession(req, res);
-  const instrumentId = String(req.body?.instrumentId || '').trim();
-  const exchange = exchangeCode(req.body?.exchange, req.body?.segment);
-  const instrument = knownInstrument(exchange, instrumentId);
-  if (!instrument) return res.status(422).json({ message: 'Choose a symbol from the search results before adding it.' });
-  if (session.watchlist.some((item) => instrumentKey(item) === instrumentKey(instrument))) return res.status(409).json({ message: `${instrument.symbol} is already in this watchlist.` });
-  if (session.watchlist.length >= MAX_WATCHLIST_SIZE) return res.status(409).json({ message: `This watchlist is full (${MAX_WATCHLIST_SIZE} scripts). Remove a scrip before adding another.` });
-  const next = { ...instrument };
-  session.watchlist.push(next);
-  session.quotes.push(makeSimulationQuote(next, session.watchlist.length - 1));
-  if (session.mode === 'LIVE') await refreshLiveQuotes(session);
-  // Notify WebSocket clients about the updated watchlist
-  broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
-  res.status(201).json(terminalPayload(session));
-});
-
-app.delete('/api/watchlist/:exchange/:instrumentId', (req, res) => {
-  const session = browserSession(req, res);
-  const key = instrumentKey({ exchange: req.params.exchange, instrumentId: req.params.instrumentId });
-  const index = session.watchlist.findIndex((instrument) => instrumentKey(instrument) === key);
-  if (index < 0) return res.status(404).json({ message: 'That scrip is not in this watchlist.' });
-  session.watchlist.splice(index, 1);
-  session.quotes.splice(index, 1);
-  // Notify WebSocket clients
-  broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
-  res.json(terminalPayload(session));
-});
-
-app.post('/api/watchlist/reorder', (req, res) => {
-  const session = browserSession(req, res);
-  const keys = req.body.keys || [];
-  if (!Array.isArray(keys)) return res.status(400).json({ message: 'Expected an array of keys.' });
-
-  const watchMap = new Map(session.watchlist.map((i) => [instrumentKey(i), i]));
-  const quoteMap = new Map(session.quotes.map((q) => [instrumentKey(q), q]));
-
-  const nextWatchlist = [];
-  const nextQuotes = [];
-
-  for (const k of keys) {
-    if (watchMap.has(k)) {
-      nextWatchlist.push(watchMap.get(k));
-      nextQuotes.push(quoteMap.get(k));
-      watchMap.delete(k);
-      quoteMap.delete(k);
-    }
-  }
-
-  // Append any missing ones (in case frontend missed something)
-  for (const [k, i] of watchMap.entries()) {
-    nextWatchlist.push(i);
-    nextQuotes.push(quoteMap.get(k));
-  }
-
-  session.watchlist = nextWatchlist;
-  session.quotes = nextQuotes;
-
-  // Notify WebSocket clients
-  broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
-  res.json(terminalPayload(session));
-});
-
-app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
-  const session = browserSession(req, res);
-  const { exchange, instrumentId } = req.params;
-  const { timeframe } = req.query; // '1D', '1M', '1Y', '10Y', '20Y'
-  
-  const end = new Date();
-  const start = new Date();
-  let compression = 60; // 1 min for intraday
-  
-  switch(timeframe) {
-    case '1D': start.setDate(end.getDate() - 1); compression = 60; break;
-    case '1M': start.setMonth(end.getMonth() - 1); compression = 86400; break; // 1 day in seconds
-    case '1Y': start.setFullYear(end.getFullYear() - 1); compression = 86400; break;
-    case '10Y': start.setFullYear(end.getFullYear() - 10); compression = 86400; break;
-    case '20Y': start.setFullYear(end.getFullYear() - 20); compression = 86400; break;
-    default: start.setDate(end.getDate() - 1); break;
-  }
-
-  const payload = {
-    ExchangeSegment: exchange.includes('FO') ? 'NSEFO' : (exchange.startsWith('BSE') ? 'BSECM' : 'NSECM'),
-    ExchangeInstrumentID: Number(instrumentId),
-    StartTime: start.toISOString().split('.')[0],
-    EndTime: end.toISOString().split('.')[0],
-    CompressionValue: compression
-  };
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}/ws`;
 
   try {
-    if (!session.accessToken) throw new Error('Not authenticated');
-    
-    const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/historicaldata`, payload, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 15000,
-    });
-    
-    if (response.data && response.data.result && response.data.result.length > 0) {
-      // Map IIFL response to standard lightweight-charts format
-      const isIntraday = timeframe === '1D';
-      let formatted = response.data.result.map(c => {
-        const d = new Date(c.time || c.Date || c.Timestamp);
-        return {
-          time: isIntraday ? Math.floor(d.getTime() / 1000) : d.toISOString().split('T')[0],
-          open: Number(c.open || c.Open),
-          high: Number(c.high || c.High),
-          low: Number(c.low || c.Low),
-          close: Number(c.close || c.Close)
-        };
-      });
-      
-      // TradingView demands strictly unique and ascending times
-      const uniqueMap = new Map();
-      formatted.forEach(item => uniqueMap.set(item.time, item));
-      formatted = Array.from(uniqueMap.values()).sort((a, b) => a.time > b.time ? 1 : -1);
-      
-      return res.json({ success: true, data: formatted });
-    }
-    throw new Error('Empty or invalid response from IIFL');
+    state.ws = new WebSocket(wsUrl);
   } catch (err) {
-    console.warn('[CHART API] IIFL Historical Data failed, falling back to simulated data.', err.response?.data || err.message);
-    
-    // --- Look up actual LTP for this stock so the chart anchors to real prices ---
-    const instKey = instrumentKey({ exchange, instrumentId });
-    const liveQuote = session.quotes.find(q => instrumentKey(q) === instKey) || session.marketScannerQuotes.get(instKey);
-    const knownInst = knownInstruments.get(instKey);
-    // Use the actual current price, or fall back to the instrument's basePrice, or a default
-    const currentLtp = liveQuote?.lastPrice || knownInst?.basePrice || 1000;
-
-    // For longer timeframes, reverse-engineer a plausible starting price
-    // (e.g. if 10Y ago price was ~40% of current, simulate growth toward current)
-    let startingPrice;
-    switch (timeframe) {
-      case '1D':  startingPrice = currentLtp * (0.995 + Math.random() * 0.005); break;
-      case '1M':  startingPrice = currentLtp * (0.90 + Math.random() * 0.05); break;
-      case '1Y':  startingPrice = currentLtp * (0.65 + Math.random() * 0.15); break;
-      case '10Y': startingPrice = currentLtp * (0.15 + Math.random() * 0.15); break;
-      case '20Y': startingPrice = currentLtp * (0.05 + Math.random() * 0.10); break;
-      default:    startingPrice = currentLtp * 0.99; break;
-    }
-
-    // Simulate beautiful chart data as fallback if IIFL restricts historical access
-    let simulatedData = [];
-    let currentPrice = startingPrice;
-    let currentDate = new Date(start);
-    
-    // For 10Y/20Y we need monthly steps so we don't blow up the browser
-    if (timeframe === '10Y' || timeframe === '20Y') {
-      currentDate.setDate(1); // align to month start
-    }
-    
-    // Calculate overall drift per step to reach the current LTP by the end
-    let totalSteps = 0;
-    const tmpDate = new Date(currentDate);
-    while (tmpDate <= end) {
-      totalSteps++;
-      if (timeframe === '1D') tmpDate.setMinutes(tmpDate.getMinutes() + 5);
-      else if (timeframe === '1M' || timeframe === '1Y') tmpDate.setDate(tmpDate.getDate() + 1);
-      else tmpDate.setMonth(tmpDate.getMonth() + 1);
-    }
-    const overallGrowthRate = totalSteps > 1 ? Math.pow(currentLtp / startingPrice, 1 / totalSteps) : 1;
-    
-    let stepCount = 0;
-    while (currentDate <= end) {
-      stepCount++;
-      // Skip weekends for daily data
-      if (timeframe !== '1D' && (currentDate.getDay() === 0 || currentDate.getDay() === 6)) {
-        currentDate.setDate(currentDate.getDate() + 1);
-        continue;
-      }
-      
-      // For intraday, only generate bars during trading hours (9:15 AM - 3:30 PM IST = 3:45 - 10:00 UTC)
-      if (timeframe === '1D') {
-        const utcH = currentDate.getUTCHours();
-        const utcM = currentDate.getUTCMinutes();
-        const utcMinutes = utcH * 60 + utcM;
-        // IST trading hours: 9:15-15:30 = UTC 3:45-10:00 = 225-600 minutes
-        if (utcMinutes < 225 || utcMinutes > 600) {
-          currentDate = new Date(currentDate.getTime() + 5 * 60000);
-          continue;
-        }
-      }
-      
-      // Blend: trend-following growth + random noise
-      const trendDrift = overallGrowthRate - 1;
-      const noise = (Math.random() - 0.48) * (timeframe === '1D' ? 0.004 : 0.035);
-      const drift = trendDrift + noise;
-      
-      const open = currentPrice;
-      const close = +(currentPrice * (1 + drift)).toFixed(2);
-      const high = +Math.max(open, close, open * (1 + Math.random() * (timeframe === '1D' ? 0.002 : 0.015))).toFixed(2);
-      const low = +Math.min(open, close, open * (1 - Math.random() * (timeframe === '1D' ? 0.002 : 0.015))).toFixed(2);
-      
-      const timeVal = timeframe === '1D' ? Math.floor(currentDate.getTime() / 1000) : currentDate.toISOString().split('T')[0];
-      simulatedData.push({
-        time: timeVal,
-        open: +open.toFixed(2),
-        high,
-        low,
-        close
-      });
-      currentPrice = close;
-      
-      if (timeframe === '1D') currentDate = new Date(currentDate.getTime() + 5 * 60000);
-      else if (timeframe === '1M' || timeframe === '1Y') currentDate.setDate(currentDate.getDate() + 1);
-      else currentDate.setMonth(currentDate.getMonth() + 1); // 1 month steps for 10Y/20Y
-    }
-    
-    // Deduplicate and sort fallback as well
-    const uniqueMap = new Map();
-    simulatedData.forEach(item => uniqueMap.set(item.time, item));
-    simulatedData = Array.from(uniqueMap.values()).sort((a, b) => a.time > b.time ? 1 : -1);
-
-    return res.json({ success: true, simulated: true, data: simulatedData });
+    console.warn('[WS] Failed to create WebSocket:', err);
+    scheduleReconnect();
+    return;
   }
-});
 
-app.get('/auth/login', (req, res) => {
-  browserSession(req, res);
-  if (!configured()) return res.status(503).send('IIFL is not configured. Add IIFL_APP_KEY, IIFL_APP_SECRET, and IIFL_REDIRECT_URI to server/.env, then restart the server.');
-  const authUrl = `${CONFIG.marketsUrl}/?v=1&appkey=${encodeURIComponent(CONFIG.appKey)}&redirecturl=${CONFIG.redirectUri}`;
-  res.redirect(authUrl);
-});
+  state.ws.onopen = () => {
+    console.log('[WS] Connected');
+    state.wsConnected = true;
+    state.wsReconnectDelay = 1000;
+    setSession(state.session);
+    toast('Real-time feed connected');
+  };
 
-app.get('/auth/callback', async (req, res) => {
-  const session = browserSession(req, res);
-  const code = req.query.code || req.query.authCode || req.query.authcode;
-  if (!code || typeof code !== 'string') return res.status(400).send('IIFL did not provide an authorization code.');
-  try {
-    await exchangeAuthorizationCode(code, callbackClientId(req), session);
-    await refreshLiveQuotes(session);
-    res.redirect('/');
-  } catch (error) {
-    clearSession(session, 'IIFL authentication failed.');
-    console.error('[IIFL auth] Token exchange failed:', error.response?.status || error.message);
-    res.status(401).send('IIFL authentication could not be completed. Check the server logs and your registered redirect URI.');
-  }
-});
-
-app.get('*', sendTerminal);
-
-// ---------------------------------------------------------------------------
-// HTTP + WebSocket server startup
-// ---------------------------------------------------------------------------
-const server = http.createServer(app);
-
-const wss = new WebSocketServer({ server, path: '/ws' });
-
-wss.on('connection', (ws, req) => {
-  const session = browserSessions.get(GLOBAL_SESSION_ID);
-
-  session.wsClients.add(ws);
-  console.log(`[WS] Client connected (${session.wsClients.size} client(s), mode: ${session.mode})`);
-
-  // Send initial state immediately
-  ws.send(JSON.stringify({
-    type: 'init',
-    sessionId: session.id,
-    quotes: session.quotes,
-    actionWatch: session.actionWatch,
-    session: publicSession(session),
-    watchlist: publicWatchlist(session),
-    timestamp: new Date().toISOString(),
-  }));
-
-  ws.on('message', (data) => {
+  state.ws.onmessage = (event) => {
     try {
-      const msg = JSON.parse(data);
-      if (msg.type === 'ping') {
-        ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
+      const data = JSON.parse(event.data);
+      handleWebSocketMessage(data);
+    } catch (err) {
+      console.warn('[WS] Failed to parse message:', err);
+    }
+  };
+
+  state.ws.onclose = (event) => {
+    console.log('[WS] Disconnected:', event.code, event.reason);
+    state.wsConnected = false;
+    state.ws = null;
+    setSession(state.session);
+    scheduleReconnect();
+  };
+
+  state.ws.onerror = (err) => {
+    console.warn('[WS] Error:', err);
+    state.wsConnected = false;
+  };
+}
+
+function scheduleReconnect() {
+  if (state.wsReconnectTimer) return;
+  state.wsReconnectTimer = setTimeout(() => {
+    state.wsReconnectTimer = null;
+    connectWebSocket();
+  }, state.wsReconnectDelay);
+  // Exponential backoff capped at 15 seconds
+  state.wsReconnectDelay = Math.min(state.wsReconnectDelay * 1.5, 15000);
+}
+
+function handleWebSocketMessage(data) {
+  switch (data.type) {
+    case 'init':
+    case 'tick':
+    case 'watchlist':
+      // Apply full payload update
+      if (Array.isArray(data.quotes)) state.quotes = data.quotes.map(quoteFromPrice);
+      if (data.watchlist) state.watchlist = data.watchlist;
+      if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
+      if (data.marketAnalysis) state.marketAnalysis = data.marketAnalysis;
+      if (data.session) setSession(data.session);
+
+      // Check for new action watch events and flash
+      if (data.type === 'tick' && Array.isArray(data.newEvents) && data.newEvents.length > 0) {
+        flashNewAlerts(data.newEvents);
       }
-    } catch (_) { /* ignore malformed messages */ }
-  });
 
-  ws.on('close', () => {
-    session.wsClients.delete(ws);
-    console.log(`[WS] Client disconnected (session ${session.id.slice(0, 8)}…, ${session.wsClients.size} remaining)`);
-  });
+      if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
+      renderMarket();
+      renderAnalysis();
+      break;
 
-  ws.on('error', () => {
-    session.wsClients.delete(ws);
-  });
-});
+    case 'pong':
+      // Heartbeat response, no action needed
+      break;
 
-server.listen(CONFIG.port, () => {
-  console.log(`Trader Terminal running at http://localhost:${CONFIG.port}`);
-  console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
-  console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
-  startPolling();
-});
+    default:
+      console.log('[WS] Unknown message type:', data.type);
+  }
+}
+
+function flashNewAlerts(events) {
+  // Flash the Market Analysis button to draw attention to new alerts
+  const btn = el('open-action-watch');
+  if (btn && !el('analysis-window').classList.contains('is-hidden') === false) {
+    btn.classList.add('alert-flash');
+    setTimeout(() => btn.classList.remove('alert-flash'), 1500);
+  }
+}
+
+// Keep WebSocket alive with periodic pings
+function startHeartbeat() {
+  setInterval(() => {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: 'ping' }));
+    }
+  }, 25000);
+}
+
+// ---------------------------------------------------------------------------
+// REST API calls (fallback when WebSocket unavailable)
+// ---------------------------------------------------------------------------
+async function getSession() {
+  try { const response = await fetch('/api/session'); if (response.ok) setSession(await response.json()); } catch (_) { /* static UI remains available */ }
+}
+
+async function loadWatchlist() {
+  try {
+    const response = await fetch('/api/watchlist');
+    if (!response.ok) throw new Error('Unable to load watchlist');
+    applyTerminalPayload(await response.json());
+  } catch (_) { renderMarket(); }
+}
+
+async function reorderWatchlist(keys) {
+  try {
+    const res = await fetch('/api/watchlist/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys }),
+    });
+    if (res.ok) {
+      applyTerminalPayload(await res.json());
+    }
+  } catch (err) {
+    console.error('Failed to reorder', err);
+  }
+}
+
+async function openChart(key) {
+  const quote = state.quotes.find(q => keyFor(q) === key)
+    || state.marketAnalysis?.highs?.find(q => keyFor(q) === key)
+    || state.marketAnalysis?.lows?.find(q => keyFor(q) === key)
+    || state.marketAnalysis?.gainers?.find(q => keyFor(q) === key)
+    || state.marketAnalysis?.losers?.find(q => keyFor(q) === key);
+  if (!quote) return;
+  activeChartQuote = quote;
+  el('chart-title').textContent = `${quote.symbol} - Historical Data`;
+  el('chart-window').classList.remove('is-hidden');
+  
+  if (!chartInstance) {
+    chartInstance = LightweightCharts.createChart(el('chart-container'), {
+      layout: { background: { color: '#000' }, textColor: '#d1d4dc' },
+      grid: { vertLines: { color: '#2b2b43' }, horzLines: { color: '#2b2b43' } },
+      timeScale: { timeVisible: true, secondsVisible: false }
+    });
+    candleSeries = chartInstance.addCandlestickSeries({
+      upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+      wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+    });
+    
+    new ResizeObserver(entries => {
+      if (entries.length === 0 || entries[0].target !== el('chart-container')) return;
+      const newRect = entries[0].contentRect;
+      chartInstance.applyOptions({ width: newRect.width, height: newRect.height });
+    }).observe(el('chart-container'));
+  }
+  
+  loadChartData();
+}
+
+async function loadChartData() {
+  if (!activeChartQuote) return;
+  el('chart-loader').style.display = 'block';
+  try {
+    const res = await fetch(`/api/chart/${activeChartQuote.exchange}/${activeChartQuote.instrumentId}?timeframe=${activeTimeframe}`);
+    const result = await res.json();
+    if (result.success && result.data) {
+      candleSeries.setData(result.data);
+      chartInstance.timeScale().fitContent();
+    } else {
+      toast('Failed to load chart data');
+    }
+  } catch (err) {
+    console.error(err);
+    toast('Error loading chart');
+  } finally {
+    el('chart-loader').style.display = 'none';
+  }
+}
+
+async function refreshQuotes(silent = false) {
+  // Always poll via REST — this keeps the server-side simulation ticking
+  // and ensures data flows even if WebSocket is connected (server deduplicates)
+  try {
+    const response = await fetch('/api/market-watch/refresh', { method: 'POST' });
+    if (!response.ok) throw new Error('Unable to refresh quotes');
+    const data = await response.json();
+    applyTerminalPayload(data);
+    if (!silent) toast(data.session?.mode === 'LIVE' ? 'Live IIFL quotes refreshed' : 'Simulation quotes refreshed');
+  } catch (_) {
+    state.quotes = state.quotes.map((quote) => quoteFromPrice({ ...quote, lastPrice: +(quote.lastPrice * (1 + (Math.random() - .49) * .0015)).toFixed(2), pctChange: quote.pctChange + (Math.random() - .5) * .08 }));
+    renderMarket(); renderAnalysis(); if (!silent) toast('Showing local simulation quotes');
+  }
+}
+
+async function addScrip() {
+  const instrument = state.selectedSuggestion || state.suggestions[0];
+  if (!instrument) { toast('Choose a symbol from the search results first.'); return; }
+  try {
+    const response = await fetch('/api/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(instrument) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || data.error || 'Could not add scrip');
+    state.selectedKey = `${instrument.exchange}:${instrument.instrumentId}`;
+    applyTerminalPayload(data);
+    el('symbol-search').value = '';
+    state.suggestions = []; state.selectedSuggestion = null; renderSearchResults();
+    toast(`${instrument.symbol} added to the watchlist.`);
+  } catch (error) { toast(error.message); }
+}
+
+async function removeScrip(key) {
+  if (!key) { toast('Select a scrip to remove.'); return; }
+  const [exchange, instrumentId] = key.split(':');
+  const quote = state.quotes.find((item) => keyFor(item) === key);
+  try {
+    const response = await fetch(`/api/watchlist/${encodeURIComponent(exchange)}/${encodeURIComponent(instrumentId)}`, { method: 'DELETE' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || data.error || 'Could not remove scrip');
+    if (state.selectedKey === key) state.selectedKey = null;
+    applyTerminalPayload(data);
+    toast(`${quote?.symbol || 'Scrip'} removed from the watchlist.`);
+  } catch (error) { toast(error.message); }
+}
+
+function bindEvents() {
+  el('terminal-clock').textContent = new Date().toLocaleTimeString('en-IN', { hour12: false });
+  setInterval(() => { el('terminal-clock').textContent = new Date().toLocaleTimeString('en-IN', { hour12: false }); }, 1000);
+  for (const filter of ['exchange-filter', 'segment-filter']) {
+    el(filter).addEventListener('change', () => {
+      state.filters.exchange = el('exchange-filter').value;
+      state.filters.segment = el('segment-filter').value;
+      renderMarket();
+      if (el('symbol-search').value.trim().length >= 2) searchInstruments();
+    });
+  }
+  el('symbol-search').addEventListener('input', () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(searchInstruments, 180); });
+  el('symbol-search').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addScrip(); } if (event.key === 'Escape') { state.suggestions = []; renderSearchResults(); } });
+  el('symbol-results').addEventListener('click', (event) => { const button = event.target.closest('[data-result-index]'); if (button) chooseSuggestion(state.suggestions[Number(button.dataset.resultIndex)]); });
+  el('add-scrip').addEventListener('click', addScrip);
+  el('market-body').addEventListener('click', (event) => {
+    const remove = event.target.closest('.remove-scrip');
+    if (remove) { removeScrip(remove.dataset.key); return; }
+    
+    const symbolCell = event.target.closest('.symbol');
+    if (symbolCell) {
+      const row = event.target.closest('tr[data-key]');
+      if (row) openChart(row.dataset.key);
+      return;
+    }
+
+    const row = event.target.closest('tr[data-key]');
+    if (row) { state.selectedKey = row.dataset.key; renderMarket(); }
+  });
+  el('remove-selected').addEventListener('click', () => removeScrip(state.selectedKey));
+  el('open-action-watch').addEventListener('click', showAnalysis);
+  el('open-action-watch-secondary').addEventListener('click', showAnalysis);
+  el('close-analysis').addEventListener('click', closeAnalysis);
+  el('refresh-quotes').addEventListener('click', () => refreshQuotes());
+  el('analysis-refresh').addEventListener('click', () => refreshQuotes());
+  el('news-refresh').addEventListener('click', () => { renderNews(); toast('News wire refreshed'); });
+  el('connect-iifl').addEventListener('click', () => { if (state.session.mode !== 'LIVE') window.location.assign('/auth/login'); });
+  document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { state.analysisTab = button.dataset.analysisTab; document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); renderAnalysis(); }));
+  document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAnalysis(); if (event.key === 'F7') { event.preventDefault(); showAnalysis(); } });
+  
+  // Click on analysis table row -> open chart for that stock
+  el('analysis-body').addEventListener('click', (event) => {
+    const row = event.target.closest('tr[data-key]');
+    if (row) openChart(row.dataset.key);
+  });
+  
+  // Drag and Drop ordering
+  const tbody = el('market-body');
+  let dragKey = null;
+  
+  tbody.addEventListener('dragstart', (e) => {
+    const tr = e.target.closest('tr');
+    if (!tr) return;
+    dragKey = tr.dataset.key;
+    e.dataTransfer.effectAllowed = 'move';
+    tr.classList.add('dragging');
+  });
+  
+  tbody.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const tr = e.target.closest('tr');
+    const dragging = document.querySelector('.dragging');
+    if (tr && dragging && tr.dataset.key !== dragKey) {
+      const rect = tr.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (e.clientY < mid) {
+        tr.parentNode.insertBefore(dragging, tr);
+      } else {
+        tr.parentNode.insertBefore(dragging, tr.nextSibling);
+      }
+    }
+  });
+  
+  tbody.addEventListener('dragend', (e) => {
+    const tr = e.target.closest('tr');
+    if (tr) tr.classList.remove('dragging');
+    dragKey = null;
+    
+    // Save new order
+    const newKeys = Array.from(tbody.querySelectorAll('tr[data-key]')).map(row => row.dataset.key);
+    if (newKeys.length > 0) reorderWatchlist(newKeys);
+  });
+  
+  el('close-chart').addEventListener('click', () => { el('chart-window').classList.add('is-hidden'); activeChartQuote = null; });
+  document.querySelectorAll('.chart-timeframes button').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      document.querySelectorAll('.chart-timeframes button').forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      activeTimeframe = e.target.dataset.tf;
+      loadChartData();
+    });
+  });
+}
+
+async function initialize() {
+  renderMarket(); renderNews(); renderCalls(); renderAnalysis(); bindEvents();
+  await getSession();
+  await loadWatchlist();
+
+  // Connect WebSocket for real-time push
+  connectWebSocket();
+  startHeartbeat();
+
+  // Always poll via REST to keep server simulation ticking + fetch fresh data
+  await refreshQuotes(true);
+  setInterval(() => refreshQuotes(true), 2500);
+}
+
+initialize();
