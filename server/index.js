@@ -25,7 +25,7 @@ const CONFIG = {
   appKey: process.env.IIFL_APP_KEY || '',
   appSecret: process.env.IIFL_APP_SECRET || '',
   redirectUri: process.env.IIFL_REDIRECT_URI || `http://localhost:${process.env.PORT || 3001}/auth/callback`,
-  quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 3500), 1000),
+  quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 2500), 1000),
 };
 
 const MAX_WATCHLIST_SIZE = 20;
@@ -140,8 +140,8 @@ function makeSimulationQuote(instrument, position = 0) {
   return {
     instrumentId: String(instrument.instrumentId), symbol: instrument.symbol, exchange: instrument.exchange, segment: instrument.segment || segmentLabel(instrument.exchange),
     lastPrice: basePrice, pctChange: direction, close,
-    open: close * (1 + ((position % 5) - 2) / 1000), high: basePrice * 1.013,
-    low: basePrice * .988, bestBidPrice: basePrice - spread,
+    open: close * (1 + ((position % 5) - 2) / 1000), high: basePrice,
+    low: basePrice, bestBidPrice: basePrice - spread,
     bestBidQty: 80 + position * 53, bestAskPrice: basePrice + spread,
     bestAskQty: 100 + position * 61, tradedVolume: 70000 + position * 12431,
     week52High: basePrice * (1.035 + (position % 3) * .02),
@@ -149,23 +149,45 @@ function makeSimulationQuote(instrument, position = 0) {
   };
 }
 
+function extract(obj, keys, fallback) {
+  for (const k of keys) {
+    if (obj[k] !== undefined && obj[k] !== null && obj[k] !== 0 && obj[k] !== '0' && obj[k] !== '') {
+      return Number(obj[k]);
+    }
+  }
+  return fallback;
+}
+
 function quoteFromPayload(raw, fallback, position) {
-  const ltp = number(raw.ltp ?? raw.lastPrice ?? raw.lastTradedPrice, fallback.lastPrice);
-  const close = number(raw.close ?? raw.previousClose ?? raw.pcClose, fallback.close);
+  const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP'], fallback.lastPrice);
+  const close = extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice'], fallback.close);
   const pctChange = close ? ((ltp - close) / close) * 100 : 0;
+  
+  // Extract Bid/Ask handling nested structures from IIFL OpenAPI
+  const bidPrice = extract(raw, ['bestBidPrice', 'BuyRate1', 'buyRate1', 'buyPrice1', 'BuyPrice1', 'BidRate', 'bidRate', 'BuyPrice', 'BidPrice'], raw.Bids?.[0]?.Price ?? raw.bids?.[0]?.price ?? fallback.bestBidPrice);
+  const bidQty = extract(raw, ['bestBidQty', 'bestBidQuantity', 'BuyQty1', 'buyQty1', 'BidQty', 'bidQty', 'BuyQty', 'TotalBuyQty'], raw.Bids?.[0]?.Size ?? raw.bids?.[0]?.quantity ?? raw.Bids?.[0]?.Quantity ?? fallback.bestBidQty);
+  
+  const askPrice = extract(raw, ['bestAskPrice', 'bestAskRate', 'SellRate1', 'sellRate1', 'sellPrice1', 'SellPrice1', 'AskRate', 'askRate', 'SellPrice', 'OfferRate', 'AskPrice'], raw.Asks?.[0]?.Price ?? raw.asks?.[0]?.price ?? fallback.bestAskPrice);
+  const askQty = extract(raw, ['bestAskQty', 'bestAskQuantity', 'SellQty1', 'sellQty1', 'AskQty', 'askQty', 'SellQty', 'OfferQty', 'TotalSellQty'], raw.Asks?.[0]?.Size ?? raw.asks?.[0]?.quantity ?? raw.Asks?.[0]?.Quantity ?? fallback.bestAskQty);
+
   return {
     ...fallback,
-    instrumentId: String(raw.instrumentId ?? raw.token ?? fallback.instrumentId),
-    symbol: raw.symbol ?? raw.tradingSymbol ?? fallback.symbol,
-    exchange: raw.exchange ?? fallback.exchange,
+    instrumentId: String(raw.instrumentId ?? raw.token ?? raw.ExchangeInstrumentID ?? raw.ExchangeInstrumentId ?? fallback.instrumentId),
+    symbol: raw.symbol ?? raw.tradingSymbol ?? raw.TradingSymbol ?? fallback.symbol,
+    exchange: raw.exchange ?? raw.ExchangeSegment ?? fallback.exchange,
     lastPrice: ltp,
-    pctChange: number(raw.pctChange ?? raw.changePercent, pctChange),
+    pctChange: extract(raw, ['pctChange', 'changePercent', 'PercentChange'], pctChange),
     close,
-    open: number(raw.open, fallback.open), high: number(raw.high, fallback.high), low: number(raw.low, fallback.low),
-    bestBidPrice: number(raw.bestBidPrice, fallback.bestBidPrice), bestBidQty: number(raw.bestBidQty ?? raw.bestBidQuantity, fallback.bestBidQty),
-    bestAskPrice: number(raw.bestAskPrice ?? raw.bestAskRate, fallback.bestAskPrice), bestAskQty: number(raw.bestAskQty ?? raw.bestAskQuantity, fallback.bestAskQty),
-    tradedVolume: number(raw.tradedVolume ?? raw.totalQty ?? raw.totalTradedQuantity, fallback.tradedVolume),
-    week52High: number(raw.week52High, fallback.week52High), week52Low: number(raw.week52Low, fallback.week52Low),
+    open: extract(raw, ['open', 'Open', 'OpenPrice'], fallback.open), 
+    high: extract(raw, ['high', 'High', 'HighPrice'], fallback.high), 
+    low: extract(raw, ['low', 'Low', 'LowPrice'], fallback.low),
+    bestBidPrice: bidPrice, 
+    bestBidQty: bidQty,
+    bestAskPrice: askPrice, 
+    bestAskQty: askQty,
+    tradedVolume: extract(raw, ['tradedVolume', 'totalQty', 'totalTradedQuantity', 'TotalQty', 'Volume', 'TotalTradedQuantity'], fallback.tradedVolume),
+    week52High: extract(raw, ['week52High', 'FiftyTwoWeekHighPrice'], fallback.week52High), 
+    week52Low: extract(raw, ['week52Low', 'FiftyTwoWeekLowPrice'], fallback.week52Low),
     updatedAt: new Date().toISOString(), position,
   };
 }
@@ -363,7 +385,7 @@ function advanceSimulation(session) {
 
   const nextQuotes = session.quotes.map((quote, index) => {
     // Every few cycles, some stocks get a bigger push to break their day range
-    const isBigTick = session.simCycle % 3 === 0 && (index + session.simCycle) % 4 === 0;
+    const isBigTick = (index + session.simCycle) % 3 === 0;
     // Occasionally simulate a gap-down recovery (pink + New High)
     const isGapDownRecovery = session.simCycle % 7 === 0 && index % 5 === 2;
 
@@ -371,9 +393,9 @@ function advanceSimulation(session) {
     if (isBigTick) {
       // Force a breakout — push above high or below low
       const breakDirection = (index + session.simCycle) % 2 === 0 ? 1 : -1;
-      drift = breakDirection * (0.003 + Math.random() * 0.004);
+      drift = breakDirection * (0.004 + Math.random() * 0.006);
     } else {
-      drift = (Math.random() - .497) * .0018;
+      drift = (Math.random() - .48) * .005;
     }
 
     let lastPrice = +(quote.lastPrice * (1 + drift)).toFixed(2);
@@ -488,7 +510,7 @@ async function pollAllSessions() {
   for (const [, session] of browserSessions) {
     // Only poll if there are WebSocket clients listening OR if the session
     // was recently active (keep simulation running for responsiveness)
-    if (session.wsClients.size === 0 && session.mode !== 'LIVE') continue;
+    // Always poll — even without WS clients — so REST /refresh picks up fresh data
 
     let newEvents = [];
 
