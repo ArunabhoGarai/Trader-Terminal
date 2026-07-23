@@ -394,9 +394,8 @@ async function loadWatchlist() {
 }
 
 async function refreshQuotes(silent = false) {
-  // Skip REST polling if WebSocket is providing real-time data
-  if (state.wsConnected) return;
-
+  // Always poll via REST — this keeps the server-side simulation ticking
+  // and ensures data flows even if WebSocket is connected (server deduplicates)
   try {
     const response = await fetch('/api/market-watch/refresh', { method: 'POST' });
     if (!response.ok) throw new Error('Unable to refresh quotes');
@@ -481,9 +480,9 @@ async function initialize() {
   connectWebSocket();
   startHeartbeat();
 
-  // Fallback polling (only runs if WebSocket is disconnected)
+  // Always poll via REST to keep server simulation ticking + fetch fresh data
   await refreshQuotes(true);
-  setInterval(() => refreshQuotes(true), 4000);
+  setInterval(() => refreshQuotes(true), 2500);
 }
 
 initialize();
