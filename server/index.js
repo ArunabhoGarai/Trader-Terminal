@@ -28,7 +28,7 @@ const CONFIG = {
   quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 2500), 1000),
 };
 
-const MAX_WATCHLIST_SIZE = 20;
+const MAX_WATCHLIST_SIZE = 400;
 const ACTION_WATCH_LIMIT = 200;
 const SESSION_COOKIE = 'tt_session';
 const CONTRACT_CACHE_MS = 30 * 60 * 1000;
@@ -210,20 +210,17 @@ function createBrowserSession() {
   };
 }
 
-function readCookies(req) {
-  return Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map((pair) => {
-    const index = pair.indexOf('=');
-    return [pair.slice(0, index).trim(), decodeURIComponent(pair.slice(index + 1).trim())];
-  }).filter(([key]) => key));
+const GLOBAL_SESSION_ID = 'global_terminal_session';
+if (!browserSessions.has(GLOBAL_SESSION_ID)) {
+  browserSessions.set(GLOBAL_SESSION_ID, createBrowserSession());
 }
 
 function browserSession(req, res) {
-  const id = readCookies(req)[SESSION_COOKIE];
-  if (id && browserSessions.has(id)) return browserSessions.get(id);
-  const session = createBrowserSession();
-  browserSessions.set(session.id, session);
-  const secure = CONFIG.redirectUri.startsWith('https://') ? '; Secure' : '';
-  res.append('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(session.id)}; Path=/; HttpOnly; SameSite=Lax${secure}`);
+  const session = browserSessions.get(GLOBAL_SESSION_ID);
+  if (res) {
+    const secure = CONFIG.redirectUri.startsWith('https://') ? '; Secure' : '';
+    res.append('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(GLOBAL_SESSION_ID)}; Path=/; HttpOnly; SameSite=Lax${secure}`);
+  }
   return session;
 }
 
@@ -640,23 +637,10 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 wss.on('connection', (ws, req) => {
-  // Extract session ID from cookies
-  const cookies = Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map((pair) => {
-    const index = pair.indexOf('=');
-    return [pair.slice(0, index).trim(), decodeURIComponent(pair.slice(index + 1).trim())];
-  }).filter(([key]) => key));
-
-  const sessionId = cookies[SESSION_COOKIE];
-  let session = sessionId ? browserSessions.get(sessionId) : null;
-
-  if (!session) {
-    // Create a new session for this WebSocket client
-    session = createBrowserSession();
-    browserSessions.set(session.id, session);
-  }
+  const session = browserSessions.get(GLOBAL_SESSION_ID);
 
   session.wsClients.add(ws);
-  console.log(`[WS] Client connected (session ${session.id.slice(0, 8)}…, ${session.wsClients.size} client(s), mode: ${session.mode})`);
+  console.log(`[WS] Client connected (${session.wsClients.size} client(s), mode: ${session.mode})`);
 
   // Send initial state immediately
   ws.send(JSON.stringify({
