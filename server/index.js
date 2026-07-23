@@ -554,6 +554,9 @@ function advanceSimulation(session) {
         bestBidPrice: Math.max(0, +(ltp - sp).toFixed(2)),
         bestAskPrice: +(ltp + sp).toFixed(2),
         tradedVolume: existing.tradedVolume + Math.round(Math.random() * 1500),
+        // Keep 52W bounds realistic: if LTP exceeds old 52W high, update it; same for low
+        week52High: Math.max(existing.week52High || ltp, ltp * (1 + Math.random() * 0.01)),
+        week52Low: Math.min(existing.week52Low || ltp, ltp * (1 - Math.random() * 0.01)),
         updatedAt: new Date().toISOString(),
       });
     } else {
