@@ -822,15 +822,47 @@ app.get('/api/instruments', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // INDICES — Nifty 50, Sensex, Bank Nifty — real-time from IIFL
-// IIFL instrument IDs for indices (updated to use modern JSON contract mappings):
-const INDEX_INSTRUMENTS = [
-  { name: 'nifty',     exchangeSegment: 'INDICES', exchangeInstrumentID: 26000, simBase: 24836, simClose: 24700 },
-  { name: 'sensex',    exchangeSegment: 'BSEEQ',   exchangeInstrumentID: 1,     simBase: 81523, simClose: 81100 },
-  { name: 'banknifty', exchangeSegment: 'INDICES', exchangeInstrumentID: 26009, simBase: 56200, simClose: 55900 },
-];
+// 1. The Master Symbol Dictionary for strict resolution
+const TERMINAL_INDEX_MAP = {
+  "nifty": {
+    displayLabel: "SP CNX NIFTY",
+    googleFinanceToken: "INDEXNSE:NIFTY_50",
+    tradingViewToken: "NSE:NIFTY",
+    yahooToken: "^NSEI",
+    iiflPayload: {
+      exchangeSegment: "INDICES",
+      exchangeInstrumentID: 26000
+    },
+    simBase: 24836, simClose: 24700
+  },
+  "sensex": {
+    displayLabel: "SENSEX",
+    googleFinanceToken: "INDEXBSE:SENSEX",
+    tradingViewToken: "BSE:SENSEX",
+    yahooToken: "^BSESN",
+    iiflPayload: {
+      exchangeSegment: "INDICES",
+      exchangeInstrumentID: 10001
+    },
+    simBase: 81523, simClose: 81100
+  },
+  "banknifty": {
+    displayLabel: "BANK NIFTY",
+    googleFinanceToken: "INDEXNSE:NIFTY_BANK",
+    tradingViewToken: "NSE:BANKNIFTY",
+    yahooToken: "^NSEBANK",
+    iiflPayload: {
+      exchangeSegment: "INDICES",
+      exchangeInstrumentID: 26009
+    },
+    simBase: 56200, simClose: 55900
+  }
+};
 
 // Keep simulated index values in memory so they drift smoothly
-const indexSimState = Object.fromEntries(INDEX_INSTRUMENTS.map((idx) => [idx.name, { ltp: idx.simBase, close: idx.simClose }]));
+const indexSimState = Object.fromEntries(
+  Object.entries(TERMINAL_INDEX_MAP).map(([key, data]) => [key, { ltp: data.simBase, close: data.simClose }])
+);
 
 // Dedicated endpoint so the frontend can directly fetch NSE market-wide 52W data
 // independent of the tick cycle — data is always the latest from the background scraper
@@ -845,7 +877,7 @@ app.get('/api/indices', async (req, res) => {
   if (session.accessToken) {
     try {
       const payload = {
-        instruments: INDEX_INSTRUMENTS.map(({ exchangeSegment, exchangeInstrumentID }) => ({ exchangeSegment, exchangeInstrumentID }))
+        instruments: Object.values(TERMINAL_INDEX_MAP).map(item => item.iiflPayload)
       };
       const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketfeed`, payload, {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
@@ -854,17 +886,17 @@ app.get('/api/indices', async (req, res) => {
       const results = Array.isArray(response.data?.result) ? response.data.result : [];
       const byId = new Map(results.map((r) => [String(r.exchangeInstrumentID), r]));
 
-      const indices = INDEX_INSTRUMENTS.map(({ name, exchangeInstrumentID, simBase, simClose }) => {
-        const raw = byId.get(String(exchangeInstrumentID));
+      const indices = Object.entries(TERMINAL_INDEX_MAP).map(([name, data]) => {
+        const raw = byId.get(String(data.iiflPayload.exchangeInstrumentID));
         if (raw) {
-          const ltp = raw.lastTradedPrice || simBase;
+          const ltp = raw.lastTradedPrice || data.simBase;
           const chg = raw.change || 0;
           const pct = raw.percentChange || 0;
           return { name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct };
         } else {
           // Fallback to simulation if not found in response
-          const ltp = simBase;
-          const cl = simClose;
+          const ltp = data.simBase;
+          const cl = data.simClose;
           const chg = ltp - cl;
           const pct = cl > 0 ? ((chg / cl) * 100).toFixed(2) : '0.00';
           return { name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct };
@@ -878,12 +910,12 @@ app.get('/api/indices', async (req, res) => {
   }
 
   // Simulation: drift index values slightly each call
-  const indices = INDEX_INSTRUMENTS.map(({ name }) => {
+  const indices = Object.entries(TERMINAL_INDEX_MAP).map(([name, data]) => {
     const s = indexSimState[name];
     const d = (Math.random() - 0.49) * 0.0015;
     s.ltp = +(s.ltp * (1 + d)).toFixed(2);
-    const chg = +(s.ltp - s.close).toFixed(2);
-    const pct = +((chg / s.close) * 100).toFixed(2);
+    const chg = +(s.ltp - data.simClose).toFixed(2);
+    const pct = +((chg / data.simClose) * 100).toFixed(2);
     return { name, ltp: s.ltp, change: chg, pct };
   });
 
