@@ -548,8 +548,8 @@ async function refreshLiveQuotes(session) {
     // Compute top market-wide analytics
     const allMarketQuotes = Array.from(session.marketScannerQuotes.values());
     const realNseData = nseScraper.getNSEMarketWideData();
-    session.marketAnalysis.highs = realNseData.highs.length > 0 ? realNseData.highs : [...allMarketQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
-    session.marketAnalysis.lows = realNseData.lows.length > 0 ? realNseData.lows : [...allMarketQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
+    session.marketAnalysis.highs = realNseData.highs;
+    session.marketAnalysis.lows = realNseData.lows;
     session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
     session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
 
@@ -658,8 +658,8 @@ function advanceSimulation(session) {
   // Compute market-wide analytics from the FULL scanner map (not just watchlist)
   const allMarketQuotes = Array.from(session.marketScannerQuotes.values());
   const realNseData = nseScraper.getNSEMarketWideData();
-  session.marketAnalysis.highs = realNseData.highs.length > 0 ? realNseData.highs : [...allMarketQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
-  session.marketAnalysis.lows = realNseData.lows.length > 0 ? realNseData.lows : [...allMarketQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
+  session.marketAnalysis.highs = realNseData.highs;
+  session.marketAnalysis.lows = realNseData.lows;
   session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
   session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
 
@@ -835,6 +835,13 @@ const INDEX_INSTRUMENTS = [
 
 // Keep simulated index values in memory so they drift smoothly
 const indexSimState = Object.fromEntries(INDEX_INSTRUMENTS.map((idx) => [idx.name, { ltp: idx.simBase, close: idx.simClose }]));
+
+// Dedicated endpoint so the frontend can directly fetch NSE market-wide 52W data
+// independent of the tick cycle — data is always the latest from the background scraper
+app.get('/api/nse52week', (req, res) => {
+  const data = nseScraper.getNSEMarketWideData();
+  res.json(data);
+});
 
 app.get('/api/indices', async (req, res) => {
   const session = browserSession(req, res);
