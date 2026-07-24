@@ -15,6 +15,7 @@ const path = require('path');
 const axios = require('axios');
 const express = require('express');
 const { WebSocketServer } = require('ws');
+const nseScraper = require('./nse_scraper');
 
 loadDotEnv(path.join(__dirname, '.env'));
 
@@ -546,8 +547,9 @@ async function refreshLiveQuotes(session) {
 
     // Compute top market-wide analytics
     const allMarketQuotes = Array.from(session.marketScannerQuotes.values());
-    session.marketAnalysis.highs = [...allMarketQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
-    session.marketAnalysis.lows = [...allMarketQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
+    const realNseData = nseScraper.getNSEMarketWideData();
+    session.marketAnalysis.highs = realNseData.highs.length > 0 ? realNseData.highs : [...allMarketQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
+    session.marketAnalysis.lows = realNseData.lows.length > 0 ? realNseData.lows : [...allMarketQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
     session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
     session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
 
@@ -655,8 +657,9 @@ function advanceSimulation(session) {
 
   // Compute market-wide analytics from the FULL scanner map (not just watchlist)
   const allMarketQuotes = Array.from(session.marketScannerQuotes.values());
-  session.marketAnalysis.highs = [...allMarketQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
-  session.marketAnalysis.lows = [...allMarketQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
+  const realNseData = nseScraper.getNSEMarketWideData();
+  session.marketAnalysis.highs = realNseData.highs.length > 0 ? realNseData.highs : [...allMarketQuotes].filter(q => q.week52High > 0 && ((q.week52High - q.lastPrice)/q.week52High)*100 <= 5).sort((a, b) => ((a.week52High - a.lastPrice)/a.week52High) - ((b.week52High - b.lastPrice)/b.week52High)).slice(0, 30);
+  session.marketAnalysis.lows = realNseData.lows.length > 0 ? realNseData.lows : [...allMarketQuotes].filter(q => q.week52Low > 0 && ((q.lastPrice - q.week52Low)/q.week52Low)*100 <= 5).sort((a, b) => ((a.lastPrice - a.week52Low)/a.week52Low) - ((b.lastPrice - b.week52Low)/b.week52Low)).slice(0, 30);
   session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
   session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
 
@@ -1172,4 +1175,5 @@ server.listen(CONFIG.port, () => {
   console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
   console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
   startPolling();
+  nseScraper.startNSEScraper();
 });
