@@ -36,10 +36,14 @@ function mapNSEToQuote(item, isHigh) {
   return {
     symbol: item.symbol,
     exchange: 'NSEEQ', // Assume NSE equity
+    series: item.series || 'EQ',
     instrumentId: `NSE_${item.symbol}`, // Generate a faux ID for charting/linking
     companyName: item.companyName || item.symbol,
     lastPrice: ltp,
     pctChange: pChange,
+    new52WHL: whl,
+    prev52WHL: Number(item.prev52WHL) || 0,
+    prevHLDate: item.prevHLDate || '-',
     week52High: isHigh ? whl : Number(item.prev52WHL) || 0,
     week52Low: isHigh ? Number(item.prev52WHL) || 0 : whl,
     updatedAt: Date.now(),
