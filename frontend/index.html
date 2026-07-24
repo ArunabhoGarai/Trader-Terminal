@@ -11,31 +11,32 @@
   </head>
   <body>
     <main class="terminal-shell" aria-label="Trader terminal">
-      <header class="titlebar">
-        <div class="brand-mark" aria-hidden="true">✺</div>
-        <div class="app-title">IIFL Trader Terminal <span>3.0.0.18</span></div>
-        <div class="title-context">for Online Client &nbsp;•&nbsp; Market Watch :: <span id="watch-scope">All Instruments</span> :: <span id="script-count">20 / 20 Scripts</span></div>
-        <div class="window-controls" aria-hidden="true"><span>—</span><span>□</span><span>×</span></div>
-      </header>
 
-      <nav class="menu-bar" aria-label="Terminal menu">
-        <button class="menu-logo" title="Terminal home">◈</button>
-        <button>File</button><button>Market</button><button>Reports</button><button>SIP</button>
-        <button>My Account</button><button>Links</button><button>Tools</button><button>Research</button>
-        <button>Windows</button><button>Customer Service</button><button>Help</button>
-        <div class="menu-spacer"></div>
-        <span id="terminal-clock">--:--:--</span>
-        <button class="compact-button" title="Restore">▣</button>
-        <button class="compact-button" title="Close">×</button>
-      </nav>
-
+      <!-- INDEX STRIP: Nifty, Sensex, Bank Nifty + connection status -->
       <section class="index-strip" aria-label="Index summary">
-        <div><span>SP CNX Nifty</span><strong id="nifty-value">24,836.25</strong><em class="positive" id="nifty-change">+124.50</em></div>
+        <div>
+          <span>SP CNX Nifty</span>
+          <strong id="nifty-value">--,---.--</strong>
+          <em id="nifty-change">--</em>
+        </div>
         <i></i>
-        <div><span>Sensex</span><strong id="sensex-value">81,523.16</strong><em class="positive" id="sensex-change">+328.40</em></div>
+        <div>
+          <span>Sensex</span>
+          <strong id="sensex-value">--,---.--</strong>
+          <em id="sensex-change">--</em>
+        </div>
+        <i></i>
+        <div>
+          <span>Bank Nifty</span>
+          <strong id="banknifty-value">--,---.--</strong>
+          <em id="banknifty-change">--</em>
+        </div>
+        <i></i>
+        <span id="terminal-clock" class="index-clock">--:--:--</span>
         <div class="connection-status" id="connection-status"><b></b><span>Simulation</span></div>
       </section>
 
+      <!-- TOOLBAR: Add scrip controls + Market Analysis + Connect -->
       <section class="watch-toolbar" aria-label="Market watch controls">
         <label>Add Scrip <span>»</span></label>
         <select id="exchange-filter" aria-label="Exchange filter"><option value="ALL">All Exchanges</option><option value="NSE">NSE</option><option value="BSE">BSE</option></select>
@@ -45,12 +46,13 @@
           <div id="symbol-results" class="symbol-results hidden" role="listbox" aria-label="Symbol search results"></div>
         </div>
         <button id="add-scrip" class="native-button">Add</button>
-        <span id="watchlist-capacity" class="watchlist-capacity" aria-live="polite">20 / 400 Scripts</span>
+        <span id="watchlist-capacity" class="watchlist-capacity" aria-live="polite">0 / 400 Scripts</span>
         <button id="open-action-watch" class="analysis-button">⌁ <span>Market Analysis</span><em id="alert-badge" class="alert-badge hidden">0</em></button>
         <div class="toolbar-spacer"></div>
         <button id="connect-iifl" class="connect-button">Connect IIFL</button>
       </section>
 
+      <!-- MARKET WATCH TABLE — fills all remaining height -->
       <section class="watch-stage">
         <div class="table-wrap">
           <table class="market-table" aria-label="Market watch quotes">
@@ -67,26 +69,17 @@
         <div class="watch-actions">
           <button class="buy-button">BUY</button><button class="sell-button">SELL</button>
           <span class="action-divider"></span>
-          <button id="remove-selected" title="Remove selected scrip">▥</button><button title="View columns">▤</button><button title="Chart">▱</button>
-          <button title="Market depth">≣</button><button title="Refresh" id="refresh-quotes">↻</button>
-          <span class="action-divider"></span><span class="details-label">Show Scrip Details</span>
+          <button id="remove-selected" title="Remove selected scrip">▥</button>
+          <button title="Refresh" id="refresh-quotes">↻</button>
+          <span class="action-divider"></span>
+          <span id="watch-scope" class="details-label">All Instruments</span>
           <div class="watch-actions-spacer"></div>
-          <button title="Export">▧</button><button title="Grid">▦</button><button title="Add">＋</button>
+          <span id="script-count" class="details-label" style="font-family:var(--mono);font-size:10px;"></span>
         </div>
-      </section>
-
-      <section class="bottom-dock">
-        <article class="dock-panel news-panel">
-          <header><span>Dow Jones News Wire</span><button id="news-refresh" title="Refresh news">↻</button></header>
-          <div class="news-list" id="news-list"></div>
-        </article>
-        <article class="dock-panel calls-panel">
-          <header><span>Equity Calls</span><button id="open-action-watch-secondary">Action Watch ↗</button></header>
-          <div class="calls-list" id="calls-list"></div>
-        </article>
       </section>
     </main>
 
+    <!-- MARKET ANALYSIS MODAL -->
     <section class="analysis-window is-hidden" id="analysis-window" aria-modal="true" role="dialog" aria-labelledby="analysis-title">
       <header class="analysis-titlebar">
         <strong id="analysis-title">Market Analysis — Equity <span>(Action Watch is shown for scrips added in market watch)</span></strong>
@@ -122,6 +115,7 @@
       <footer class="analysis-footer"><span id="analysis-summary">Action Watch · live market conditions</span><button id="analysis-refresh">Refresh</button></footer>
     </section>
 
+    <!-- CHART MODAL -->
     <section class="analysis-window is-hidden" id="chart-window" aria-modal="true" role="dialog" aria-labelledby="chart-title">
       <header class="analysis-titlebar">
         <strong id="chart-title">Historical Data</strong>
@@ -135,7 +129,6 @@
         <button id="close-chart" aria-label="Close chart">×</button>
       </header>
       <div id="chart-container" style="flex: 1; min-height: 400px; background: #000; position: relative;">
-        <!-- Chart renders here -->
         <div id="chart-loader" style="position: absolute; top:50%; left:50%; transform: translate(-50%, -50%); color: #666; display: none;">Loading data from IIFL...</div>
       </div>
     </section>
