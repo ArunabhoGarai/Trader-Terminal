@@ -39,7 +39,7 @@ let activeTimeframe = '1D';
 let currentLiveCandle = null;
 
 const el = (id) => document.getElementById(id);
-const fmt = (value, digits = 2) => (!value || value <= 0) ? '-' : Number(value).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const fmt = (value, digits = 2) => (value === null || value === undefined || isNaN(Number(value)) || value === '') ? '-' : Number(value).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const qty = (value) => (!value || value <= 0) ? '-' : Number(value).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const keyFor = (quote) => `${quote.exchange || 'NSEEQ'}:${quote.instrumentId || quote.id}`;
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
