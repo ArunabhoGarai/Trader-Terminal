@@ -27,6 +27,11 @@ let global52WLows = [{
   isRealNSEData: true
 }];
 
+let globalGainers = [];
+let globalLosers = [];
+let globalVolume = [];
+let globalValue = [];
+
 function mapNSEToQuote(item, isHigh) {
   // Map NSE JSON object to our terminal's internal quote format
   const ltp = Number(item.ltp) || 0;
@@ -51,8 +56,38 @@ function mapNSEToQuote(item, isHigh) {
   };
 }
 
+function mapGainerLoserToQuote(item) {
+  return {
+    symbol: item.symbol,
+    exchange: 'NSEEQ',
+    series: item.series || 'EQ',
+    instrumentId: `NSE_${item.symbol}`,
+    lastPrice: Number(item.ltp) || 0,
+    pctChange: Number(item.perChange) || 0,
+    volume: Number(item.trade_quantity) || 0,
+    turnover: Number(item.turnover) || 0,
+    updatedAt: Date.now(),
+    isRealNSEData: true
+  };
+}
+
+function mapMostActiveToQuote(item) {
+  return {
+    symbol: item.symbol,
+    exchange: 'NSEEQ',
+    series: 'EQ',
+    instrumentId: `NSE_${item.symbol}`,
+    lastPrice: Number(item.lastPrice) || 0,
+    pctChange: Number(item.pChange) || 0,
+    volume: Number(item.totalTradedVolume) || 0,
+    turnover: Number(item.totalTradedValue) || 0,
+    updatedAt: Date.now(),
+    isRealNSEData: true
+  };
+}
+
 async function scrapeNSE() {
-  console.log('[NSE Scraper] Waking up to fetch 52-week data...');
+  console.log('[NSE Scraper] Waking up to fetch full NSE analysis data...');
   let browser;
   try {
     browser = await puppeteer.launch({ 
@@ -92,6 +127,42 @@ async function scrapeNSE() {
       console.log(`[NSE Scraper] ✅ Fetched ${global52WLows.length} 52-week Lows.`);
     }
 
+    console.log('[NSE Scraper] Fetching Gainers...');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    const gainersRes = await page.goto('https://www.nseindia.com/api/live-analysis-variations?index=gainers', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const gainersJson = await gainersRes.json();
+    if (gainersJson && gainersJson.NIFTY && gainersJson.NIFTY.data) {
+      globalGainers = gainersJson.NIFTY.data.map(mapGainerLoserToQuote);
+      console.log(`[NSE Scraper] ✅ Fetched ${globalGainers.length} Gainers.`);
+    }
+
+    console.log('[NSE Scraper] Fetching Losers...');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    const losersRes = await page.goto('https://www.nseindia.com/api/live-analysis-variations?index=loosers', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const losersJson = await losersRes.json();
+    if (losersJson && losersJson.NIFTY && losersJson.NIFTY.data) {
+      globalLosers = losersJson.NIFTY.data.map(mapGainerLoserToQuote);
+      console.log(`[NSE Scraper] ✅ Fetched ${globalLosers.length} Losers.`);
+    }
+
+    console.log('[NSE Scraper] Fetching Volume Active...');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    const volRes = await page.goto('https://www.nseindia.com/api/live-analysis-most-active-securities?index=volume', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const volJson = await volRes.json();
+    if (volJson && volJson.data) {
+      globalVolume = volJson.data.map(mapMostActiveToQuote);
+      console.log(`[NSE Scraper] ✅ Fetched ${globalVolume.length} Active by Volume.`);
+    }
+
+    console.log('[NSE Scraper] Fetching Value Active...');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    const valRes = await page.goto('https://www.nseindia.com/api/live-analysis-most-active-securities?index=value', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const valJson = await valRes.json();
+    if (valJson && valJson.data) {
+      globalValue = valJson.data.map(mapMostActiveToQuote);
+      console.log(`[NSE Scraper] ✅ Fetched ${globalValue.length} Active by Value.`);
+    }
+
   } catch (err) {
     console.error('[NSE Scraper] Error during scraping:', err.message);
     
@@ -105,6 +176,10 @@ async function scrapeNSE() {
       lastPrice: 0, pctChange: 0, week52High: 0, week52Low: 0, updatedAt: Date.now(), isRealNSEData: true
     }];
     global52WLows = [...global52WHighs];
+    globalGainers = [...global52WHighs];
+    globalLosers = [...global52WHighs];
+    globalVolume = [...global52WHighs];
+    globalValue = [...global52WHighs];
   } finally {
     if (browser) await browser.close();
   }
@@ -120,7 +195,11 @@ function startNSEScraper(intervalMs = 4 * 60 * 1000) { // Default 4 minutes
 function getNSEMarketWideData() {
   return {
     highs: global52WHighs,
-    lows: global52WLows
+    lows: global52WLows,
+    gainers: globalGainers,
+    losers: globalLosers,
+    volume: globalVolume,
+    value: globalValue
   };
 }
 
