@@ -230,7 +230,7 @@ function renderAnalysis() {
     } else if (state.analysisTab === 'low') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/L price</th><th>Prev.Low</th><th>Prev. Low Date</th></tr>`;
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>Trade Qty</th><th>Turnover (Cr)</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Open</th><th>High</th><th>Low</th><th>Prev. Close</th><th>LTP</th><th>%chng</th><th>Volume (Shares)</th><th>Value (₹ Lakhs)</th><th>CA</th></tr>`;
     } else if (state.analysisTab === 'quantity') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
     } else if (state.analysisTab === 'traded') {
@@ -276,14 +276,27 @@ function renderAnalysis() {
         <td class="analysis-rate">${fmt(quote.prev52WHL || 0)}</td>
         <td>${escapeHtml(quote.prevHLDate || '-')}</td>
       </tr>`;
-    } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers' || state.analysisTab === 'quantity' || state.analysisTab === 'traded') {
+    } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
+      return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
+        <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
+        <td class="analysis-rate">${fmt(quote.open || 0)}</td>
+        <td class="analysis-rate">${fmt(quote.high || 0)}</td>
+        <td class="analysis-rate">${fmt(quote.low || 0)}</td>
+        <td class="analysis-rate">${fmt(quote.prevClose || 0)}</td>
+        <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
+        <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
+        <td class="analysis-rate">${quote.volume ? quote.volume.toLocaleString('en-IN') : '-'}</td>
+        <td class="analysis-rate">${quote.turnover ? (quote.turnover / 100000).toLocaleString('en-IN', {maximumFractionDigits: 2}) : '-'}</td>
+        <td title="${escapeHtml(quote.ca || '-')}">${escapeHtml((quote.ca && quote.ca !== '-') ? (quote.ca.length > 15 ? quote.ca.substring(0, 15) + '...' : quote.ca) : '-')}</td>
+      </tr>`;
+    } else if (state.analysisTab === 'quantity' || state.analysisTab === 'traded') {
       return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
         <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
         <td>${escapeHtml(quote.series || 'EQ')}</td>
-        <td class="analysis-rate">${fmt(quote.lastPrice)}</td>
+        <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
         <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
         <td class="analysis-rate">${quote.volume ? quote.volume.toLocaleString('en-IN') : '-'}</td>
-        <td class="analysis-rate">${quote.turnover ? (quote.turnover / 10000000).toLocaleString('en-IN', {maximumFractionDigits: 2}) : '-'}</td>
+        <td class="analysis-rate">${quote.turnover ? (quote.turnover / 100000).toLocaleString('en-IN', {maximumFractionDigits: 2}) : '-'}</td>
       </tr>`;
     }
 
