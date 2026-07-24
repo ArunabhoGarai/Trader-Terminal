@@ -251,7 +251,8 @@ function createBrowserSession() {
     id: crypto.randomUUID(), accessToken: null, expiresAt: null, authenticatedAt: null, mode: 'SIMULATION', lastError: null,
     watchlist, quotes, actionWatch: [], actionWatchDate: indiaTradingDate(),
     // Per-instrument state for the action watch engine
-    intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.high, low: quote.low }])),
+    // Seed intradayRanges from LTP only (not OHLC high/low) so the monotonic breakout check starts clean
+    intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.lastPrice, low: quote.lastPrice, lastAlertHigh: null, lastAlertLow: null, lastAlertTime: 0 }])),
     // WebSocket clients attached to this session
     wsClients: new Set(),
     // Market Scanner state
@@ -283,12 +284,17 @@ function loadGlobalState() {
           return { ...savedInst, basePrice: savedInst.basePrice || catalogInst?.basePrice || 100 };
         });
       }
-      if (data.intradayRanges) session.intradayRanges = new Map(data.intradayRanges);
-      
       // Rebuild initial quotes matching the loaded watchlist
       session.quotes = session.watchlist.map((inst, idx) => makeSimulationQuote(inst, idx));
-      if (!data.intradayRanges) {
-        session.intradayRanges = new Map(session.quotes.map((q) => [instrumentKey(q), { high: q.high, low: q.low }]));
+      if (data.intradayRanges) {
+        // Restore saved ranges and normalise to include deduplication fields (added in newer builds)
+        session.intradayRanges = new Map(data.intradayRanges.map(([key, range]) => [
+          key,
+          { lastAlertHigh: null, lastAlertLow: null, lastAlertTime: 0, ...range }
+        ]));
+      } else {
+        // Fresh start — seed from LTP only
+        session.intradayRanges = new Map(session.quotes.map((q) => [instrumentKey(q), { high: q.lastPrice, low: q.lastPrice, lastAlertHigh: null, lastAlertLow: null, lastAlertTime: 0 }]));
       }
       console.log(`[STATE] Loaded terminal state with ${session.watchlist.length} scrips and ${session.actionWatch.length} alerts.`);
     } catch (e) {
@@ -353,7 +359,7 @@ function terminalPayload(session) {
 // paradox: a stock can hit a session high while still being below yesterday's
 // close (gap-down recovery), resulting in a New High alert colored pink.
 // ---------------------------------------------------------------------------
-function updateActionWatch(session, previousQuotes, nextQuotes) {
+function updateActionWatch(session, nextQuotes) {
   const today = indiaTradingDate();
   if (session.actionWatchDate !== today) {
     session.actionWatchDate = today;
@@ -362,54 +368,84 @@ function updateActionWatch(session, previousQuotes, nextQuotes) {
   }
 
   const newEvents = [];
-  const previous = new Map(previousQuotes.map((quote) => [instrumentKey(quote), quote]));
 
   for (const quote of nextQuotes) {
     const key = instrumentKey(quote);
+    const ltp = quote.lastPrice;
+    if (!ltp || ltp <= 0) continue;
+
     const priorRange = session.intradayRanges.get(key);
-    const dayHigh = number(quote.high, quote.lastPrice);
-    const dayLow = number(quote.low, quote.lastPrice);
     const previousClose = number(quote.close, 0);
 
     if (!priorRange) {
-      // First time seeing this instrument today — establish baseline, no alert
+      // First time seeing this instrument today — establish baseline from LTP only, no alert
       session.intradayRanges.set(key, {
-        high: Math.max(dayHigh, quote.lastPrice),
-        low: Math.min(dayLow, quote.lastPrice),
+        high: ltp,
+        low: ltp,
+        lastAlertHigh: null,  // LTP that triggered the last New High event
+        lastAlertLow: null,   // LTP that triggered the last New Low event
+        lastAlertTime: 0,     // Timestamp of last alert (for deduplication)
       });
       continue;
     }
 
-    const isNewHigh = dayHigh > priorRange.high || quote.lastPrice > priorRange.high;
-    const isNewLow = dayLow < priorRange.low || quote.lastPrice < priorRange.low;
+    // -----------------------------------------------------------------------
+    // STRICT MONOTONIC BREAKOUT CHECK
+    // A "New High" fires ONLY when the current LTP is strictly greater than
+    // the highest LTP seen so far this session (priorRange.high).
+    // A "New Low" fires ONLY when the current LTP is strictly less than the
+    // lowest LTP seen so far this session (priorRange.low).
+    // We deliberately do NOT use quote.high / quote.low (the exchange's OHLC
+    // fields) because those can lag, spike transiently, or be stale — causing
+    // false breakout alerts as seen in the ICICIBANK 1439.50 → 1439.30 bug.
+    // -----------------------------------------------------------------------
+    const isNewHigh = ltp > priorRange.high;
+    const isNewLow  = ltp < priorRange.low;
 
-    // Sentiment: compare LTP against PREVIOUS DAY'S CLOSE
-    // Green = LTP >= previous close (positive for the day)
-    // Pink  = LTP <  previous close (negative for the day)
-    const direction = previousClose > 0 && quote.lastPrice < previousClose ? 'down' : 'up';
+    // Sentiment: LTP vs previous day's close (not vs previous tick)
+    const direction = previousClose > 0 && ltp < previousClose ? 'down' : 'up';
 
     if (isNewHigh || isNewLow) {
-      const event = {
-        instrumentId: String(quote.instrumentId),
-        symbol: quote.symbol,
-        exchange: quote.exchange,
-        segment: quote.segment || segmentLabel(quote.exchange),
-        status: isNewHigh ? 'New High' : 'New Low',
-        lastPrice: quote.lastPrice,
-        close: previousClose,
-        direction,
-        timestamp: quote.updatedAt || new Date().toISOString(),
-        time: indiaTimeString(),
-      };
-      newEvents.push(event);
-      session.actionWatch.unshift(event);
-      if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
+      const nowMs = Date.now();
+      const status = isNewHigh ? 'New High' : 'New Low';
+
+      // Deduplication: suppress duplicate events for the same scrip+status
+      // within a 2-second window to prevent rapid-fire identical rows
+      const isDuplicate =
+        priorRange.lastAlertTime &&
+        (nowMs - priorRange.lastAlertTime) < 2000 &&
+        ((isNewHigh && priorRange.lastAlertHigh !== null && ltp <= priorRange.lastAlertHigh + 0.01) ||
+         (isNewLow  && priorRange.lastAlertLow  !== null && ltp >= priorRange.lastAlertLow  - 0.01));
+
+      if (!isDuplicate) {
+        const event = {
+          instrumentId: String(quote.instrumentId),
+          symbol: quote.symbol,
+          exchange: quote.exchange,
+          segment: quote.segment || segmentLabel(quote.exchange),
+          status,
+          lastPrice: ltp,
+          close: previousClose,
+          direction,
+          timestamp: quote.updatedAt || new Date().toISOString(),
+          time: indiaTimeString(),
+        };
+        newEvents.push(event);
+        session.actionWatch.unshift(event);
+        if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
+
+        // Record this alert for deduplication on the next tick
+        priorRange.lastAlertHigh = isNewHigh ? ltp : priorRange.lastAlertHigh;
+        priorRange.lastAlertLow  = isNewLow  ? ltp : priorRange.lastAlertLow;
+        priorRange.lastAlertTime = nowMs;
+      }
     }
 
-    // Update tracked range
+    // Update tracked session range — strictly monotonic from LTP only
     session.intradayRanges.set(key, {
-      high: Math.max(priorRange.high, dayHigh, quote.lastPrice),
-      low: Math.min(priorRange.low, dayLow, quote.lastPrice),
+      ...priorRange,
+      high: Math.max(priorRange.high, ltp),
+      low:  Math.min(priorRange.low,  ltp),
     });
   }
 
@@ -515,7 +551,7 @@ async function refreshLiveQuotes(session) {
     session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
     session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
 
-    const events = updateActionWatch(session, session.quotes, nextQuotes);
+    const events = updateActionWatch(session, nextQuotes);
     session.quotes = nextQuotes;
     return { success: true, events };
   } catch (error) {
@@ -624,7 +660,7 @@ function advanceSimulation(session) {
   session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
   session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
 
-  return updateActionWatch(session, previousQuotes, nextQuotes);
+  return updateActionWatch(session, nextQuotes);
 }
 
 // ---------------------------------------------------------------------------
