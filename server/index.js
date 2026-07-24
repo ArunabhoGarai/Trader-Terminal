@@ -550,8 +550,8 @@ async function refreshLiveQuotes(session) {
     const realNseData = nseScraper.getNSEMarketWideData();
     session.marketAnalysis.highs = realNseData.highs;
     session.marketAnalysis.lows = realNseData.lows;
-    session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
-    session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
+    session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 20);
+    session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 20);
 
     const events = updateActionWatch(session, nextQuotes);
     session.quotes = nextQuotes;
@@ -822,15 +822,11 @@ app.get('/api/instruments', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // INDICES — Nifty 50, Sensex, Bank Nifty — real-time from IIFL
-// ---------------------------------------------------------------------------
-// IIFL instrument IDs for indices:
-//   Nifty 50   : NSEEQ exchange, instrumentId 26000
-//   Sensex     : BSEEQ exchange, instrumentId 1
-//   Bank Nifty : NSEEQ exchange, instrumentId 26009
+// IIFL instrument IDs for indices (updated to use modern JSON contract mappings):
 const INDEX_INSTRUMENTS = [
-  { name: 'nifty',     exchange: 'NSEEQ', instrumentId: '26000', simBase: 24836, simClose: 24700 },
-  { name: 'sensex',    exchange: 'BSEEQ', instrumentId: '1',     simBase: 81523, simClose: 81100 },
-  { name: 'banknifty', exchange: 'NSEEQ', instrumentId: '26009', simBase: 56200, simClose: 55900 },
+  { name: 'nifty',     exchangeSegment: 'INDICES', exchangeInstrumentID: 26000, simBase: 24836, simClose: 24700 },
+  { name: 'sensex',    exchangeSegment: 'BSEEQ',   exchangeInstrumentID: 1,     simBase: 81523, simClose: 81100 },
+  { name: 'banknifty', exchangeSegment: 'INDICES', exchangeInstrumentID: 26009, simBase: 56200, simClose: 55900 },
 ];
 
 // Keep simulated index values in memory so they drift smoothly
@@ -848,21 +844,31 @@ app.get('/api/indices', async (req, res) => {
 
   if (session.accessToken) {
     try {
-      const payload = INDEX_INSTRUMENTS.map(({ exchange, instrumentId }) => ({ exchange, instrumentId }));
-      const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, payload, {
+      const payload = {
+        instruments: INDEX_INSTRUMENTS.map(({ exchangeSegment, exchangeInstrumentID }) => ({ exchangeSegment, exchangeInstrumentID }))
+      };
+      const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketfeed`, payload, {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
         timeout: 8000,
       });
       const results = Array.isArray(response.data?.result) ? response.data.result : [];
-      const byId = new Map(results.map((r) => [String(r.instrumentId ?? r.token ?? ''), r]));
+      const byId = new Map(results.map((r) => [String(r.exchangeInstrumentID), r]));
 
-      const indices = INDEX_INSTRUMENTS.map(({ name, instrumentId, simBase, simClose }) => {
-        const raw = byId.get(String(instrumentId));
-        const ltp = raw ? extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], simBase) : simBase;
-        const cl  = raw ? extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose'], simClose) : simClose;
-        const chg = ltp - cl;
-        const pct = cl > 0 ? ((chg / cl) * 100).toFixed(2) : '0.00';
-        return { name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct };
+      const indices = INDEX_INSTRUMENTS.map(({ name, exchangeInstrumentID, simBase, simClose }) => {
+        const raw = byId.get(String(exchangeInstrumentID));
+        if (raw) {
+          const ltp = raw.lastTradedPrice || simBase;
+          const chg = raw.change || 0;
+          const pct = raw.percentChange || 0;
+          return { name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct };
+        } else {
+          // Fallback to simulation if not found in response
+          const ltp = simBase;
+          const cl = simClose;
+          const chg = ltp - cl;
+          const pct = cl > 0 ? ((chg / cl) * 100).toFixed(2) : '0.00';
+          return { name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct };
+        }
       });
 
       return res.json({ success: true, live: true, indices });
