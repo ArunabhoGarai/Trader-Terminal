@@ -60,6 +60,7 @@ function mapGainerLoserToQuote(item) {
   return {
     symbol: item.symbol,
     exchange: 'NSEEQ',
+    segment: 'Equity',
     series: item.series || 'EQ',
     instrumentId: `NSE_${item.symbol}`,
     open: Number(item.open_price) || 0,
@@ -80,6 +81,7 @@ function mapMostActiveToQuote(item) {
   return {
     symbol: item.symbol,
     exchange: 'NSEEQ',
+    segment: 'Equity',
     series: 'EQ',
     instrumentId: `NSE_${item.symbol}`,
     lastPrice: Number(item.lastPrice) || 0,
