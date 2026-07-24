@@ -92,12 +92,12 @@ async function scrapeNSE() {
     console.error('[NSE Scraper] Error during scraping:', err.message);
     
     // Update the UI placeholder with the actual error so the user isn't left guessing
-    const errorMsg = err.message.substring(0, 50);
+    const errorMsg = err.message.substring(0, 30);
     global52WHighs = [{
-      symbol: 'ERROR',
+      symbol: `ERR: ${errorMsg}...`,
       exchange: 'NSEEQ',
       instrumentId: 'NSE_ERR',
-      companyName: `Scraper failed: ${errorMsg}...`,
+      companyName: err.message,
       lastPrice: 0, pctChange: 0, week52High: 0, week52Low: 0, updatedAt: Date.now(), isRealNSEData: true
     }];
     global52WLows = [...global52WHighs];
