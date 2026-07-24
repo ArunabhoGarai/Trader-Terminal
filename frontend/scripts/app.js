@@ -569,14 +569,64 @@ async function removeScrip(key) {
   } catch (error) { toast(error.message); }
 }
 
+// ---------------------------------------------------------------------------
+// INDICES — real-time Nifty 50, Sensex, Bank Nifty
+// ---------------------------------------------------------------------------
+function fmtIdx(value) {
+  return Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+async function updateIndices() {
+  try {
+    const res = await fetch('/api/indices');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.indices)) return;
+    for (const idx of data.indices) {
+      const positive = idx.change >= 0;
+      const sign = positive ? '+' : '';
+      const cls = positive ? 'positive' : 'negative';
+      const changeStr = `${sign}${fmtIdx(idx.change)}`;
+      if (idx.name === 'nifty') {
+        const v = el('nifty-value');        if (v) v.textContent = fmtIdx(idx.ltp);
+        const c = el('nifty-change');       if (c) { c.textContent = changeStr; c.className = cls; }
+      } else if (idx.name === 'sensex') {
+        const v = el('sensex-value');       if (v) v.textContent = fmtIdx(idx.ltp);
+        const c = el('sensex-change');      if (c) { c.textContent = changeStr; c.className = cls; }
+      } else if (idx.name === 'banknifty') {
+        const v = el('banknifty-value');    if (v) v.textContent = fmtIdx(idx.ltp);
+        const c = el('banknifty-change');   if (c) { c.textContent = changeStr; c.className = cls; }
+      }
+    }
+  } catch (_) { /* non-critical */ }
+}
+
+function startIndicesPoll() {
+  updateIndices();
+  setInterval(updateIndices, 3000);
+}
+
+function startClock() {
+  function tick() {
+    const t = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    const clockEl = el('terminal-clock');
+    if (clockEl) clockEl.textContent = t;
+  }
+  tick();
+  setInterval(tick, 1000);
+}
+
 function bindEvents() {
-  el('terminal-clock').textContent = new Date().toLocaleTimeString('en-IN', { hour12: false });
-  setInterval(() => { el('terminal-clock').textContent = new Date().toLocaleTimeString('en-IN', { hour12: false }); }, 1000);
-  for (const filter of ['exchange-filter', 'segment-filter']) {
-    el(filter).addEventListener('change', () => {
-      state.filters.exchange = el('exchange-filter').value;
-      state.filters.segment = el('segment-filter').value;
-      renderMarket();
+  el('exchange-filter').addEventListener('change', () => {
+    state.filters.exchange = el('exchange-filter').value;
+    renderMarket();
+  });
+  el('segment-filter').addEventListener('change', () => {
+    state.filters.segment = el('segment-filter').value;
+    renderMarket();
+  });
+  if (el('symbol-search')) {
+    el('symbol-search').addEventListener('focus', () => {
       if (el('symbol-search').value.trim().length >= 2) searchInstruments();
     });
   }
@@ -600,11 +650,9 @@ function bindEvents() {
   });
   el('remove-selected').addEventListener('click', () => removeScrip(state.selectedKey));
   el('open-action-watch').addEventListener('click', showAnalysis);
-  el('open-action-watch-secondary').addEventListener('click', showAnalysis);
   el('close-analysis').addEventListener('click', closeAnalysis);
   el('refresh-quotes').addEventListener('click', () => refreshQuotes());
   el('analysis-refresh').addEventListener('click', () => refreshQuotes());
-  el('news-refresh').addEventListener('click', () => { renderNews(); toast('News wire refreshed'); });
   el('connect-iifl').addEventListener('click', () => { if (state.session.mode !== 'LIVE') window.location.assign('/auth/login'); });
   document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { state.analysisTab = button.dataset.analysisTab; document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); renderAnalysis(); }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
@@ -666,7 +714,7 @@ function bindEvents() {
 }
 
 async function initialize() {
-  renderMarket(); renderNews(); renderCalls(); renderAnalysis(); bindEvents();
+  renderMarket(); renderAnalysis(); bindEvents(); startClock(); startIndicesPoll();
   await getSession();
   await loadWatchlist();
 
