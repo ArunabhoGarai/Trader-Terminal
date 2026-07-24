@@ -36,6 +36,7 @@ let chartInstance = null;
 let candleSeries = null;
 let activeChartQuote = null;
 let activeTimeframe = '1D';
+let currentLiveCandle = null;
 
 const el = (id) => document.getElementById(id);
 const fmt = (value, digits = 2) => (!value || value <= 0) ? '-' : Number(value).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -434,6 +435,10 @@ function handleWebSocketMessage(data) {
       if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
       renderMarket();
       renderAnalysis();
+      
+      // Update real-time interactive chart
+      if (data.quotes) updateLiveChartTick(state.quotes);
+      
       break;
 
     case 'pong':
@@ -566,6 +571,7 @@ async function loadChartData() {
     const result = await res.json();
     if (result.success && Array.isArray(result.data) && result.data.length > 0) {
       candleSeries.setData(result.data);
+      currentLiveCandle = { ...result.data[result.data.length - 1] };
       chartInstance.timeScale().fitContent();
     } else {
       toast('No chart data available for this timeframe');
@@ -576,6 +582,48 @@ async function loadChartData() {
   } finally {
     el('chart-loader').style.display = 'none';
   }
+}
+
+function updateLiveChartTick(quotes) {
+  if (!chartInstance || !candleSeries || !activeChartQuote) return;
+  if (el('chart-window').classList.contains('is-hidden')) return;
+
+  const tickQuote = quotes.find(q => keyFor(q) === keyFor(activeChartQuote));
+  if (!tickQuote) return;
+
+  activeChartQuote = tickQuote;
+  
+  const d = new Date();
+  let timeParam;
+  const isIntraday = activeTimeframe === '1D';
+  
+  if (isIntraday) {
+    // Round down to current minute timestamp for 1D (minute bars)
+    timeParam = Math.floor(d.getTime() / 1000);
+    timeParam = timeParam - (timeParam % 60); 
+  } else {
+    // Format YYYY-MM-DD for daily historical
+    timeParam = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  // If current bucket ended (e.g. minute rolled over), start a new candle
+  if (!currentLiveCandle || currentLiveCandle.time !== timeParam) {
+    currentLiveCandle = {
+      time: timeParam,
+      open: tickQuote.lastPrice,
+      high: tickQuote.lastPrice,
+      low: tickQuote.lastPrice,
+      close: tickQuote.lastPrice
+    };
+  } else {
+    // Dynamically expand the highs and lows of the current candle in real-time
+    currentLiveCandle.high = Math.max(currentLiveCandle.high, tickQuote.lastPrice);
+    currentLiveCandle.low = Math.min(currentLiveCandle.low, tickQuote.lastPrice);
+    currentLiveCandle.close = tickQuote.lastPrice;
+  }
+
+  // Pushes the tick directly into the charting engine without HTTP requests
+  candleSeries.update(currentLiveCandle);
 }
 
 async function refreshQuotes(silent = false) {
