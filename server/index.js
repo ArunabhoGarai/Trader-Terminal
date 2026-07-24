@@ -550,8 +550,10 @@ async function refreshLiveQuotes(session) {
     const realNseData = nseScraper.getNSEMarketWideData();
     session.marketAnalysis.highs = realNseData.highs;
     session.marketAnalysis.lows = realNseData.lows;
-    session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 20);
-    session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 20);
+    session.marketAnalysis.gainers = realNseData.gainers;
+    session.marketAnalysis.losers = realNseData.losers;
+    session.marketAnalysis.volume = realNseData.volume;
+    session.marketAnalysis.value = realNseData.value;
 
     const events = updateActionWatch(session, nextQuotes);
     session.quotes = nextQuotes;
@@ -660,8 +662,10 @@ function advanceSimulation(session) {
   const realNseData = nseScraper.getNSEMarketWideData();
   session.marketAnalysis.highs = realNseData.highs;
   session.marketAnalysis.lows = realNseData.lows;
-  session.marketAnalysis.gainers = [...allMarketQuotes].filter(q => q.pctChange > 0).sort((a, b) => b.pctChange - a.pctChange).slice(0, 30);
-  session.marketAnalysis.losers = [...allMarketQuotes].filter(q => q.pctChange < 0).sort((a, b) => a.pctChange - b.pctChange).slice(0, 30);
+  session.marketAnalysis.gainers = realNseData.gainers;
+  session.marketAnalysis.losers = realNseData.losers;
+  session.marketAnalysis.volume = realNseData.volume;
+  session.marketAnalysis.value = realNseData.value;
 
   return updateActionWatch(session, nextQuotes);
 }
@@ -1222,3 +1226,4 @@ server.listen(CONFIG.port, () => {
   startPolling();
   nseScraper.startNSEScraper();
 });
+
