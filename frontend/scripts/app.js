@@ -180,11 +180,13 @@ function analysisRows() {
     if (!options.low) return [];
     return filterRows(state.marketAnalysis?.lows || []).slice(0, 50);
   } else if (state.analysisTab === 'gainers') {
-    return filterRows(state.marketAnalysis?.gainers || []).slice(0, 15);
+    return filterRows(state.marketAnalysis?.gainers || []).slice(0, 50);
   } else if (state.analysisTab === 'losers') {
-    return filterRows(state.marketAnalysis?.losers || []).slice(0, 15);
-  } else if (state.analysisTab === 'quantity' || state.analysisTab === 'traded') {
-    return filterRows(state.quotes).sort((a, b) => b.totalQty - a.totalQty).slice(0, 12);
+    return filterRows(state.marketAnalysis?.losers || []).slice(0, 50);
+  } else if (state.analysisTab === 'quantity') {
+    return filterRows(state.marketAnalysis?.volume || []).slice(0, 50);
+  } else if (state.analysisTab === 'traded') {
+    return filterRows(state.marketAnalysis?.value || []).slice(0, 50);
   } else {
     return filterRows(state.quotes).filter((quote) => (options.high && highDistance(quote) <= 5) || (options.low && lowDistance(quote) <= 5) || Math.abs(quote.pctChange) >= 1).sort((a, b) => Math.abs(b.pctChange) - Math.abs(a.pctChange)).slice(0, 12);
   }
@@ -227,6 +229,12 @@ function renderAnalysis() {
       thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/H price</th><th>Prev.High</th><th>Prev. High Date</th></tr>`;
     } else if (state.analysisTab === 'low') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/L price</th><th>Prev.Low</th><th>Prev. Low Date</th></tr>`;
+    } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
+      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>Trade Qty</th><th>Turnover (Cr)</th></tr>`;
+    } else if (state.analysisTab === 'quantity') {
+      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
+    } else if (state.analysisTab === 'traded') {
+      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
     } else {
       thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W High</th><th>52W Low</th><th>Time</th></tr>`;
     }
@@ -267,6 +275,15 @@ function renderAnalysis() {
         <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(quote.new52WHL || (isHigh ? quote.week52High : quote.week52Low))}</td>
         <td class="analysis-rate">${fmt(quote.prev52WHL || 0)}</td>
         <td>${escapeHtml(quote.prevHLDate || '-')}</td>
+      </tr>`;
+    } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers' || state.analysisTab === 'quantity' || state.analysisTab === 'traded') {
+      return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
+        <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
+        <td>${escapeHtml(quote.series || 'EQ')}</td>
+        <td class="analysis-rate">${fmt(quote.lastPrice)}</td>
+        <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
+        <td class="analysis-rate">${quote.volume ? quote.volume.toLocaleString('en-IN') : '-'}</td>
+        <td class="analysis-rate">${quote.turnover ? (quote.turnover / 10000000).toLocaleString('en-IN', {maximumFractionDigits: 2}) : '-'}</td>
       </tr>`;
     }
 
@@ -638,12 +655,13 @@ async function loadNSE52WeekData() {
     if (!res.ok) return;
     const data = await res.json();
     if (!state.marketAnalysis) state.marketAnalysis = {};
-    if (Array.isArray(data.highs) && data.highs.length > 0) {
-      state.marketAnalysis.highs = data.highs;
-    }
-    if (Array.isArray(data.lows) && data.lows.length > 0) {
-      state.marketAnalysis.lows = data.lows;
-    }
+    if (Array.isArray(data.highs) && data.highs.length > 0) state.marketAnalysis.highs = data.highs;
+    if (Array.isArray(data.lows) && data.lows.length > 0) state.marketAnalysis.lows = data.lows;
+    if (Array.isArray(data.gainers) && data.gainers.length > 0) state.marketAnalysis.gainers = data.gainers;
+    if (Array.isArray(data.losers) && data.losers.length > 0) state.marketAnalysis.losers = data.losers;
+    if (Array.isArray(data.volume) && data.volume.length > 0) state.marketAnalysis.volume = data.volume;
+    if (Array.isArray(data.value) && data.value.length > 0) state.marketAnalysis.value = data.value;
+    
     // Re-render if the analysis window is open
     if (!el('analysis-window').classList.contains('is-hidden')) renderAnalysis();
   } catch (_) { /* non-critical */ }
