@@ -62,10 +62,15 @@ function mapGainerLoserToQuote(item) {
     exchange: 'NSEEQ',
     series: item.series || 'EQ',
     instrumentId: `NSE_${item.symbol}`,
+    open: Number(item.open_price) || 0,
+    high: Number(item.high_price) || 0,
+    low: Number(item.low_price) || 0,
+    prevClose: Number(item.prev_price) || 0,
     lastPrice: Number(item.ltp) || 0,
     pctChange: Number(item.perChange) || 0,
     volume: Number(item.trade_quantity) || 0,
     turnover: Number(item.turnover) || 0,
+    ca: item.ca_purpose || '-',
     updatedAt: Date.now(),
     isRealNSEData: true
   };
@@ -117,8 +122,7 @@ async function scrapeNSE() {
     }
 
     console.log('[NSE Scraper] Fetching 52-week Low...');
-    // Slight delay to avoid hammering the API
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 3500));
     
     const lowResponse = await page.goto('https://www.nseindia.com/api/live-analysis-52Week?index=low', { waitUntil: 'domcontentloaded', timeout: 30000 });
     const lowJson = await lowResponse.json();
@@ -128,7 +132,7 @@ async function scrapeNSE() {
     }
 
     console.log('[NSE Scraper] Fetching Gainers...');
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 3500));
     const gainersRes = await page.goto('https://www.nseindia.com/api/live-analysis-variations?index=gainers', { waitUntil: 'domcontentloaded', timeout: 30000 });
     const gainersJson = await gainersRes.json();
     if (gainersJson && gainersJson.NIFTY && gainersJson.NIFTY.data) {
@@ -137,7 +141,7 @@ async function scrapeNSE() {
     }
 
     console.log('[NSE Scraper] Fetching Losers...');
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 3500));
     const losersRes = await page.goto('https://www.nseindia.com/api/live-analysis-variations?index=loosers', { waitUntil: 'domcontentloaded', timeout: 30000 });
     const losersJson = await losersRes.json();
     if (losersJson && losersJson.NIFTY && losersJson.NIFTY.data) {
@@ -146,7 +150,7 @@ async function scrapeNSE() {
     }
 
     console.log('[NSE Scraper] Fetching Volume Active...');
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 3500));
     const volRes = await page.goto('https://www.nseindia.com/api/live-analysis-most-active-securities?index=volume', { waitUntil: 'domcontentloaded', timeout: 30000 });
     const volJson = await volRes.json();
     if (volJson && volJson.data) {
@@ -155,7 +159,7 @@ async function scrapeNSE() {
     }
 
     console.log('[NSE Scraper] Fetching Value Active...');
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 3500));
     const valRes = await page.goto('https://www.nseindia.com/api/live-analysis-most-active-securities?index=value', { waitUntil: 'domcontentloaded', timeout: 30000 });
     const valJson = await valRes.json();
     if (valJson && valJson.data) {
