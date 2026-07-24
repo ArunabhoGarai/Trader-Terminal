@@ -2,8 +2,30 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
-let global52WHighs = [];
-let global52WLows = [];
+let global52WHighs = [{
+  symbol: 'FETCHING...',
+  exchange: 'NSEEQ',
+  instrumentId: 'NSE_LOAD',
+  companyName: 'Connecting to NSE via Stealth Puppeteer...',
+  lastPrice: 0,
+  pctChange: 0,
+  week52High: 0,
+  week52Low: 0,
+  updatedAt: Date.now(),
+  isRealNSEData: true
+}];
+let global52WLows = [{
+  symbol: 'FETCHING...',
+  exchange: 'NSEEQ',
+  instrumentId: 'NSE_LOAD',
+  companyName: 'Connecting to NSE via Stealth Puppeteer...',
+  lastPrice: 0,
+  pctChange: 0,
+  week52High: 0,
+  week52Low: 0,
+  updatedAt: Date.now(),
+  isRealNSEData: true
+}];
 
 function mapNSEToQuote(item, isHigh) {
   // Map NSE JSON object to our terminal's internal quote format
@@ -18,8 +40,8 @@ function mapNSEToQuote(item, isHigh) {
     companyName: item.companyName || item.symbol,
     lastPrice: ltp,
     pctChange: pChange,
-    week52High: isHigh ? whl : 0,
-    week52Low: isHigh ? 0 : whl,
+    week52High: isHigh ? whl : Number(item.prev52WHL) || 0,
+    week52Low: isHigh ? Number(item.prev52WHL) || 0 : whl,
     updatedAt: Date.now(),
     isRealNSEData: true // Flag to indicate this is market-wide data
   };
