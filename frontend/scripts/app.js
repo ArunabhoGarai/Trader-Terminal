@@ -175,10 +175,10 @@ function analysisRows() {
 
   if (state.analysisTab === 'high') {
     if (!options.high) return [];
-    return filterRows(state.marketAnalysis?.highs || []).slice(0, 15);
+    return filterRows(state.marketAnalysis?.highs || []).slice(0, 50);
   } else if (state.analysisTab === 'low') {
     if (!options.low) return [];
-    return filterRows(state.marketAnalysis?.lows || []).slice(0, 15);
+    return filterRows(state.marketAnalysis?.lows || []).slice(0, 50);
   } else if (state.analysisTab === 'gainers') {
     return filterRows(state.marketAnalysis?.gainers || []).slice(0, 15);
   } else if (state.analysisTab === 'losers') {
@@ -223,6 +223,10 @@ function renderAnalysis() {
   if (thead) {
     if (isActionTab) {
       thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr>`;
+    } else if (state.analysisTab === 'high') {
+      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/H price</th><th>Prev.High</th><th>Prev. High Date</th></tr>`;
+    } else if (state.analysisTab === 'low') {
+      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/L price</th><th>Prev.Low</th><th>Prev. Low Date</th></tr>`;
     } else {
       thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W High</th><th>52W Low</th><th>Time</th></tr>`;
     }
@@ -251,6 +255,21 @@ function renderAnalysis() {
   el('analysis-body').innerHTML = rows.map((quote) => {
     const status = analysisStatus(quote);
     const qKey = `${quote.exchange || 'NSEEQ'}:${quote.instrumentId}`;
+    
+    if (state.analysisTab === 'high' || state.analysisTab === 'low') {
+      const isHigh = state.analysisTab === 'high';
+      const newPriceColor = isHigh ? '#149339' : '#bf1019';
+      return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
+        <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
+        <td>${escapeHtml(quote.series || 'EQ')}</td>
+        <td class="analysis-rate">${fmt(quote.lastPrice)}</td>
+        <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
+        <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(quote.new52WHL || (isHigh ? quote.week52High : quote.week52Low))}</td>
+        <td class="analysis-rate">${fmt(quote.prev52WHL || 0)}</td>
+        <td>${escapeHtml(quote.prevHLDate || '-')}</td>
+      </tr>`;
+    }
+
     return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
       <td>${escapeHtml(quote.exchange.slice(0, 1))}</td>
       <td>${escapeHtml(quote.exchange)}</td>
