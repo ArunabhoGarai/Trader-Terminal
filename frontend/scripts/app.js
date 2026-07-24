@@ -276,7 +276,11 @@ function updateAlertBadge(alertCount) {
   }
 }
 
-function showAnalysis() { el('analysis-window').classList.remove('is-hidden'); renderAnalysis(); }
+function showAnalysis() {
+  el('analysis-window').classList.remove('is-hidden');
+  loadNSE52WeekData(); // Always fetch latest NSE data when panel opens
+  renderAnalysis();
+}
 function closeAnalysis() { el('analysis-window').classList.add('is-hidden'); }
 function toast(message) { const target = el('toast'); target.textContent = message; target.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => target.classList.remove('show'), 2600); }
 
@@ -606,6 +610,31 @@ function startIndicesPoll() {
   setInterval(updateIndices, 3000);
 }
 
+// ---------------------------------------------------------------------------
+// NSE 52-Week data — direct poll from background scraper endpoint
+// ---------------------------------------------------------------------------
+async function loadNSE52WeekData() {
+  try {
+    const res = await fetch('/api/nse52week');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!state.marketAnalysis) state.marketAnalysis = {};
+    if (Array.isArray(data.highs) && data.highs.length > 0) {
+      state.marketAnalysis.highs = data.highs;
+    }
+    if (Array.isArray(data.lows) && data.lows.length > 0) {
+      state.marketAnalysis.lows = data.lows;
+    }
+    // Re-render if the analysis window is open
+    if (!el('analysis-window').classList.contains('is-hidden')) renderAnalysis();
+  } catch (_) { /* non-critical */ }
+}
+
+function startNSE52WeekPoll() {
+  loadNSE52WeekData();
+  setInterval(loadNSE52WeekData, 5 * 60 * 1000); // refresh every 5 minutes
+}
+
 function startClock() {
   function tick() {
     const t = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
@@ -714,7 +743,7 @@ function bindEvents() {
 }
 
 async function initialize() {
-  renderMarket(); renderAnalysis(); bindEvents(); startClock(); startIndicesPoll();
+  renderMarket(); renderAnalysis(); bindEvents(); startClock(); startIndicesPoll(); startNSE52WeekPoll();
   await getSession();
   await loadWatchlist();
 
