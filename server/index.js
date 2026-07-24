@@ -817,6 +817,63 @@ app.get('/api/instruments', async (req, res) => {
   res.json({ exchange, segment, instruments: instruments.map(publicInstrument) });
 });
 
+// ---------------------------------------------------------------------------
+// INDICES — Nifty 50, Sensex, Bank Nifty — real-time from IIFL
+// ---------------------------------------------------------------------------
+// IIFL instrument IDs for indices:
+//   Nifty 50   : NSEEQ exchange, instrumentId 26000
+//   Sensex     : BSEEQ exchange, instrumentId 1
+//   Bank Nifty : NSEEQ exchange, instrumentId 26009
+const INDEX_INSTRUMENTS = [
+  { name: 'nifty',     exchange: 'NSEEQ', instrumentId: '26000', simBase: 24836, simClose: 24700 },
+  { name: 'sensex',    exchange: 'BSEEQ', instrumentId: '1',     simBase: 81523, simClose: 81100 },
+  { name: 'banknifty', exchange: 'NSEEQ', instrumentId: '26009', simBase: 56200, simClose: 55900 },
+];
+
+// Keep simulated index values in memory so they drift smoothly
+const indexSimState = Object.fromEntries(INDEX_INSTRUMENTS.map((idx) => [idx.name, { ltp: idx.simBase, close: idx.simClose }]));
+
+app.get('/api/indices', async (req, res) => {
+  const session = browserSession(req, res);
+
+  if (session.accessToken) {
+    try {
+      const payload = INDEX_INSTRUMENTS.map(({ exchange, instrumentId }) => ({ exchange, instrumentId }));
+      const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, payload, {
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
+        timeout: 8000,
+      });
+      const results = Array.isArray(response.data?.result) ? response.data.result : [];
+      const byId = new Map(results.map((r) => [String(r.instrumentId ?? r.token ?? ''), r]));
+
+      const indices = INDEX_INSTRUMENTS.map(({ name, instrumentId, simBase, simClose }) => {
+        const raw = byId.get(String(instrumentId));
+        const ltp = raw ? extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], simBase) : simBase;
+        const cl  = raw ? extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose'], simClose) : simClose;
+        const chg = ltp - cl;
+        const pct = cl > 0 ? ((chg / cl) * 100).toFixed(2) : '0.00';
+        return { name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct };
+      });
+
+      return res.json({ success: true, live: true, indices });
+    } catch (err) {
+      console.warn('[INDICES] IIFL fetch failed, falling back to simulation:', err.message);
+    }
+  }
+
+  // Simulation: drift index values slightly each call
+  const indices = INDEX_INSTRUMENTS.map(({ name }) => {
+    const s = indexSimState[name];
+    const d = (Math.random() - 0.49) * 0.0015;
+    s.ltp = +(s.ltp * (1 + d)).toFixed(2);
+    const chg = +(s.ltp - s.close).toFixed(2);
+    const pct = +((chg / s.close) * 100).toFixed(2);
+    return { name, ltp: s.ltp, change: chg, pct };
+  });
+
+  res.json({ success: true, live: false, indices });
+});
+
 app.get('/api/watchlist', (req, res) => {
   const session = browserSession(req, res);
   res.json(terminalPayload(session));
