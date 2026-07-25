@@ -895,7 +895,7 @@ async function fetchSensexToken() {
     const sensex = res.data.find(i => i.underlyingInstrumentName && i.underlyingInstrumentName.includes('SENSEX'));
     if (sensex && sensex.instrumentId) {
       TERMINAL_INDEX_MAP['sensex'].iiflPayload = {
-        exchange: sensex.exchange || 'BSEEQ',           // for marketquotes payload
+        exchange: 'INDICES',                            // STRICTLY enforce INDICES for marketquotes
         exchangeSegment: 'INDICES',                      // kept for reference
         exchangeInstrumentID: parseInt(sensex.instrumentId, 10),
         instrumentId: sensex.instrumentId               // string form for marketquotes
@@ -968,11 +968,11 @@ app.get('/api/indices', async (req, res) => {
 
   if (session.accessToken) {
     const iiflIndexInstruments = [
-      { exchange: 'NSEEQ', instrumentId: '26000', name: 'nifty' },
-      { exchange: 'NSEEQ', instrumentId: '26009', name: 'banknifty' },
+      { exchange: 'INDICES', instrumentId: '26000', name: 'nifty' },
+      { exchange: 'INDICES', instrumentId: '26009', name: 'banknifty' },
       { 
-        exchange: TERMINAL_INDEX_MAP['sensex'].iiflPayload?.exchange || 'BSEEQ', 
-        instrumentId: String(TERMINAL_INDEX_MAP['sensex'].iiflPayload?.exchangeInstrumentID || '999901'),
+        exchange: TERMINAL_INDEX_MAP['sensex'].iiflPayload?.exchange || 'INDICES', 
+        instrumentId: String(TERMINAL_INDEX_MAP['sensex'].iiflPayload?.exchangeInstrumentID || '10001'),
         name: 'sensex'
       },
     ];
