@@ -691,11 +691,11 @@ async function updateIndices() {
     const data = await res.json();
     if (!data.success || !Array.isArray(data.indices)) return;
     for (const idx of data.indices) {
-      const positive = idx.change >= 0;
-      const sign = positive ? '+' : '';
-      const cls = positive ? 'positive' : 'negative';
-      const changeStr = `${sign}${fmtIdx(idx.change)}`;
-      if (idx.name === 'nifty') {
+        const positive = idx.change >= 0;
+        const sign = positive ? '+' : '';
+        const cls = positive ? 'positive' : 'negative';
+        const changeStr = `${sign}${fmtIdx(idx.change)} (${sign}${idx.pct}%)`;
+        if (idx.name === 'nifty') {
         const v = el('nifty-value');        if (v) v.textContent = fmtIdx(idx.ltp);
         const c = el('nifty-change');       if (c) { c.textContent = changeStr; c.className = cls; }
       } else if (idx.name === 'sensex') {
