@@ -691,22 +691,23 @@ async function updateIndices() {
     const data = await res.json();
     if (!data.success || !Array.isArray(data.indices)) return;
     for (const idx of data.indices) {
+      const v = el(`${idx.name}-value`);
+      const c = el(`${idx.name}-change`);
+      if (!v || !c) continue;
+
+      if (idx.error) {
+        v.textContent = 'API ERR';
+        c.textContent = (idx.errorReason || 'Failed').substring(0, 40);
+        c.className = 'negative';
+        c.title = idx.errorBody || idx.errorReason || 'API Error';
+      } else {
         const positive = idx.change >= 0;
         const sign = positive ? '+' : '';
         const cls = positive ? 'positive' : 'negative';
-        const changeStr = `${sign}${fmtIdx(idx.change)} (${sign}${idx.pct}%)`;
-        if (idx.name === 'nifty') {
-        const v = el('nifty-value');        if (v) v.textContent = fmtIdx(idx.ltp);
-        const c = el('nifty-change');       if (c) { c.textContent = changeStr; c.className = cls; }
-      } else if (idx.name === 'sensex') {
-        const v = el('sensex-value');       if (v) v.textContent = fmtIdx(idx.ltp);
-        const c = el('sensex-change');      if (c) { c.textContent = changeStr; c.className = cls; }
-      } else if (idx.name === 'banknifty') {
-        const v = el('banknifty-value');    if (v) v.textContent = fmtIdx(idx.ltp);
-        const c = el('banknifty-change');   if (c) { c.textContent = changeStr; c.className = cls; }
-      } else if (idx.name === 'nasdaq') {
-        const v = el('nasdaq-value');       if (v) v.textContent = fmtIdx(idx.ltp);
-        const c = el('nasdaq-change');      if (c) { c.textContent = changeStr; c.className = cls; }
+        v.textContent = fmtIdx(idx.ltp);
+        c.textContent = `${sign}${fmtIdx(idx.change)} (${sign}${idx.pct}%)`;
+        c.className = cls;
+        c.removeAttribute('title');
       }
     }
   } catch (_) { /* non-critical */ }
