@@ -626,6 +626,13 @@ function updateLiveChartTick(quotes) {
   candleSeries.update(currentLiveCandle);
 }
 
+// Ghost tick to force the X-axis to scroll continuously even if price doesn't change
+setInterval(() => {
+  if (activeChartQuote && chartInstance && candleSeries && !document.getElementById('chart-window').classList.contains('is-hidden')) {
+    updateLiveChartTick([activeChartQuote]);
+  }
+}, 1000);
+
 async function refreshQuotes(silent = false) {
   // Always poll via REST — this keeps the server-side simulation ticking
   // and ensures data flows even if WebSocket is connected (server deduplicates)
