@@ -779,7 +779,17 @@ function bindEvents() {
   el('open-action-watch').addEventListener('click', showAnalysis);
   el('close-analysis').addEventListener('click', closeAnalysis);
   el('refresh-quotes').addEventListener('click', () => refreshQuotes());
-  el('analysis-refresh').addEventListener('click', () => refreshQuotes());
+  el('analysis-refresh').addEventListener('click', async () => {
+    toast('Triggering NSE Market Data Refresh...');
+    try {
+      const response = await fetch('/api/nse/refresh', { method: 'POST' });
+      const json = await response.json();
+      toast(json.message);
+      if (json.success) refreshQuotes();
+    } catch (e) {
+      toast('Failed to reach NSE scraper.');
+    }
+  });
   el('connect-iifl').addEventListener('click', () => { if (state.session.mode !== 'LIVE') window.location.assign('/auth/login'); });
   document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { state.analysisTab = button.dataset.analysisTab; document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); renderAnalysis(); }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
