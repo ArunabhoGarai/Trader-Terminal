@@ -49,8 +49,8 @@ button { cursor: pointer; }
 .index-strip span:first-child { font-size: 11px; color: #4a5a5d; }
 .index-strip strong { font-size: 14px; font-weight: 700; color: #111; }
 .index-strip em { font-style: normal; font-size: 13px; font-weight: 700; }
-.positive { color: #c50b12; }
-.negative { color: #15852b; }
+.positive { color: #15852b; }
+.negative { color: #c50b12; }
 .index-strip i { height: 20px; border-left: 1px solid #929a9b; }
 .index-clock { font-family: var(--mono); font-size: 11px; color: #4a5a5d; margin-left: 4px; }
 .connection-status {
