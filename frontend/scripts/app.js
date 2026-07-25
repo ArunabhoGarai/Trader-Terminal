@@ -704,6 +704,9 @@ async function updateIndices() {
       } else if (idx.name === 'banknifty') {
         const v = el('banknifty-value');    if (v) v.textContent = fmtIdx(idx.ltp);
         const c = el('banknifty-change');   if (c) { c.textContent = changeStr; c.className = cls; }
+      } else if (idx.name === 'nasdaq') {
+        const v = el('nasdaq-value');       if (v) v.textContent = fmtIdx(idx.ltp);
+        const c = el('nasdaq-change');      if (c) { c.textContent = changeStr; c.className = cls; }
       }
     }
   } catch (_) { /* non-critical */ }
