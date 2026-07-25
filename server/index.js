@@ -907,64 +907,44 @@ async function fetchSensexToken() {
   }
 }
 
-// Utility: Fetch NASDAQ from Yahoo Finance proxy
-async function fetchYahooNasdaq() {
-  try {
-    const res = await axios.get('https://query1.finance.yahoo.com/v8/finance/chart/^IXIC', { timeout: 5000 });
-    const meta = res.data?.chart?.result?.[0]?.meta;
-    if (meta) {
-      const ltp = meta.regularMarketPrice;
-      const cl = meta.chartPreviousClose;
-      const chg = ltp - cl;
-      const pct = (chg / cl) * 100;
-      return { name: 'nasdaq', ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct.toFixed(2) };
-    }
-  } catch (err) {
-    console.error('[INDICES] Failed to fetch NASDAQ from Yahoo Finance:', err.message);
-  }
-  return null;
+// Utility: Fetch all indices concurrently from Yahoo Finance proxy
+async function fetchYahooIndices() {
+  const targets = [
+    { symbol: '^NSEI', name: 'nifty' },
+    { symbol: '^BSESN', name: 'sensex' },
+    { symbol: '^NSEBANK', name: 'banknifty' },
+    { symbol: '^IXIC', name: 'nasdaq' }
+  ];
+
+  const fetchPromises = targets.map(async ({ symbol, name }) => {
+    try {
+      const res = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`, { timeout: 6000 });
+      const meta = res.data?.chart?.result?.[0]?.meta;
+      if (meta) {
+        return { 
+          name, 
+          ltp: meta.regularMarketPrice, 
+          close: meta.chartPreviousClose 
+        };
+      }
+    } catch (err) {}
+    return null;
+  });
+
+  const results = await Promise.all(fetchPromises);
+  return results.filter(Boolean);
 }
 
-// Diagnostic endpoint — shows exactly what payload is being sent to IIFL and what comes back
-// Useful to verify token IDs are resolved after startup. Hit GET /api/indices/debug in your browser.
 app.get('/api/indices/debug', async (req, res) => {
-  const session = browserSession(req, res);
-  const payload = {
-    instruments: Object.values(TERMINAL_INDEX_MAP).filter(item => item.iiflPayload).map(item => item.iiflPayload)
-  };
-  const hasToken = !!session.accessToken;
-  let iiflRaw = null;
-  let iiflError = null;
-  if (hasToken) {
-    try {
-      const r = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketfeed`, payload, {
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
-        timeout: 8000,
-      });
-      iiflRaw = r.data;
-    } catch (e) {
-      iiflError = e.response?.data || e.message;
-    }
-  }
-  let yahooRaw = null;
-  try {
-    const yr = await axios.get('https://query1.finance.yahoo.com/v8/finance/chart/^IXIC', { timeout: 5000 });
-    yahooRaw = yr.data?.chart?.result?.[0]?.meta;
-  } catch (ye) {
-    yahooRaw = { error: ye.message };
-  }
-  res.json({
-    mode: session.accessToken ? 'LIVE' : 'SIMULATION',
-    sensexTokenResolved: TERMINAL_INDEX_MAP['sensex'].iiflPayload,
-    payloadSentToIIFL: payload,
-    iiflRawResponse: iiflRaw,
-    iiflError,
-    yahooNasdaqMeta: yahooRaw
-  });
+  res.json({ message: "Legacy debug endpoint disabled." });
 });
 
 app.get('/api/indices', async (req, res) => {
   const session = browserSession(req, res);
+
+  // Always fetch Yahoo to get reliable previous close baselines
+  const yahooData = await fetchYahooIndices();
+  const getYahoo = (name) => yahooData.find(y => y.name === name);
 
   if (session.accessToken) {
     const iiflIndexInstruments = [
@@ -979,7 +959,6 @@ app.get('/api/indices', async (req, res) => {
 
     let iiflError = null;
     let iiflRawErrorBody = null;
-    let iiflHttpStatus = null;
     let results = [];
 
     try {
@@ -989,19 +968,10 @@ app.get('/api/indices', async (req, res) => {
         { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 8000 }
       );
       results = Array.isArray(iiflResponse.data?.result) ? iiflResponse.data.result : [];
-      console.log(`[INDICES] IIFL marketquotes returned ${results.length} results. Raw:`, JSON.stringify(iiflResponse.data).substring(0, 500));
     } catch (err) {
       iiflError = err.message;
-      iiflHttpStatus = err.response?.status;
       iiflRawErrorBody = err.response?.data;
-      console.error('[INDICES] IIFL marketquotes ERROR:', iiflHttpStatus, JSON.stringify(iiflRawErrorBody), iiflError);
     }
-
-    // Fetch NASDAQ via Yahoo Finance in parallel regardless of IIFL result
-    let nasdaqEntry = null;
-    try {
-      nasdaqEntry = await fetchYahooNasdaq();
-    } catch (_) {}
 
     const indices = [];
     const byToken = new Map(results.map(r => [String(r.instrumentId ?? r.token ?? ''), r]));
@@ -1009,57 +979,47 @@ app.get('/api/indices', async (req, res) => {
     for (const inst of iiflIndexInstruments) {
       const raw = byToken.get(inst.instrumentId) || results.find(r => String(r.instrumentId ?? r.token) === inst.instrumentId);
       const data = TERMINAL_INDEX_MAP[inst.name];
+      const yData = getYahoo(inst.name);
 
       if (raw) {
+        // Fetch Real-time Live Price from IIFL
         const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], data.simBase);
-        const cl  = extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], data.simClose);
         
-        let chg = extract(raw, ['change', 'Change', 'netChange', 'NetChange', 'chg', 'Chg'], null);
-        let pct = extract(raw, ['percentChange', 'PercentChange', 'pctChange', 'PctChange', 'pChange', 'ChangePercent', 'changePercent', 'ChangePercentage'], null);
+        // Fetch Previous Close from Yahoo (highly reliable) instead of IIFL (which omits it)
+        const cl = yData?.close || data.simClose;
 
-        // Fallback to calculation only if the native keys are completely missing from the broker response
-        if (chg === null) {
-          chg = +(ltp - cl).toFixed(2);
-        }
-        if (pct === null) {
-          pct = cl > 0 ? +((chg / cl) * 100).toFixed(2) : 0;
-        }
+        const chg = +(ltp - cl).toFixed(2);
+        const pct = cl > 0 ? +((chg / cl) * 100).toFixed(2) : 0;
 
-        console.log(`[INDICES] ${inst.name.toUpperCase()} live: ltp=${ltp} chg=${chg} pct=${pct}% (close=${cl})`);
-        indices.push({ name: inst.name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct.toFixed(2), live: true });
+        indices.push({ name: inst.name, ltp: +ltp.toFixed(2), change: chg, pct, live: true });
       } else if (iiflError) {
-        // Show the actual error instead of fake data
         indices.push({
-          name: inst.name,
-          ltp: 0, change: 0, pct: 0,
-          live: false,
-          error: true,
-          errorReason: `HTTP ${iiflHttpStatus || '?'}: ${iiflError}`,
+          name: inst.name, ltp: 0, change: 0, pct: 0, live: false, error: true,
+          errorReason: `IIFL API ERR: ${iiflError}`,
           errorBody: JSON.stringify(iiflRawErrorBody).substring(0, 200)
         });
       } else {
-        // IIFL succeeded but this specific instrument wasn't in the response
         indices.push({
-          name: inst.name,
-          ltp: 0, change: 0, pct: 0,
-          live: false,
-          error: true,
-          errorReason: `Token ${inst.instrumentId} on ${inst.exchange} not found in IIFL response (${results.length} results returned)`
+          name: inst.name, ltp: 0, change: 0, pct: 0, live: false, error: true,
+          errorReason: `Token ${inst.instrumentId} not found in IIFL response`
         });
       }
     }
 
-    // Add NASDAQ
+    // Add NASDAQ strictly from Yahoo
+    const nasdaqEntry = getYahoo('nasdaq');
     if (nasdaqEntry) {
-      indices.push({ ...nasdaqEntry, live: true });
+      const chg = nasdaqEntry.ltp - nasdaqEntry.close;
+      const pct = (chg / nasdaqEntry.close) * 100;
+      indices.push({ name: 'nasdaq', ltp: +nasdaqEntry.ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct.toFixed(2), live: true });
     } else {
       indices.push({ name: 'nasdaq', ltp: 0, change: 0, pct: 0, live: false, error: true, errorReason: 'Yahoo Finance fetch failed' });
     }
 
-    return res.json({ success: true, live: !!session.accessToken, iiflError, iiflRawErrorBody, indices });
+    return res.json({ success: true, live: true, indices });
   }
 
-  // No access token — pure simulation
+  // Simulation fallback
   const indices = Object.entries(TERMINAL_INDEX_MAP).map(([name, data]) => {
     const s = indexSimState[name];
     const d = (Math.random() - 0.49) * 0.0015;
