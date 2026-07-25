@@ -1011,21 +1011,21 @@ app.get('/api/indices', async (req, res) => {
       const data = TERMINAL_INDEX_MAP[inst.name];
 
       if (raw) {
-        const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP'], 0);
-        const cl  = extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice'], 0);
+        const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], data.simBase);
+        const cl  = extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], data.simClose);
         
         let chg = extract(raw, ['change', 'Change', 'netChange', 'NetChange', 'chg', 'Chg'], null);
         let pct = extract(raw, ['percentChange', 'PercentChange', 'pctChange', 'PctChange', 'pChange', 'ChangePercent', 'changePercent', 'ChangePercentage'], null);
 
         // Fallback to calculation only if the native keys are completely missing from the broker response
         if (chg === null) {
-          chg = cl > 0 ? +(ltp - cl).toFixed(2) : 0;
+          chg = +(ltp - cl).toFixed(2);
         }
         if (pct === null) {
           pct = cl > 0 ? +((chg / cl) * 100).toFixed(2) : 0;
         }
 
-        console.log(`[INDICES] ${inst.name.toUpperCase()} live: ltp=${ltp} chg=${chg} pct=${pct}%`);
+        console.log(`[INDICES] ${inst.name.toUpperCase()} live: ltp=${ltp} chg=${chg} pct=${pct}% (close=${cl})`);
         indices.push({ name: inst.name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct.toFixed(2), live: true });
       } else if (iiflError) {
         // Show the actual error instead of fake data
