@@ -895,10 +895,10 @@ async function fetchSensexToken() {
     const sensex = res.data.find(i => i.underlyingInstrumentName && i.underlyingInstrumentName.includes('SENSEX'));
     if (sensex && sensex.instrumentId) {
       TERMINAL_INDEX_MAP['sensex'].iiflPayload = {
-        exchangeSegment: sensex.exchange || 'BSEEQ',
+        exchangeSegment: 'INDICES', // IIFL strictly demands INDICES for marketfeed despite what INDICES.json says
         exchangeInstrumentID: parseInt(sensex.instrumentId, 10)
       };
-      console.log(`[INDICES] Dynamically resolved SENSEX IIFL Token: ${sensex.instrumentId} (${sensex.exchange})`);
+      console.log(`[INDICES] Dynamically resolved SENSEX IIFL Token: ${sensex.instrumentId}`);
     }
   } catch (err) {
     console.error('[INDICES] Failed to fetch dynamic SENSEX token, falling back to static config:', err.message);
