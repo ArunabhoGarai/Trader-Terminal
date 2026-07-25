@@ -865,6 +865,14 @@ const TERMINAL_INDEX_MAP = {
       exchangeInstrumentID: 26009
     },
     simBase: 56200, simClose: 55900
+  },
+  "nasdaq": {
+    displayLabel: "NASDAQ",
+    googleFinanceToken: "INDEXNASDAQ:.IXIC",
+    tradingViewToken: "NASDAQ:IXIC",
+    yahooToken: "^IXIC",
+    iiflPayload: null, // Fetched from Yahoo Finance
+    simBase: 17800, simClose: 17750
   }
 };
 
@@ -874,11 +882,46 @@ const indexSimState = Object.fromEntries(
 );
 
 // Dedicated endpoint so the frontend can directly fetch NSE market-wide 52W data
-// independent of the tick cycle — data is always the latest from the background scraper
+// independent of the tick cycle - data is always the latest from the background scraper
 app.get('/api/nse52week', (req, res) => {
   const data = nseScraper.getNSEMarketWideData();
   res.json(data);
 });
+
+// Utility: Fetch IIFL INDICES.json to dynamically resolve SENSEX token
+async function fetchSensexToken() {
+  try {
+    const res = await axios.get('https://api.iiflcapital.com/v1/contractfiles/INDICES.json', { timeout: 15000 });
+    const sensex = res.data.find(i => i.underlyingInstrumentName && i.underlyingInstrumentName.includes('SENSEX'));
+    if (sensex && sensex.instrumentId) {
+      TERMINAL_INDEX_MAP['sensex'].iiflPayload = {
+        exchangeSegment: sensex.exchange || 'BSEEQ',
+        exchangeInstrumentID: parseInt(sensex.instrumentId, 10)
+      };
+      console.log(`[INDICES] Dynamically resolved SENSEX IIFL Token: ${sensex.instrumentId} (${sensex.exchange})`);
+    }
+  } catch (err) {
+    console.error('[INDICES] Failed to fetch dynamic SENSEX token, falling back to static config:', err.message);
+  }
+}
+
+// Utility: Fetch NASDAQ from Yahoo Finance proxy
+async function fetchYahooNasdaq() {
+  try {
+    const res = await axios.get('https://query1.finance.yahoo.com/v8/finance/chart/^IXIC', { timeout: 5000 });
+    const meta = res.data?.chart?.result?.[0]?.meta;
+    if (meta) {
+      const ltp = meta.regularMarketPrice;
+      const cl = meta.chartPreviousClose;
+      const chg = ltp - cl;
+      const pct = (chg / cl) * 100;
+      return { name: 'nasdaq', ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct.toFixed(2) };
+    }
+  } catch (err) {
+    console.error('[INDICES] Failed to fetch NASDAQ from Yahoo Finance:', err.message);
+  }
+  return null;
+}
 
 app.get('/api/indices', async (req, res) => {
   const session = browserSession(req, res);
@@ -886,31 +929,56 @@ app.get('/api/indices', async (req, res) => {
   if (session.accessToken) {
     try {
       const payload = {
-        instruments: Object.values(TERMINAL_INDEX_MAP).map(item => item.iiflPayload)
+        instruments: Object.values(TERMINAL_INDEX_MAP).filter(item => item.iiflPayload).map(item => item.iiflPayload)
       };
-      const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketfeed`, payload, {
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
-        timeout: 8000,
-      });
-      const results = Array.isArray(response.data?.result) ? response.data.result : [];
-      const byId = new Map(results.map((r) => [String(r.exchangeInstrumentID), r]));
+      
+      const [response, yahooNasdaq] = await Promise.allSettled([
+        axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketfeed`, payload, {
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
+          timeout: 8000,
+        }),
+        fetchYahooNasdaq()
+      ]);
 
-      const indices = Object.entries(TERMINAL_INDEX_MAP).map(([name, data]) => {
-        const raw = byId.get(String(data.iiflPayload.exchangeInstrumentID));
-        if (raw) {
-          const ltp = raw.lastTradedPrice || data.simBase;
-          const chg = raw.change || 0;
-          const pct = raw.percentChange || 0;
-          return { name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct };
-        } else {
-          // Fallback to simulation if not found in response
-          const ltp = data.simBase;
-          const cl = data.simClose;
-          const chg = ltp - cl;
-          const pct = cl > 0 ? ((chg / cl) * 100).toFixed(2) : '0.00';
-          return { name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct };
-        }
-      });
+      let indices = [];
+
+      if (response.status === 'fulfilled' && response.value) {
+        const results = Array.isArray(response.value.data?.result) ? response.value.data.result : [];
+        const byId = new Map(results.map((r) => [String(r.exchangeInstrumentID), r]));
+
+        indices = Object.entries(TERMINAL_INDEX_MAP)
+          .filter(([name]) => name !== 'nasdaq') // process nasdaq separately
+          .map(([name, data]) => {
+            const raw = byId.get(String(data.iiflPayload.exchangeInstrumentID));
+            if (raw) {
+              const ltp = raw.lastTradedPrice || data.simBase;
+              const chg = raw.change || 0;
+              const pct = raw.percentChange || 0;
+              return { name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct };
+            } else {
+              // Fallback to simulation if not found in response
+              const ltp = data.simBase;
+              const cl = data.simClose;
+              const chg = ltp - cl;
+              const pct = cl > 0 ? ((chg / cl) * 100).toFixed(2) : '0.00';
+              return { name, ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct };
+            }
+          });
+      } else {
+         throw new Error(response.reason?.message || 'IIFL Marketfeed request failed');
+      }
+
+      if (yahooNasdaq.status === 'fulfilled' && yahooNasdaq.value) {
+        indices.push(yahooNasdaq.value);
+      } else {
+        // Fallback to nasdaq simulation
+        const nData = TERMINAL_INDEX_MAP['nasdaq'];
+        const ltp = nData.simBase;
+        const cl = nData.simClose;
+        const chg = ltp - cl;
+        const pct = cl > 0 ? ((chg / cl) * 100).toFixed(2) : '0.00';
+        indices.push({ name: 'nasdaq', ltp: +ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct });
+      }
 
       return res.json({ success: true, live: true, indices });
     } catch (err) {
@@ -1229,6 +1297,10 @@ server.listen(CONFIG.port, () => {
   console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
   console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
   startPolling();
-  nseScraper.startNSEScraper();
+  nseScraper.startNSEScraper(5 * 60 * 1000);
+  
+  // Initialize dynamic Sensex mapping and refresh it every 24 hours
+  fetchSensexToken();
+  setInterval(fetchSensexToken, 24 * 60 * 60 * 1000);
 });
 
