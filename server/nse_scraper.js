@@ -93,7 +93,20 @@ function mapMostActiveToQuote(item) {
   };
 }
 
-async function scrapeNSE() {
+let lastScrapeTime = 0;
+let isScraping = false;
+
+async function scrapeNSE(manual = false) {
+  if (isScraping) return { success: false, message: 'Scraping is already in progress.' };
+  
+  const now = Date.now();
+  if (manual && (now - lastScrapeTime) < 5 * 60 * 1000) {
+    const waitMins = Math.ceil((5 * 60 * 1000 - (now - lastScrapeTime)) / 60000);
+    return { success: false, message: `Cooldown active. Please wait ${waitMins} minute(s).` };
+  }
+
+  isScraping = true;
+  lastScrapeTime = Date.now();
   console.log('[NSE Scraper] Waking up to fetch full NSE analysis data...');
   let browser;
   try {
@@ -103,71 +116,96 @@ async function scrapeNSE() {
     });
     
     const page = await browser.newPage();
+    
+    // Set a solid User-Agent and viewport
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1280, height: 800 });
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+
+    // Block unnecessary resources (images, fonts) to speed up loading
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const type = req.resourceType();
+      if (['image', 'font', 'stylesheet', 'media'].includes(type)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
     });
 
     console.log('[NSE Scraper] Warming up session cookies on NSE homepage...');
-    await page.goto('https://www.nseindia.com', { waitUntil: 'networkidle2', timeout: 45000 });
+    try {
+      await page.goto('https://www.nseindia.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    } catch (e) {
+      console.warn('[NSE Scraper] Homepage warmup warning:', e.message);
+    }
     
     // Wait for Akamai cookies to settle
     await new Promise(resolve => setTimeout(resolve, 2000));
     
     console.log('[NSE Scraper] Fetching 52-week High...');
-    const highResponse = await page.goto('https://www.nseindia.com/api/live-analysis-52Week?index=high', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const highJson = await highResponse.json();
-    if (highJson && highJson.dataLtpGreater20) {
-      global52WHighs = highJson.dataLtpGreater20.map(item => mapNSEToQuote(item, true));
-      console.log(`[NSE Scraper] ✅ Fetched ${global52WHighs.length} 52-week Highs.`);
-    }
+    try {
+      const highResponse = await page.goto('https://www.nseindia.com/api/live-analysis-52Week?index=high', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      const highJson = await highResponse.json();
+      if (highJson && highJson.dataLtpGreater20) {
+        global52WHighs = highJson.dataLtpGreater20.map(item => mapNSEToQuote(item, true));
+        console.log(`[NSE Scraper] ✅ Fetched ${global52WHighs.length} 52-week Highs.`);
+      }
+    } catch (e) { console.warn('[NSE Scraper] ⚠️ Failed 52-week High:', e.message); }
 
     console.log('[NSE Scraper] Fetching 52-week Low...');
     await new Promise(resolve => setTimeout(resolve, 3500));
-    
-    const lowResponse = await page.goto('https://www.nseindia.com/api/live-analysis-52Week?index=low', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const lowJson = await lowResponse.json();
-    if (lowJson && lowJson.dataLtpGreater20) {
-      global52WLows = lowJson.dataLtpGreater20.map(item => mapNSEToQuote(item, false));
-      console.log(`[NSE Scraper] ✅ Fetched ${global52WLows.length} 52-week Lows.`);
-    }
+    try {
+      const lowResponse = await page.goto('https://www.nseindia.com/api/live-analysis-52Week?index=low', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      const lowJson = await lowResponse.json();
+      if (lowJson && lowJson.dataLtpGreater20) {
+        global52WLows = lowJson.dataLtpGreater20.map(item => mapNSEToQuote(item, false));
+        console.log(`[NSE Scraper] ✅ Fetched ${global52WLows.length} 52-week Lows.`);
+      }
+    } catch (e) { console.warn('[NSE Scraper] ⚠️ Failed 52-week Low:', e.message); }
 
     console.log('[NSE Scraper] Fetching Gainers...');
     await new Promise(resolve => setTimeout(resolve, 3500));
-    const gainersRes = await page.goto('https://www.nseindia.com/api/live-analysis-variations?index=gainers', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const gainersJson = await gainersRes.json();
-    if (gainersJson && gainersJson.NIFTY && gainersJson.NIFTY.data) {
-      globalGainers = gainersJson.NIFTY.data.map(mapGainerLoserToQuote);
-      console.log(`[NSE Scraper] ✅ Fetched ${globalGainers.length} Gainers.`);
-    }
+    try {
+      const gainersRes = await page.goto('https://www.nseindia.com/api/live-analysis-variations?index=gainers', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      const gainersJson = await gainersRes.json();
+      if (gainersJson && gainersJson.NIFTY && gainersJson.NIFTY.data) {
+        globalGainers = gainersJson.NIFTY.data.map(mapGainerLoserToQuote);
+        console.log(`[NSE Scraper] ✅ Fetched ${globalGainers.length} Gainers.`);
+      }
+    } catch (e) { console.warn('[NSE Scraper] ⚠️ Failed Gainers:', e.message); }
 
     console.log('[NSE Scraper] Fetching Losers...');
     await new Promise(resolve => setTimeout(resolve, 3500));
-    const losersRes = await page.goto('https://www.nseindia.com/api/live-analysis-variations?index=loosers', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const losersJson = await losersRes.json();
-    if (losersJson && losersJson.NIFTY && losersJson.NIFTY.data) {
-      globalLosers = losersJson.NIFTY.data.map(mapGainerLoserToQuote);
-      console.log(`[NSE Scraper] ✅ Fetched ${globalLosers.length} Losers.`);
-    }
+    try {
+      const losersRes = await page.goto('https://www.nseindia.com/api/live-analysis-variations?index=loosers', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      const losersJson = await losersRes.json();
+      if (losersJson && losersJson.NIFTY && losersJson.NIFTY.data) {
+        globalLosers = losersJson.NIFTY.data.map(mapGainerLoserToQuote);
+        console.log(`[NSE Scraper] ✅ Fetched ${globalLosers.length} Losers.`);
+      }
+    } catch (e) { console.warn('[NSE Scraper] ⚠️ Failed Losers:', e.message); }
 
     console.log('[NSE Scraper] Fetching Volume Active...');
     await new Promise(resolve => setTimeout(resolve, 3500));
-    const volRes = await page.goto('https://www.nseindia.com/api/live-analysis-most-active-securities?index=volume', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const volJson = await volRes.json();
-    if (volJson && volJson.data) {
-      globalVolume = volJson.data.map(mapMostActiveToQuote);
-      console.log(`[NSE Scraper] ✅ Fetched ${globalVolume.length} Active by Volume.`);
-    }
+    try {
+      const volRes = await page.goto('https://www.nseindia.com/api/live-analysis-most-active-securities?index=volume', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      const volJson = await volRes.json();
+      if (volJson && volJson.data) {
+        globalVolume = volJson.data.map(mapMostActiveToQuote);
+        console.log(`[NSE Scraper] ✅ Fetched ${globalVolume.length} Active by Volume.`);
+      }
+    } catch (e) { console.warn('[NSE Scraper] ⚠️ Failed Volume:', e.message); }
 
     console.log('[NSE Scraper] Fetching Value Active...');
     await new Promise(resolve => setTimeout(resolve, 3500));
-    const valRes = await page.goto('https://www.nseindia.com/api/live-analysis-most-active-securities?index=value', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const valJson = await valRes.json();
-    if (valJson && valJson.data) {
-      globalValue = valJson.data.map(mapMostActiveToQuote);
-      console.log(`[NSE Scraper] ✅ Fetched ${globalValue.length} Active by Value.`);
-    }
+    try {
+      const valRes = await page.goto('https://www.nseindia.com/api/live-analysis-most-active-securities?index=value', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      const valJson = await valRes.json();
+      if (valJson && valJson.data) {
+        globalValue = valJson.data.map(mapMostActiveToQuote);
+        console.log(`[NSE Scraper] ✅ Fetched ${globalValue.length} Active by Value.`);
+      }
+    } catch (e) { console.warn('[NSE Scraper] ⚠️ Failed Value:', e.message); }
 
   } catch (err) {
     console.error('[NSE Scraper] Error during scraping:', err.message);
@@ -187,11 +225,13 @@ async function scrapeNSE() {
     globalVolume = [...global52WHighs];
     globalValue = [...global52WHighs];
   } finally {
+    isScraping = false;
     if (browser) await browser.close();
   }
+  return { success: true, message: 'NSE data successfully refreshed.' };
 }
 
-function startNSEScraper(intervalMs = 4 * 60 * 1000) { // Default 4 minutes
+function startNSEScraper(intervalMs = 5 * 60 * 1000) { // Default 5 minutes
   // Initial run
   scrapeNSE();
   // Schedule recurring runs
@@ -211,5 +251,6 @@ function getNSEMarketWideData() {
 
 module.exports = {
   startNSEScraper,
-  getNSEMarketWideData
+  getNSEMarketWideData,
+  scrapeNSE
 };
