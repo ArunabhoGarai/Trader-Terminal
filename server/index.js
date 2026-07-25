@@ -816,6 +816,11 @@ app.post('/api/market-watch/refresh', async (req, res) => {
   res.json(terminalPayload(session));
 });
 
+app.post('/api/nse/refresh', async (req, res) => {
+  const result = await nseScraper.scrapeNSE(true);
+  res.json(result);
+});
+
 app.get('/api/instruments', async (req, res) => {
   const exchange = String(req.query.exchange || 'NSE');
   const segment = String(req.query.segment || 'Equity');
