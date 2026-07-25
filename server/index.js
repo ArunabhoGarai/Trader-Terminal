@@ -834,7 +834,7 @@ app.get('/api/instruments', async (req, res) => {
 // 1. The Master Symbol Dictionary for strict resolution
 const TERMINAL_INDEX_MAP = {
   "nifty": {
-    displayLabel: "SP CNX NIFTY",
+    displayLabel: "NIFTY 50",
     googleFinanceToken: "INDEXNSE:NIFTY_50",
     tradingViewToken: "NSE:NIFTY",
     yahooToken: "^NSEI",
@@ -845,8 +845,8 @@ const TERMINAL_INDEX_MAP = {
     simBase: 24836, simClose: 24700
   },
   "sensex": {
-    displayLabel: "SENSEX",
-    googleFinanceToken: "INDEXBSE:SENSEX",
+    displayLabel: "BSE SENSEX",
+    googleFinanceToken: "INDEXBOM:SENSEX",
     tradingViewToken: "BSE:SENSEX",
     yahooToken: "^BSESN",
     iiflPayload: {
@@ -871,7 +871,7 @@ const TERMINAL_INDEX_MAP = {
     googleFinanceToken: "INDEXNASDAQ:.IXIC",
     tradingViewToken: "NASDAQ:IXIC",
     yahooToken: "^IXIC",
-    iiflPayload: null, // Fetched from Yahoo Finance
+    iiflPayload: null, // Fetched from Yahoo Finance, not IIFL
     simBase: 17800, simClose: 17750
   }
 };
@@ -922,6 +922,44 @@ async function fetchYahooNasdaq() {
   }
   return null;
 }
+
+// Diagnostic endpoint — shows exactly what payload is being sent to IIFL and what comes back
+// Useful to verify token IDs are resolved after startup. Hit GET /api/indices/debug in your browser.
+app.get('/api/indices/debug', async (req, res) => {
+  const session = browserSession(req, res);
+  const payload = {
+    instruments: Object.values(TERMINAL_INDEX_MAP).filter(item => item.iiflPayload).map(item => item.iiflPayload)
+  };
+  const hasToken = !!session.accessToken;
+  let iiflRaw = null;
+  let iiflError = null;
+  if (hasToken) {
+    try {
+      const r = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketfeed`, payload, {
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
+        timeout: 8000,
+      });
+      iiflRaw = r.data;
+    } catch (e) {
+      iiflError = e.response?.data || e.message;
+    }
+  }
+  let yahooRaw = null;
+  try {
+    const yr = await axios.get('https://query1.finance.yahoo.com/v8/finance/chart/^IXIC', { timeout: 5000 });
+    yahooRaw = yr.data?.chart?.result?.[0]?.meta;
+  } catch (ye) {
+    yahooRaw = { error: ye.message };
+  }
+  res.json({
+    mode: session.accessToken ? 'LIVE' : 'SIMULATION',
+    sensexTokenResolved: TERMINAL_INDEX_MAP['sensex'].iiflPayload,
+    payloadSentToIIFL: payload,
+    iiflRawResponse: iiflRaw,
+    iiflError,
+    yahooNasdaqMeta: yahooRaw
+  });
+});
 
 app.get('/api/indices', async (req, res) => {
   const session = browserSession(req, res);
