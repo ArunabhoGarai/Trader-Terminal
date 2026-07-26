@@ -49,8 +49,8 @@ button { cursor: pointer; }
 .index-strip span:first-child { font-size: 11px; color: #4a5a5d; }
 .index-strip strong { font-size: 14px; font-weight: 700; color: #111; }
 .index-strip em { font-style: normal; font-size: 13px; font-weight: 700; }
-.positive { color: #15852b; }
-.negative { color: #c50b12; }
+.positive { color: #c50b12; }
+.negative { color: #15852b; }
 .index-strip i { height: 20px; border-left: 1px solid #929a9b; }
 .index-clock { font-family: var(--mono); font-size: 11px; color: #4a5a5d; margin-left: 4px; }
 .connection-status {
@@ -245,4 +245,79 @@ button { cursor: pointer; }
   .analysis-tabs button { flex: 0 0 auto; }
   .analysis-filters { overflow-x: auto; }
   .analysis-filters label { flex: 0 0 auto; }
+}
+
+/* 📱 MOBILE RESPONSIVE SCALING */
+@media (max-width: 600px) {
+  .watch-toolbar { flex-direction: column; align-items: stretch; gap: 8px; }
+  .watch-toolbar select, .symbol-search-wrap, .local-search-input { width: 100%; max-width: none; }
+  .watch-toolbar button { width: 100%; max-width: none; justify-content: center; }
+  .watchlist-capacity { text-align: center; margin: 4px 0; }
+  .table-wrap { -webkit-overflow-scrolling: touch; }
+  .index-strip { font-size: 0.85rem; padding: 6px; }
+  .market-table { min-width: 800px; font-size: 0.85rem; }
+  .market-table th, .market-table td { padding: 6px 4px; }
+}
+
+/* Local Search Bar */
+.local-search-input {
+  padding: 4px 8px;
+  border: 1px solid #c2c9d1;
+  border-radius: 4px;
+  font-size: 13px;
+  width: 140px;
+}
+.local-search-input:focus { border-color: #1a73e8; outline: none; }
+
+/* SortableJS Swap Highlight Animation */
+.sortable-swap-highlight {
+  background-color: rgba(26, 115, 232, 0.15) !important;
+  transition: background-color 0.2s ease;
+}
+
+/* Copyright Pill */
+.copyright-pill {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(18, 24, 38, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 6px 16px;
+  border-radius: 20px;
+  color: #a0aec0;
+  font-size: 11px;
+  font-family: 'Inter', sans-serif;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: all 0.2s ease;
+  text-align: center;
+  white-space: nowrap;
+}
+.copyright-pill:hover {
+  background: rgba(18, 24, 38, 0.95);
+  transform: translateX(-50%) translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+}
+.copyright-pill a {
+  color: #63b3ed;
+  text-decoration: none;
+  font-weight: 600;
+  transition: color 0.2s ease;
+}
+.copyright-pill a:hover {
+  color: #90cdf4;
+  text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+  .copyright-pill {
+    width: 90%;
+    white-space: normal;
+    font-size: 10px;
+    padding: 6px 12px;
+    bottom: 8px;
+  }
 }
