@@ -34,6 +34,7 @@ const state = {
 
 let chartInstance = null;
 let candleSeries = null;
+let areaSeries = null;
 let activeChartQuote = null;
 let activeTimeframe = '1D';
 let currentLiveCandle = null;
@@ -525,10 +526,18 @@ async function openChart(key) {
           upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
           wickUpColor: '#26a69a', wickDownColor: '#ef5350'
         });
+        areaSeries = chartInstance.addAreaSeries({
+          lineColor: '#2962FF', topColor: 'rgba(41, 98, 255, 0.5)', bottomColor: 'rgba(41, 98, 255, 0.05)',
+          lineWidth: 2,
+        });
       } else if (typeof chartInstance.addSeries === 'function' && LightweightCharts.CandlestickSeries) {
         candleSeries = chartInstance.addSeries(LightweightCharts.CandlestickSeries, {
           upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
           wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+        });
+        areaSeries = chartInstance.addSeries(LightweightCharts.AreaSeries, {
+          lineColor: '#2962FF', topColor: 'rgba(41, 98, 255, 0.5)', bottomColor: 'rgba(41, 98, 255, 0.05)',
+          lineWidth: 2,
         });
       } else {
         console.error('LightweightCharts API not compatible');
@@ -564,13 +573,30 @@ async function openChart(key) {
 }
 
 async function loadChartData() {
-  if (!activeChartQuote || !candleSeries) return;
+  if (!activeChartQuote || !candleSeries || !areaSeries) return;
   el('chart-loader').style.display = 'block';
+  
+  // Toggle visibility
+  if (activeTimeframe === 'live') {
+    candleSeries.applyOptions({ visible: false });
+    areaSeries.applyOptions({ visible: true });
+  } else {
+    areaSeries.applyOptions({ visible: false });
+    candleSeries.applyOptions({ visible: true });
+  }
+
   try {
-    const res = await fetch(`/api/chart/${activeChartQuote.exchange}/${activeChartQuote.instrumentId}?timeframe=${activeTimeframe}`);
+    // If 'live', fetch '1D' to seed the area chart with today's history
+    const tfToFetch = activeTimeframe === 'live' ? '1D' : activeTimeframe;
+    const res = await fetch(`/api/chart/${activeChartQuote.exchange}/${activeChartQuote.instrumentId}?timeframe=${tfToFetch}`);
     const result = await res.json();
     if (result.success && Array.isArray(result.data) && result.data.length > 0) {
-      candleSeries.setData(result.data);
+      if (activeTimeframe === 'live') {
+        const areaData = result.data.map(d => ({ time: d.time, value: d.close }));
+        areaSeries.setData(areaData);
+      } else {
+        candleSeries.setData(result.data);
+      }
       currentLiveCandle = { ...result.data[result.data.length - 1] };
       chartInstance.timeScale().fitContent();
     } else {
@@ -585,7 +611,7 @@ async function loadChartData() {
 }
 
 function updateLiveChartTick(quotes) {
-  if (!chartInstance || !candleSeries || !activeChartQuote) return;
+  if (!chartInstance || !activeChartQuote) return;
   if (el('chart-window').classList.contains('is-hidden')) return;
 
   const tickQuote = quotes.find(q => keyFor(q) === keyFor(activeChartQuote));
@@ -594,6 +620,16 @@ function updateLiveChartTick(quotes) {
   activeChartQuote = tickQuote;
   
   const d = new Date();
+  
+  if (activeTimeframe === 'live' && areaSeries) {
+    // Area Chart: Simple { time, value } update with exact timestamp to draw new segments continuously
+    const exactTime = Math.floor(d.getTime() / 1000);
+    areaSeries.update({ time: exactTime, value: tickQuote.lastPrice });
+    return;
+  }
+  
+  if (!candleSeries) return;
+
   let timeParam;
   const isIntraday = activeTimeframe === '1D';
   
@@ -628,7 +664,7 @@ function updateLiveChartTick(quotes) {
 
 // Ghost tick to force the X-axis to scroll continuously even if price doesn't change
 setInterval(() => {
-  if (activeChartQuote && chartInstance && candleSeries && !document.getElementById('chart-window').classList.contains('is-hidden')) {
+  if (activeChartQuote && chartInstance && !document.getElementById('chart-window').classList.contains('is-hidden')) {
     updateLiveChartTick([activeChartQuote]);
   }
 }, 1000);
@@ -812,45 +848,36 @@ function bindEvents() {
     if (row) openChart(row.dataset.key);
   });
   
-  // Drag and Drop ordering
-  const tbody = el('market-body');
-  let dragKey = null;
-  
-  tbody.addEventListener('dragstart', (e) => {
-    const tr = e.target.closest('tr');
-    if (!tr) return;
-    dragKey = tr.dataset.key;
-    e.dataTransfer.effectAllowed = 'move';
-    tr.classList.add('dragging');
-  });
-  
-  tbody.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    const tr = e.target.closest('tr');
-    const dragging = document.querySelector('.dragging');
-    if (tr && dragging && tr.dataset.key !== dragKey) {
-      const rect = tr.getBoundingClientRect();
-      const mid = rect.top + rect.height / 2;
-      if (e.clientY < mid) {
-        tr.parentNode.insertBefore(dragging, tr);
-      } else {
-        tr.parentNode.insertBefore(dragging, tr.nextSibling);
-      }
+  // Smooth Drag-and-Drop Swapping via SortableJS
+    const tbody = el('market-body');
+    if (typeof Sortable !== 'undefined') {
+      new Sortable(tbody, {
+        animation: 150,
+        swap: true, // Enable swap plugin
+        swapClass: 'sortable-swap-highlight', // Class applied to the target during swap
+        onEnd: function () {
+          // Save new order after drag ends
+          const newKeys = Array.from(tbody.querySelectorAll('tr[data-key]')).map(row => row.dataset.key);
+          if (newKeys.length > 0) reorderWatchlist(newKeys);
+        }
+      });
     }
-  });
-  
-  tbody.addEventListener('dragend', (e) => {
-    const tr = e.target.closest('tr');
-    if (tr) tr.classList.remove('dragging');
-    dragKey = null;
-    
-    // Save new order
-    const newKeys = Array.from(tbody.querySelectorAll('tr[data-key]')).map(row => row.dataset.key);
-    if (newKeys.length > 0) reorderWatchlist(newKeys);
-  });
-  
-  el('close-chart').addEventListener('click', () => { el('chart-window').classList.add('is-hidden'); activeChartQuote = null; });
+
+    // Local Search Filtering
+    el('local-search').addEventListener('input', (e) => {
+      const q = e.target.value.toLowerCase();
+      const rows = tbody.querySelectorAll('tr[data-key]');
+      rows.forEach(row => {
+        const symbolCell = row.querySelector('.symbol');
+        if (symbolCell && symbolCell.textContent.toLowerCase().includes(q)) {
+          row.style.display = '';
+        } else {
+          row.style.display = 'none';
+        }
+      });
+    });
+
+    el('close-chart').addEventListener('click', () => { el('chart-window').classList.add('is-hidden'); activeChartQuote = null; });
   document.querySelectorAll('.chart-timeframes button').forEach(btn => {
     btn.addEventListener('click', (e) => {
       document.querySelectorAll('.chart-timeframes button').forEach(b => b.classList.remove('active'));
