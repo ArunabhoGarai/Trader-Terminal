@@ -19,6 +19,7 @@ const state = {
   actionWatch: [],
   marketAnalysis: { highs: [], lows: [], gainers: [], losers: [] },
   filters: { exchange: 'ALL', segment: 'ALL' },
+  localSearch: '',
   suggestions: [],
   selectedSuggestion: null,
   searchTimer: null,
@@ -68,10 +69,10 @@ function quoteFromPrice(quote, index = 0) {
 }
 
 function matchesFilters(quote) {
-  const exchange = String(quote.exchange || '').toUpperCase();
-  const segment = quote.segment || (exchange.endsWith('FO') ? 'F&O' : 'Equity');
-  return (state.filters.exchange === 'ALL' || exchange.startsWith(state.filters.exchange))
-    && (state.filters.segment === 'ALL' || segment === state.filters.segment);
+  if (state.filters.exchange !== 'ALL' && quote.exchange !== state.filters.exchange && !quote.exchange.includes(state.filters.exchange)) return false;
+  if (state.filters.segment !== 'ALL' && quote.segment !== state.filters.segment) return false;
+  if (state.localSearch && !quote.symbol.toLowerCase().includes(state.localSearch.toLowerCase())) return false;
+  return true;
 }
 
 function renderWatchlistMeta() {
@@ -662,13 +663,6 @@ function updateLiveChartTick(quotes) {
   candleSeries.update(currentLiveCandle);
 }
 
-// Ghost tick to force the X-axis to scroll continuously even if price doesn't change
-setInterval(() => {
-  if (activeChartQuote && chartInstance && !document.getElementById('chart-window').classList.contains('is-hidden')) {
-    updateLiveChartTick([activeChartQuote]);
-  }
-}, 1000);
-
 async function refreshQuotes(silent = false) {
   // Always poll via REST — this keeps the server-side simulation ticking
   // and ensures data flows even if WebSocket is connected (server deduplicates)
@@ -865,16 +859,8 @@ function bindEvents() {
 
     // Local Search Filtering
     el('local-search').addEventListener('input', (e) => {
-      const q = e.target.value.toLowerCase();
-      const rows = tbody.querySelectorAll('tr[data-key]');
-      rows.forEach(row => {
-        const symbolCell = row.querySelector('.symbol');
-        if (symbolCell && symbolCell.textContent.toLowerCase().includes(q)) {
-          row.style.display = '';
-        } else {
-          row.style.display = 'none';
-        }
-      });
+      state.localSearch = e.target.value.toLowerCase();
+      renderMarket();
     });
 
     el('close-chart').addEventListener('click', () => { el('chart-window').classList.add('is-hidden'); activeChartQuote = null; });
