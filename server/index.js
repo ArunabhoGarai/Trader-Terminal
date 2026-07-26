@@ -180,21 +180,33 @@ function extract(obj, keys, fallback) {
 
 function quoteFromPayload(raw, fallback, position) {
   const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], fallback.lastPrice);
-  const close = extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], fallback.close);
+  let close = extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], fallback.close);
+  
+  // FIX: If IIFL API omits Previous Close, and the simulation fallback is wildly inaccurate (e.g. 3000% diff), anchor it to LTP
+  if (close > 0 && ltp > 0 && Math.abs(ltp - close) / close > 0.4) {
+    close = ltp;
+  }
   const pctChange = close ? ((ltp - close) / close) * 100 : 0;
   
   // Extract Bid/Ask handling nested structures from IIFL OpenAPI
   let bidPrice = extract(raw, ['bestBidPrice', 'BuyRate', 'buyRate', 'BuyRate1', 'buyRate1', 'buyPrice', 'buyPrice1', 'BuyPrice1', 'BidRate', 'bidRate', 'BuyPrice', 'BidPrice'], raw.Bids?.[0]?.Price ?? raw.bids?.[0]?.price ?? fallback.bestBidPrice);
-  let bidQty = extract(raw, ['bestBidQty', 'bestBidQuantity', 'BuyQty', 'buyQty', 'BuyQty1', 'buyQty1', 'BidQty', 'bidQty', 'TotalBuyQty'], raw.Bids?.[0]?.Size ?? raw.bids?.[0]?.quantity ?? raw.Bids?.[0]?.Quantity ?? fallback.bestBidQty);
+  let bidQty = extract(raw, ['bestBidQuantity', 'bestBidQty', 'BuyQty', 'buyQty', 'BuyQty1', 'buyQty1', 'BidQty', 'bidQty', 'TotalBuyQty'], raw.Bids?.[0]?.Size ?? raw.bids?.[0]?.quantity ?? raw.Bids?.[0]?.Quantity ?? fallback.bestBidQty);
   
   let askPrice = extract(raw, ['bestAskPrice', 'bestAskRate', 'SellRate', 'sellRate', 'SellRate1', 'sellRate1', 'sellPrice', 'sellPrice1', 'SellPrice1', 'AskRate', 'askRate', 'SellPrice', 'OfferRate', 'AskPrice'], raw.Asks?.[0]?.Price ?? raw.asks?.[0]?.price ?? fallback.bestAskPrice);
-  let askQty = extract(raw, ['bestAskQty', 'bestAskQuantity', 'SellQty', 'sellQty', 'SellQty1', 'sellQty1', 'AskQty', 'askQty', 'OfferQty', 'TotalSellQty'], raw.Asks?.[0]?.Size ?? raw.asks?.[0]?.quantity ?? raw.Asks?.[0]?.Quantity ?? fallback.bestAskQty);
+  let askQty = extract(raw, ['bestAskQuantity', 'bestAskQty', 'SellQty', 'sellQty', 'SellQty1', 'sellQty1', 'AskQty', 'askQty', 'OfferQty', 'TotalSellQty'], raw.Asks?.[0]?.Size ?? raw.asks?.[0]?.quantity ?? raw.Asks?.[0]?.Quantity ?? fallback.bestAskQty);
 
-  // SANITY CHECK: If depth rates deviate by > 5% from LTP, they are likely stale fallbacks or bad data. Recalculate them synthetically around the live LTP.
+  let high = extract(raw, ['high', 'High', 'HighPrice', 'DayHigh', 'DayHighPrice', 'SessionHigh'], fallback.high);
+  let low = extract(raw, ['low', 'Low', 'LowPrice', 'DayLow', 'DayLowPrice', 'SessionLow'], fallback.low);
+
+  // Enforce High/Low bounds based on LTP
+  if (high < ltp) high = ltp;
+  if (low > ltp || low <= 0) low = ltp;
+
+  // SANITY CHECK: Enforce High/Low bounds and prevent 5% deviations on depth rates
   if (ltp > 0) {
     const spread = Math.max(ltp * 0.00035, 0.05);
-    if (Math.abs(bidPrice - ltp) / ltp > 0.05) bidPrice = +(ltp - spread).toFixed(2);
-    if (Math.abs(askPrice - ltp) / ltp > 0.05) askPrice = +(ltp + spread).toFixed(2);
+    if (Math.abs(bidPrice - ltp) / ltp > 0.05 || bidPrice > high || bidPrice < low) bidPrice = +(ltp - spread).toFixed(2);
+    if (Math.abs(askPrice - ltp) / ltp > 0.05 || askPrice > high || askPrice < low) askPrice = +(ltp + spread).toFixed(2);
   }
 
   // Extract 52W High & Low with all possible IIFL key aliases
@@ -229,8 +241,8 @@ function quoteFromPayload(raw, fallback, position) {
     pctChange: extract(raw, ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'priceChangePercent', 'NetChangePercentage', 'PcntChg'], pctChange),
     close,
     open: extract(raw, ['open', 'Open', 'OpenPrice', 'OpeningPrice', 'LastOpenPrice'], fallback.open), 
-    high: extract(raw, ['high', 'High', 'HighPrice', 'DayHigh', 'DayHighPrice', 'SessionHigh'], fallback.high), 
-    low: extract(raw, ['low', 'Low', 'LowPrice', 'DayLow', 'DayLowPrice', 'SessionLow'], fallback.low),
+    high, 
+    low,
     bestBidPrice: bidPrice, 
     bestBidQty: bidQty,
     bestAskPrice: askPrice, 
@@ -524,12 +536,13 @@ async function refreshLiveQuotes(session) {
     if (!results.length) throw new Error(response.data?.message || 'The market quote response did not contain results.');
     
     const previous = new Map(session.quotes.map((quote) => [instrumentKey(quote), quote]));
-    const resultsByKey = new Map(results.map((quote) => [instrumentKey({ exchange: quote.exchange || '', instrumentId: quote.instrumentId ?? quote.token }), quote]));
+    // Strictly map by Token/InstrumentID, disregarding potentially missing/bad exchange keys
+    const resultsByKey = new Map(results.map((quote) => [String(quote.instrumentId ?? quote.token), quote]));
     
     // Update active watchlist quotes
     const nextQuotes = session.watchlist.map((instrument, index) => {
       const fallback = previous.get(instrumentKey(instrument)) || makeSimulationQuote(instrument, index);
-      const raw = resultsByKey.get(instrumentKey(instrument)) || results.find((quote) => String(quote.instrumentId ?? quote.token) === String(instrument.instrumentId));
+      const raw = resultsByKey.get(String(instrument.instrumentId));
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
     
