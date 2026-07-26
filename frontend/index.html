@@ -8,6 +8,7 @@
     <meta name="description" content="Desktop-style market watch powered by the IIFL Markets API." />
     <link rel="stylesheet" href="styles/main.css" />
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
   </head>
   <body>
     <main class="terminal-shell" aria-label="Trader terminal">
@@ -53,7 +54,8 @@
         </div>
         <button id="add-scrip" class="native-button">Add</button>
         <span id="watchlist-capacity" class="watchlist-capacity" aria-live="polite">0 / 400 Scripts</span>
-        <button id="open-action-watch" class="analysis-button">⌁ <span>Market Analysis</span><em id="alert-badge" class="alert-badge hidden">0</em></button>
+        <input id="local-search" class="local-search-input" type="search" placeholder="Filter watchlist..." aria-label="Filter added scrips" />
+        <button id="open-action-watch" class="analysis-button">🔥 <span>Market Analysis</span><em id="alert-badge" class="alert-badge hidden">0</em></button>
         <div class="toolbar-spacer"></div>
         <button id="connect-iifl" class="connect-button">Connect IIFL</button>
       </section>
@@ -124,8 +126,9 @@
     <!-- CHART MODAL -->
     <section class="analysis-window is-hidden" id="chart-window" aria-modal="true" role="dialog" aria-labelledby="chart-title">
       <header class="analysis-titlebar">
-        <strong id="chart-title">Historical Data</strong>
+        <strong id="chart-title" style="flex: 1;">Historical Data</strong>
         <div class="chart-timeframes">
+          <button data-tf="live">Live Area</button>
           <button class="active" data-tf="1D">1D</button>
           <button data-tf="1M">1M</button>
           <button data-tf="1Y">1Y</button>
@@ -138,6 +141,14 @@
         <div id="chart-loader" style="position: absolute; top:50%; left:50%; transform: translate(-50%, -50%); color: #666; display: none;">Loading data from IIFL...</div>
       </div>
     </section>
+
+    <!-- Copyright Footer -->
+    <div class="copyright-pill">
+      &copy; <script>document.write(new Date().getFullYear())</script> Arunabho Garai | Powered by 
+      <a href="https://www.iifl.com" target="_blank" rel="noopener noreferrer">IIFL</a>, 
+      <a href="https://www.nseindia.com" target="_blank" rel="noopener noreferrer">NSE</a> & 
+      <a href="https://finance.yahoo.com" target="_blank" rel="noopener noreferrer">Yahoo Finance</a>
+    </div>
 
     <div id="toast" class="toast" role="status"></div>
     <script src="scripts/app.js"></script>
