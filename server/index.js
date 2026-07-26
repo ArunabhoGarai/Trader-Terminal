@@ -133,6 +133,15 @@ function indiaTimeString() {
 // ---------------------------------------------------------------------------
 // Quote builders
 // ---------------------------------------------------------------------------
+function makeEmptyLiveQuote(instrument, position = 0) {
+  return {
+    exchange: instrument.exchange, instrumentId: instrument.instrumentId, symbol: instrument.symbol,
+    lastPrice: 0, pctChange: 0, close: 0, open: 0, high: 0, low: 0,
+    bestBidPrice: 0, bestBidQty: 0, bestAskPrice: 0, bestAskQty: 0,
+    tradedVolume: 0, week52High: 0, week52Low: 0, position
+  };
+}
+
 function makeSimulationQuote(instrument, position = 0) {
   const direction = [-.44, 1.43, .51, -1.11, -.83, 1.82, -2.85, .21, .32, .06, .35, 1.01, -.21, 2.14, 1.08, .82, .53, -.47, .16, .72][position % 20] || .1;
   const basePrice = number(instrument.basePrice, 100 + ((position + 1) * 41));
@@ -165,7 +174,7 @@ function makeSimulationQuote(instrument, position = 0) {
     low, bestBidPrice: Math.max(0, basePrice - spread),
     bestBidQty: 80 + position * 53, bestAskPrice: basePrice + spread,
     bestAskQty: 100 + position * 61, tradedVolume: 70000 + position * 12431,
-    week52High, week52Low, updatedAt: new Date().toISOString(),
+    week52High, week52Low, updatedAt: new Date().toISOString(), position,
   };
 }
 
@@ -180,12 +189,8 @@ function extract(obj, keys, fallback) {
 
 function quoteFromPayload(raw, fallback, position) {
   const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], fallback.lastPrice);
-  let close = extract(raw, ['close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], fallback.close);
+  let close = extract(raw, ['PClose', 'pClose', 'close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], fallback.close);
   
-  // FIX: If IIFL API omits Previous Close, and the simulation fallback is wildly inaccurate (e.g. 3000% diff), anchor it to LTP
-  if (close > 0 && ltp > 0 && Math.abs(ltp - close) / close > 0.4) {
-    close = ltp;
-  }
   const pctChange = close ? ((ltp - close) / close) * 100 : 0;
   
   // Extract Bid/Ask handling nested structures from IIFL OpenAPI
@@ -198,27 +203,27 @@ function quoteFromPayload(raw, fallback, position) {
   let high = extract(raw, ['high', 'High', 'HighPrice', 'DayHigh', 'DayHighPrice', 'SessionHigh'], fallback.high);
   let low = extract(raw, ['low', 'Low', 'LowPrice', 'DayLow', 'DayLowPrice', 'SessionLow'], fallback.low);
 
-  // Enforce High/Low bounds based on LTP
-  if (high < ltp) high = ltp;
-  if (low > ltp || low <= 0) low = ltp;
+  // Enforce High/Low bounds based on LTP only if they are non-zero (so 0 remains 0 if missing)
+  if (high > 0 && high < ltp) high = ltp;
+  if (low > 0 && low > ltp) low = ltp;
 
   // SANITY CHECK: Enforce High/Low bounds and prevent 5% deviations on depth rates
   if (ltp > 0) {
     const spread = Math.max(ltp * 0.00035, 0.05);
-    if (Math.abs(bidPrice - ltp) / ltp > 0.05 || bidPrice > high || bidPrice < low) bidPrice = +(ltp - spread).toFixed(2);
-    if (Math.abs(askPrice - ltp) / ltp > 0.05 || askPrice > high || askPrice < low) askPrice = +(ltp + spread).toFixed(2);
+    if (Math.abs(bidPrice - ltp) / ltp > 0.05 || (high > 0 && bidPrice > high) || (low > 0 && bidPrice < low)) bidPrice = +(ltp - spread).toFixed(2);
+    if (Math.abs(askPrice - ltp) / ltp > 0.05 || (high > 0 && askPrice > high) || (low > 0 && askPrice < low)) askPrice = +(ltp + spread).toFixed(2);
   }
 
   // Extract 52W High & Low with all possible IIFL key aliases
   let week52High = extract(raw, [
     'week52High', 'FiftyTwoWeekHighPrice', 'FiftyTwoWeekHigh', 'High52Week', 'High52', 
     '52WHigh', '52WeekHigh', 'FiftyTwoWkHigh', 'High52WK', 'High52W', 'High52WeekPrice', 'FiftyTwoWeekHighRate'
-  ], 0);
+  ], fallback.week52High);
 
   let week52Low = extract(raw, [
     'week52Low', 'FiftyTwoWeekLowPrice', 'FiftyTwoWeekLow', 'Low52Week', 'Low52', 
     '52WLow', '52WeekLow', 'FiftyTwoWkLow', 'Low52WK', 'Low52W', 'Low52WeekPrice', 'FiftyTwoWeekLowRate'
-  ], 0);
+  ], fallback.week52Low);
 
   // If live IIFL payload or raw object doesn't supply valid 52W bounds, ensure fallback is anchored to real LTP
   if (!week52High || week52High <= 0) {
@@ -298,7 +303,7 @@ function loadGlobalState() {
         });
       }
       // Rebuild initial quotes matching the loaded watchlist
-      session.quotes = session.watchlist.map((inst, idx) => makeSimulationQuote(inst, idx));
+      session.quotes = session.watchlist.map((inst, idx) => session.mode === 'LIVE' ? makeEmptyLiveQuote(inst, idx) : makeSimulationQuote(inst, idx));
       if (data.intradayRanges) {
         // Restore saved ranges and normalise to include deduplication fields (added in newer builds)
         session.intradayRanges = new Map(data.intradayRanges.map(([key, range]) => [
@@ -541,7 +546,7 @@ async function refreshLiveQuotes(session) {
     
     // Update active watchlist quotes
     const nextQuotes = session.watchlist.map((instrument, index) => {
-      const fallback = previous.get(instrumentKey(instrument)) || makeSimulationQuote(instrument, index);
+      const fallback = previous.get(instrumentKey(instrument)) || makeEmptyLiveQuote(instrument, index);
       const raw = resultsByKey.get(String(instrument.instrumentId));
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
@@ -552,7 +557,7 @@ async function refreshLiveQuotes(session) {
         const raw = resultsByKey.get(key);
         if (raw) {
           const knownInst = knownInstruments.get(key) || { exchange: info.exchange, instrumentId: info.instrumentId, symbol: info.symbol || raw.symbol || 'Unknown', basePrice: info.basePrice };
-          const fallback = makeSimulationQuote(knownInst, info.index || 0);
+          const fallback = makeEmptyLiveQuote(knownInst, info.index || 0);
           session.marketScannerQuotes.set(key, quoteFromPayload(raw, fallback, info.index || 0));
         }
       }
@@ -1052,15 +1057,15 @@ app.get('/api/watchlist', (req, res) => {
 
 app.post('/api/watchlist', async (req, res) => {
   const session = browserSession(req, res);
-  const instrumentId = String(req.body?.instrumentId || '').trim();
-  const exchange = exchangeCode(req.body?.exchange, req.body?.segment);
-  const instrument = knownInstrument(exchange, instrumentId);
-  if (!instrument) return res.status(422).json({ message: 'Choose a symbol from the search results before adding it.' });
-  if (session.watchlist.some((item) => instrumentKey(item) === instrumentKey(instrument))) return res.status(409).json({ message: `${instrument.symbol} is already in this watchlist.` });
-  if (session.watchlist.length >= MAX_WATCHLIST_SIZE) return res.status(409).json({ message: `This watchlist is full (${MAX_WATCHLIST_SIZE} scripts). Remove a scrip before adding another.` });
-  const next = { ...instrument };
+  const { exchange, instrumentId, symbol, basePrice } = req.body;
+  if (!instrumentId || !exchange) return res.status(400).json({ message: 'Missing scrip identifiers.' });
+
+  const key = instrumentKey({ exchange, instrumentId });
+  if (session.watchlist.some((instrument) => instrumentKey(instrument) === key)) return res.status(400).json({ message: 'Scrip already in watchlist.' });
+
+  const next = makeInstrument([symbol || 'UNKNOWN', instrumentId, basePrice || 100, exchange]);
   session.watchlist.push(next);
-  session.quotes.push(makeSimulationQuote(next, session.watchlist.length - 1));
+  session.quotes.push(session.mode === 'LIVE' ? makeEmptyLiveQuote(next, session.watchlist.length - 1) : makeSimulationQuote(next, session.watchlist.length - 1));
   if (session.mode === 'LIVE') await refreshLiveQuotes(session);
   // Notify WebSocket clients about the updated watchlist
   broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
