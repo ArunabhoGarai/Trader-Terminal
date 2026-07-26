@@ -358,7 +358,7 @@ function browserSession(req, res) {
 }
 
 function publicSession(session) {
-  return { mode: session.mode, authenticated: Boolean(session.accessToken), configured: configured(), expiresAt: session.expiresAt, pollIntervalMs: CONFIG.quotePollMs };
+  return { mode: session.mode, authenticated: Boolean(session.accessToken), configured: configured(), expiresAt: session.expiresAt, pollIntervalMs: CONFIG.quotePollMs, lastError: session.lastError };
 }
 
 function publicWatchlist(session) {
