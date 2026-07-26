@@ -341,8 +341,8 @@ function setSession(session) {
   const live = state.session.mode === 'LIVE';
   const status = el('connection-status');
   status.classList.toggle('live', live || state.wsConnected);
-  status.classList.toggle('error', state.session.mode === 'ERROR');
-  status.querySelector('span').textContent = live ? 'IIFL Live' : state.session.mode === 'ERROR' ? 'Connection error' : state.wsConnected ? 'Real-time' : 'Simulation';
+  status.classList.toggle('error', state.session.mode === 'ERROR' || !!state.session.lastError);
+  status.querySelector('span').textContent = state.session.lastError ? state.session.lastError : (live ? 'IIFL Live' : state.session.mode === 'ERROR' ? 'Connection error' : state.wsConnected ? 'Real-time' : 'Simulation');
   const connect = el('connect-iifl');
   connect.textContent = live ? 'IIFL Connected' : 'Connect IIFL';
   connect.classList.toggle('connected', live);
