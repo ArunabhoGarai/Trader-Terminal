@@ -190,8 +190,10 @@ function extract(obj, keys, fallback) {
 function quoteFromPayload(raw, fallback, position) {
   const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], fallback.lastPrice);
   let close = extract(raw, ['PClose', 'pClose', 'close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], fallback.close);
+  let open = extract(raw, ['open', 'Open', 'OpenPrice', 'OpeningPrice', 'LastOpenPrice'], fallback.open); 
   
-  const pctChange = close ? ((ltp - close) / close) * 100 : 0;
+  const prevClose = close > 0 ? close : (open > 0 ? open : ltp);
+  const pctChange = prevClose > 0 ? ((ltp - prevClose) / prevClose) * 100 : 0;
   
   // Extract Bid/Ask handling nested structures from IIFL OpenAPI
   let bidPrice = extract(raw, ['bestBidPrice', 'BuyRate', 'buyRate', 'BuyRate1', 'buyRate1', 'buyPrice', 'buyPrice1', 'BuyPrice1', 'BidRate', 'bidRate', 'BuyPrice', 'BidPrice'], raw.Bids?.[0]?.Price ?? raw.bids?.[0]?.price ?? fallback.bestBidPrice);
@@ -244,8 +246,8 @@ function quoteFromPayload(raw, fallback, position) {
     exchange: raw.exchange ?? raw.ExchangeSegment ?? fallback.exchange,
     lastPrice: ltp,
     pctChange: extract(raw, ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'priceChangePercent', 'NetChangePercentage', 'PcntChg'], pctChange),
-    close,
-    open: extract(raw, ['open', 'Open', 'OpenPrice', 'OpeningPrice', 'LastOpenPrice'], fallback.open), 
+    close: prevClose,
+    open, 
     high, 
     low,
     bestBidPrice: bidPrice, 
