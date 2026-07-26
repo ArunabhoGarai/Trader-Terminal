@@ -538,16 +538,22 @@ async function refreshLiveQuotes(session) {
     });
     
     const results = Array.isArray(response.data?.result) ? response.data.result : [];
-    if (!results.length) throw new Error(response.data?.message || 'The market quote response did not contain results.');
+    if (!results.length) {
+      console.error('[IIFL ERROR] Empty marketquotes response:', response.data);
+      throw new Error(response.data?.message || 'The market quote response did not contain results.');
+    }
     
     const previous = new Map(session.quotes.map((quote) => [instrumentKey(quote), quote]));
-    // Strictly map by Token/InstrumentID, disregarding potentially missing/bad exchange keys
-    const resultsByKey = new Map(results.map((quote) => [String(quote.instrumentId ?? quote.token), quote]));
+    // Strongly map by any available ID field to prevent mapping wipeouts
+    const resultsByKey = new Map(results.map((quote) => {
+      const id = String(quote.instrumentId ?? quote.InstrumentId ?? quote.token ?? quote.Token ?? quote.ScripCode ?? '').trim();
+      return [id, quote];
+    }));
     
     // Update active watchlist quotes
     const nextQuotes = session.watchlist.map((instrument, index) => {
       const fallback = previous.get(instrumentKey(instrument)) || makeEmptyLiveQuote(instrument, index);
-      const raw = resultsByKey.get(String(instrument.instrumentId));
+      const raw = resultsByKey.get(String(instrument.instrumentId).trim());
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
     
@@ -577,8 +583,9 @@ async function refreshLiveQuotes(session) {
     session.quotes = nextQuotes;
     return { success: true, events };
   } catch (error) {
+    console.error('[IIFL API ERROR]', error.response?.data || error.message);
     if (error.response?.status === 401 || error.response?.status === 403) clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
-    else session.lastError = 'IIFL market data request failed.';
+    else session.lastError = 'IIFL market data request failed: ' + (error.response?.data?.message || error.message);
     return { success: false, events: [] };
   }
 }
@@ -1082,6 +1089,21 @@ app.delete('/api/watchlist/:exchange/:instrumentId', (req, res) => {
   // Notify WebSocket clients
   broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
   res.json(terminalPayload(session));
+});
+
+// Debug endpoint to fetch live raw IIFL payload directly
+app.get('/api/debug-quotes', async (req, res) => {
+  const session = browserSession(req, res);
+  if (session.mode !== 'LIVE') return res.status(400).json({ error: 'Not in LIVE mode. Authenticate with IIFL first.' });
+  try {
+    const payload = session.watchlist.map(({ exchange, instrumentId }) => ({ exchange, instrumentId }));
+    const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, payload, {
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 15000,
+    });
+    res.json({ request: payload, response: response.data });
+  } catch (error) {
+    res.status(500).json({ error: error.message, details: error.response?.data });
+  }
 });
 
 app.post('/api/watchlist/reorder', (req, res) => {
