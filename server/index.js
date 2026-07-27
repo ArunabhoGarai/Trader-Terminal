@@ -1161,9 +1161,79 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
       return res.json({ success: true, data: formatted });
     }
     throw new Error('Empty or invalid historical candles response from IIFL');
-  } catch (err) {
-    // No simulated fallback — return error so frontend shows "No data" instead of inflated fake values
-    return res.json({ success: false, error: 'Historical chart data unavailable. Connect to IIFL for live chart data.' });
+  } catch (iiflErr) {
+    // --- Fallback: fetch REAL historical data from Yahoo Finance ---
+    try {
+      const instKey = instrumentKey({ exchange, instrumentId });
+      const liveQuote = session.quotes.find(q => instrumentKey(q) === instKey);
+      const knownInst = knownInstruments.get(instKey);
+      const symbolName = liveQuote?.symbol || knownInst?.symbol || '';
+      
+      if (!symbolName) throw new Error('Unknown symbol');
+
+      // Map NSE symbol to Yahoo ticker (e.g. RELIANCE -> RELIANCE.NS)
+      const isNSE = exchange.startsWith('NSE') || exchange === 'NSEEQ';
+      const isBSE = exchange.startsWith('BSE') || exchange === 'BSEEQ';
+      const yahooSymbol = isNSE ? `${symbolName}.NS` : isBSE ? `${symbolName}.BO` : symbolName;
+      
+      // Yahoo Finance chart API parameters
+      let range, interval;
+      switch(timeframe) {
+        case '1D':  range = '1d';  interval = '5m';  break;
+        case '1M':  range = '1mo'; interval = '1d';  break;
+        case '1Y':  range = '1y';  interval = '1d';  break;
+        case '10Y': range = '10y'; interval = '1mo'; break;
+        case '20Y': range = 'max'; interval = '1mo'; break;
+        default:    range = '1d';  interval = '5m';  break;
+      }
+
+      const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=${range}&interval=${interval}`;
+      const yahooRes = await axios.get(yahooUrl, { timeout: 10000 });
+      const chartResult = yahooRes.data?.chart?.result?.[0];
+      
+      if (!chartResult) throw new Error('Yahoo returned no chart data');
+
+      const timestamps = chartResult.timestamp || [];
+      const quote = chartResult.indicators?.quote?.[0] || {};
+      const opens = quote.open || [];
+      const highs = quote.high || [];
+      const lows = quote.low || [];
+      const closes = quote.close || [];
+      const isIntraday = timeframe === '1D';
+
+      let formatted = [];
+      for (let i = 0; i < timestamps.length; i++) {
+        const o = opens[i], h = highs[i], l = lows[i], c = closes[i];
+        if (o == null || h == null || l == null || c == null) continue;
+        
+        const dateObj = new Date(timestamps[i] * 1000);
+        const timeVal = isIntraday 
+          ? timestamps[i]  // already unix seconds
+          : dateObj.toISOString().split('T')[0];
+        
+        formatted.push({
+          time: timeVal,
+          open: +Number(o).toFixed(2),
+          high: +Number(h).toFixed(2),
+          low: +Number(l).toFixed(2),
+          close: +Number(c).toFixed(2)
+        });
+      }
+
+      // Deduplicate and sort
+      const uniqueMap = new Map();
+      formatted.forEach(item => uniqueMap.set(item.time, item));
+      formatted = Array.from(uniqueMap.values()).sort((a, b) => a.time > b.time ? 1 : -1);
+
+      if (formatted.length > 0) {
+        console.log(`[CHART] Yahoo Finance fallback: ${formatted.length} candles for ${yahooSymbol} (${timeframe})`);
+        return res.json({ success: true, source: 'yahoo', data: formatted });
+      }
+      throw new Error('No valid candles from Yahoo');
+    } catch (yahooErr) {
+      console.warn('[CHART] Yahoo Finance fallback also failed:', yahooErr.message);
+      return res.json({ success: false, error: 'Chart data unavailable. Connect to IIFL or try again later.' });
+    }
   }
 });
 
