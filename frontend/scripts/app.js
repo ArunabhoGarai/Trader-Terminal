@@ -959,36 +959,48 @@ function bindEvents() {
     let isDragging = false;
     let startX, startY, initialTop, initialLeft;
 
-    analysisTitlebar.addEventListener('mousedown', (e) => {
-      // Prevent drag if clicking on a button inside the titlebar
-      if (e.target.tagName === 'BUTTON') return;
+    const startDrag = (clientX, clientY, target) => {
+      if (target.tagName === 'BUTTON') return;
       isDragging = true;
-      startX = e.clientX;
-      startY = e.clientY;
+      startX = clientX;
+      startY = clientY;
       const rect = analysisWin.getBoundingClientRect();
       initialTop = rect.top;
       initialLeft = rect.left;
-      // Switch from 'right' positioning to 'left' for reliable dragging
       analysisWin.style.right = 'auto';
       analysisWin.style.left = initialLeft + 'px';
       analysisWin.style.top = initialTop + 'px';
       document.body.style.userSelect = 'none';
-    });
+    };
 
-    document.addEventListener('mousemove', (e) => {
+    const doDrag = (clientX, clientY) => {
       if (!isDragging) return;
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
+      const dx = clientX - startX;
+      const dy = clientY - startY;
       analysisWin.style.left = (initialLeft + dx) + 'px';
       analysisWin.style.top = (initialTop + dy) + 'px';
-    });
+    };
 
-    document.addEventListener('mouseup', () => {
+    const stopDrag = () => {
       if (isDragging) {
         isDragging = false;
         document.body.style.userSelect = '';
       }
-    });
+    };
+
+    analysisTitlebar.addEventListener('mousedown', (e) => startDrag(e.clientX, e.clientY, e.target));
+    analysisTitlebar.addEventListener('touchstart', (e) => startDrag(e.touches[0].clientX, e.touches[0].clientY, e.target), {passive: false});
+
+    document.addEventListener('mousemove', (e) => doDrag(e.clientX, e.clientY));
+    document.addEventListener('touchmove', (e) => {
+      if (isDragging) {
+        e.preventDefault();
+        doDrag(e.touches[0].clientX, e.touches[0].clientY);
+      }
+    }, {passive: false});
+
+    document.addEventListener('mouseup', stopDrag);
+    document.addEventListener('touchend', stopDrag);
   }
 }
 
