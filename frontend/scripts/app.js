@@ -20,6 +20,7 @@ const state = {
   marketAnalysis: { highs: [], lows: [], gainers: [], losers: [] },
   filters: { exchange: 'ALL', segment: 'ALL' },
   localSearch: '',
+  sortByPctDesc: false,
   suggestions: [],
   selectedSuggestion: null,
   searchTimer: null,
@@ -71,7 +72,7 @@ function quoteFromPrice(quote, index = 0) {
 function matchesFilters(quote) {
   if (state.filters.exchange !== 'ALL' && quote.exchange !== state.filters.exchange && !quote.exchange.includes(state.filters.exchange)) return false;
   if (state.filters.segment !== 'ALL' && quote.segment !== state.filters.segment) return false;
-  if (state.localSearch && !quote.symbol.toLowerCase().includes(state.localSearch.toLowerCase())) return false;
+  if (state.localSearch && !quote.symbol.toLowerCase().startsWith(state.localSearch.toLowerCase())) return false;
   return true;
 }
 
@@ -86,7 +87,14 @@ function renderWatchlistMeta() {
 }
 
 function renderMarket() {
-  const quotes = state.quotes.filter(matchesFilters);
+  const searchInput = el('local-search');
+  if (searchInput && state.localSearch !== searchInput.value.toLowerCase()) {
+    state.localSearch = searchInput.value.toLowerCase();
+  }
+  let quotes = state.quotes.filter(matchesFilters);
+  if (state.sortByPctDesc) {
+    quotes.sort((a, b) => b.pctChange - a.pctChange);
+  }
   renderWatchlistMeta();
   el('market-body').innerHTML = quotes.map((quote) => {
     const move = quote.pctChange >= 0 ? 'up' : 'down';
@@ -178,10 +186,16 @@ function analysisRows() {
 
   if (state.analysisTab === 'high') {
     if (!options.high) return [];
-    return filterRows(state.marketAnalysis?.highs || []).slice(0, 50);
+    const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
+    let data = useMC ? (state.marketAnalysis?.highs_mc || []) : (state.marketAnalysis?.highs || []);
+    if (useMC && data.length === 0) data = state.marketAnalysis?.highs || [];
+    return filterRows(data).slice(0, 50);
   } else if (state.analysisTab === 'low') {
     if (!options.low) return [];
-    return filterRows(state.marketAnalysis?.lows || []).slice(0, 50);
+    const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
+    let data = useMC ? (state.marketAnalysis?.lows_mc || []) : (state.marketAnalysis?.lows || []);
+    if (useMC && data.length === 0) data = state.marketAnalysis?.lows || [];
+    return filterRows(data).slice(0, 50);
   } else if (state.analysisTab === 'gainers') {
     return filterRows(state.marketAnalysis?.gainers || []).slice(0, 50);
   } else if (state.analysisTab === 'losers') {
@@ -221,6 +235,11 @@ function renderAnalysis() {
   const modeLabel = state.session?.mode === 'LIVE' ? 'live IIFL market data' : 'simulation data';
   const wsLabel = state.wsConnected ? '· WebSocket connected' : '· polling';
   el('analysis-summary').textContent = `${tabName} · ${modeLabel} ${wsLabel}`;
+
+  const is52W = state.analysisTab === 'high' || state.analysisTab === 'low';
+  document.querySelectorAll('.source-toggle-label').forEach(e => e.style.display = is52W ? 'inline-block' : 'none');
+  const spacer = document.querySelector('.source-toggle-spacer');
+  if (spacer) spacer.style.display = is52W ? 'inline-block' : 'none';
 
   const isActionTab = state.analysisTab === 'action';
   
@@ -834,7 +853,35 @@ function bindEvents() {
   el('connect-iifl').addEventListener('click', () => { if (state.session.mode !== 'LIVE') window.location.assign('/auth/login'); });
   document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { state.analysisTab = button.dataset.analysisTab; document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); renderAnalysis(); }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
-  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAnalysis(); if (event.key === 'F7') { event.preventDefault(); showAnalysis(); } });
+  document.querySelectorAll('input[name="source-toggle"]').forEach((radio) => radio.addEventListener('change', renderAnalysis));
+  
+  // Toggle sort by pct change
+  const sortPctBtn = el('sort-pct-change');
+  if (sortPctBtn) {
+    sortPctBtn.addEventListener('click', () => {
+      state.sortByPctDesc = !state.sortByPctDesc;
+      sortPctBtn.textContent = state.sortByPctDesc ? '%chg ▼' : '%chg';
+      renderMarket();
+    });
+  }
+
+  document.addEventListener('keydown', (event) => { 
+    if (event.key === 'Escape') closeAnalysis(); 
+    if (event.key === 'F7') { event.preventDefault(); showAnalysis(); } 
+    
+    // Alphabetical filtering
+    if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) {
+      if (event.key.length === 1 && /[a-zA-Z]/.test(event.key)) {
+        const searchInput = el('local-search');
+        if (searchInput) {
+          searchInput.focus();
+          searchInput.value = event.key.toUpperCase();
+          state.localSearch = event.key.toLowerCase();
+          renderMarket();
+        }
+      }
+    }
+  });
   
   // Click on analysis table row -> open chart for that stock
   el('analysis-body').addEventListener('click', (event) => {
@@ -884,6 +931,45 @@ function bindEvents() {
       loadChartData();
     });
   });
+
+  // Draggable Analysis Window
+  const analysisWin = el('analysis-window');
+  const analysisTitlebar = analysisWin.querySelector('.analysis-titlebar');
+  if (analysisWin && analysisTitlebar) {
+    let isDragging = false;
+    let startX, startY, initialTop, initialLeft;
+
+    analysisTitlebar.addEventListener('mousedown', (e) => {
+      // Prevent drag if clicking on a button inside the titlebar
+      if (e.target.tagName === 'BUTTON') return;
+      isDragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      const rect = analysisWin.getBoundingClientRect();
+      initialTop = rect.top;
+      initialLeft = rect.left;
+      // Switch from 'right' positioning to 'left' for reliable dragging
+      analysisWin.style.right = 'auto';
+      analysisWin.style.left = initialLeft + 'px';
+      analysisWin.style.top = initialTop + 'px';
+      document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      analysisWin.style.left = (initialLeft + dx) + 'px';
+      analysisWin.style.top = (initialTop + dy) + 'px';
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+        document.body.style.userSelect = '';
+      }
+    });
+  }
 }
 
 async function initialize() {
