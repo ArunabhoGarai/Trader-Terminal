@@ -974,14 +974,16 @@ app.get('/api/indices', async (req, res) => {
     return res.json({ success: true, live: true, indices });
   }
 
-  // Simulation fallback
+  // Fallback: use Yahoo Finance data directly (no random simulation)
   const indices = Object.entries(TERMINAL_INDEX_MAP).map(([name, data]) => {
-    const s = indexSimState[name];
-    const d = (Math.random() - 0.49) * 0.0015;
-    s.ltp = +(s.ltp * (1 + d)).toFixed(2);
-    const chg = +(s.ltp - data.simClose).toFixed(2);
-    const pct = +((chg / data.simClose) * 100).toFixed(2);
-    return { name, ltp: s.ltp, change: chg, pct, live: false };
+    const yData = getYahoo(name);
+    if (yData) {
+      const chg = +(yData.ltp - yData.close).toFixed(2);
+      const pct = yData.close > 0 ? +((chg / yData.close) * 100).toFixed(2) : 0;
+      return { name, ltp: +yData.ltp.toFixed(2), change: chg, pct, live: true };
+    }
+    // If Yahoo also failed, return static baseline with no drift
+    return { name, ltp: data.simBase, change: 0, pct: 0, live: false };
   });
 
   res.json({ success: true, live: false, indices });
@@ -1160,71 +1162,8 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
     }
     throw new Error('Empty or invalid historical candles response from IIFL');
   } catch (err) {
-    console.warn('[CHART API] IIFL Historical Data failed, falling back to simulated data.', err.response?.data || err.message);
-    
-    // --- Look up actual LTP for this stock so the chart anchors to real prices ---
-    const instKey = instrumentKey({ exchange, instrumentId });
-    const liveQuote = session.quotes.find(q => instrumentKey(q) === instKey) || session.marketScannerQuotes.get(instKey);
-    const knownInst = knownInstruments.get(instKey);
-    const currentLtp = liveQuote?.lastPrice || knownInst?.basePrice || 1000;
-
-    let startingPrice;
-    switch (timeframe) {
-      case '1D':  startingPrice = currentLtp * (0.995 + Math.random() * 0.005); break;
-      case '1M':  startingPrice = currentLtp * (0.90 + Math.random() * 0.05); break;
-      case '1Y':  startingPrice = currentLtp * (0.65 + Math.random() * 0.15); break;
-      case '10Y': startingPrice = currentLtp * (0.15 + Math.random() * 0.15); break;
-      case '20Y': startingPrice = currentLtp * (0.05 + Math.random() * 0.10); break;
-      default:    startingPrice = currentLtp * 0.99; break;
-    }
-
-    let simulatedData = [];
-    let currentPrice = startingPrice;
-    let currentDate = new Date(start);
-    
-    if (timeframe === '10Y' || timeframe === '20Y') {
-      currentDate.setDate(1);
-    }
-    
-    let totalSteps = 0;
-    const tmpDate = new Date(currentDate);
-    while (tmpDate <= end) {
-      totalSteps++;
-      if (timeframe === '1D') tmpDate.setMinutes(tmpDate.getMinutes() + 5);
-      else if (timeframe === '1M' || timeframe === '1Y') tmpDate.setDate(tmpDate.getDate() + 1);
-      else tmpDate.setMonth(tmpDate.getMonth() + 1);
-    }
-    const overallGrowthRate = totalSteps > 1 ? Math.pow(currentLtp / startingPrice, 1 / totalSteps) : 1;
-    
-    while (currentDate <= end) {
-      if (timeframe !== '1D' && (currentDate.getDay() === 0 || currentDate.getDay() === 6)) {
-        currentDate.setDate(currentDate.getDate() + 1);
-        continue;
-      }
-      
-      const trendDrift = overallGrowthRate - 1;
-      const noise = (Math.random() - 0.48) * (timeframe === '1D' ? 0.004 : 0.035);
-      const drift = trendDrift + noise;
-      
-      const open = currentPrice;
-      const close = +(currentPrice * (1 + drift)).toFixed(2);
-      const high = +Math.max(open, close, open * (1 + Math.random() * (timeframe === '1D' ? 0.002 : 0.015))).toFixed(2);
-      const low = +Math.min(open, close, open * (1 - Math.random() * (timeframe === '1D' ? 0.002 : 0.015))).toFixed(2);
-      
-      const timeVal = timeframe === '1D' ? Math.floor(currentDate.getTime() / 1000) : currentDate.toISOString().split('T')[0];
-      simulatedData.push({ time: timeVal, open: +open.toFixed(2), high, low, close });
-      currentPrice = close;
-      
-      if (timeframe === '1D') currentDate = new Date(currentDate.getTime() + 5 * 60000);
-      else if (timeframe === '1M' || timeframe === '1Y') currentDate.setDate(currentDate.getDate() + 1);
-      else currentDate.setMonth(currentDate.getMonth() + 1);
-    }
-    
-    const uniqueMap = new Map();
-    simulatedData.forEach(item => uniqueMap.set(item.time, item));
-    simulatedData = Array.from(uniqueMap.values()).sort((a, b) => a.time > b.time ? 1 : -1);
-
-    return res.json({ success: true, simulated: true, data: simulatedData });
+    // No simulated fallback — return error so frontend shows "No data" instead of inflated fake values
+    return res.json({ success: false, error: 'Historical chart data unavailable. Connect to IIFL for live chart data.' });
   }
 });
 
