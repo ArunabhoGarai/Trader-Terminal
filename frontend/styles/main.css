@@ -25,7 +25,7 @@ button { cursor: pointer; }
 ────────────────────────────────────────────────────── */
 .terminal-shell {
   display: grid;
-  grid-template-rows: 39px 43px 1fr;
+  grid-template-rows: auto auto 1fr;
   width: 100%;
   height: 100vh;
   background: var(--panel);
@@ -251,12 +251,13 @@ button { cursor: pointer; }
 @media (max-width: 600px) {
   .watch-toolbar { 
     display: grid; 
-    grid-template-columns: 1fr 1fr; 
+    grid-template-columns: 1fr auto; 
     gap: 8px; 
     padding: 8px; 
   }
   .watch-toolbar > * { max-width: 100%; margin: 0; }
   .symbol-search-wrap, .local-search-input { grid-column: 1 / -1; width: 100%; }
+  #edit-watchlist { grid-column: 1 / -1; }
   .watchlist-capacity { grid-column: 1 / -1; text-align: center; font-size: 11px; margin: 0; }
   .table-wrap { -webkit-overflow-scrolling: touch; padding-bottom: 20px; }
   .index-strip { 
@@ -267,8 +268,14 @@ button { cursor: pointer; }
     padding: 8px; 
     font-size: 0.85rem; 
   }
-  .market-table { min-width: 900px; font-size: 0.8rem; border-collapse: collapse; }
+  .market-table { min-width: 770px; font-size: 0.8rem; border-collapse: collapse; }
   .market-table th, .market-table td { padding: 8px 4px; }
+  
+  /* Hide non-essential columns on mobile to declutter */
+  .market-table th:nth-child(1), .market-table th:nth-child(2), .market-table th:nth-child(3), .market-table th:nth-child(4), .market-table th:nth-child(5),
+  .market-table td:nth-child(1), .market-table td:nth-child(2), .market-table td:nth-child(3), .market-table td:nth-child(4), .market-table td:nth-child(5) {
+    display: none;
+  }
   
   /* Freeze the Symbol column when scrolling horizontally on mobile */
   .market-table th.symbol-head, .market-table td.symbol {
