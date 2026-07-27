@@ -245,14 +245,24 @@ function renderAnalysis() {
   
   const thead = el('analysis-head');
   if (thead) {
+    const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
     if (isActionTab) {
       thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr>`;
     } else if (state.analysisTab === 'high') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/H price</th><th>Prev.High</th><th>Prev. High Date</th></tr>`;
+      if (useMC && (state.marketAnalysis?.highs_mc?.length > 0)) {
+        thead.innerHTML = `<tr><th>Symbol</th><th>Price</th><th>Chg%</th><th>Inc/Dec in Value</th><th>Day's High</th><th>Day's Low</th><th>52 Week High Price</th><th>Open Price</th></tr>`;
+      } else {
+        thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/H price</th><th>Prev.High</th><th>Prev. High Date</th></tr>`;
+      }
     } else if (state.analysisTab === 'low') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/L price</th><th>Prev.Low</th><th>Prev. Low Date</th></tr>`;
+      if (useMC && (state.marketAnalysis?.lows_mc?.length > 0)) {
+        thead.innerHTML = `<tr><th>Symbol</th><th>Price</th><th>Chg%</th><th>Inc/Dec in Value</th><th>Day's High</th><th>Day's Low</th><th>52 Week Low Price</th><th>Open Price</th></tr>`;
+      } else {
+        thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/L price</th><th>Prev.Low</th><th>Prev. Low Date</th></tr>`;
+      }
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Open</th><th>High</th><th>Low</th><th>Prev. Close</th><th>LTP</th><th>%chng</th><th>Volume (Shares)</th><th>Value (₹ Lakhs)</th><th>CA</th></tr>`;
+      // Gainers and Losers are always using Moneycontrol data
+      thead.innerHTML = `<tr><th>Symbol</th><th>Price</th><th>Chng%</th><th>Change in Value</th><th>Day's High</th><th>Day's Low</th><th>Open Price</th></tr>`;
     } else if (state.analysisTab === 'quantity') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
     } else if (state.analysisTab === 'traded') {
@@ -289,27 +299,40 @@ function renderAnalysis() {
     if (state.analysisTab === 'high' || state.analysisTab === 'low') {
       const isHigh = state.analysisTab === 'high';
       const newPriceColor = isHigh ? '#149339' : '#bf1019';
-      return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
-        <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
-        <td>${escapeHtml(quote.series || 'EQ')}</td>
-        <td class="analysis-rate">${fmt(quote.lastPrice)}</td>
-        <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
-        <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(quote.new52WHL || (isHigh ? quote.week52High : quote.week52Low))}</td>
-        <td class="analysis-rate">${fmt(quote.prev52WHL || 0)}</td>
-        <td>${escapeHtml(quote.prevHLDate || '-')}</td>
-      </tr>`;
+      const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
+      if (useMC && ((isHigh && state.marketAnalysis?.highs_mc?.length > 0) || (!isHigh && state.marketAnalysis?.lows_mc?.length > 0))) {
+        const netChange = quote.lastPrice - (quote.prevClose || quote.lastPrice);
+        return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
+          <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
+          <td class="analysis-rate">${fmt(quote.lastPrice)}</td>
+          <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
+          <td class="${netChange >= 0 ? 'positive' : 'negative'}">${fmt(netChange)}</td>
+          <td class="analysis-rate">${fmt(quote.high || 0)}</td>
+          <td class="analysis-rate">${fmt(quote.low || 0)}</td>
+          <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(isHigh ? quote.week52High : quote.week52Low)}</td>
+          <td class="analysis-rate">${fmt(quote.open || 0)}</td>
+        </tr>`;
+      } else {
+        return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
+          <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
+          <td>${escapeHtml(quote.series || 'EQ')}</td>
+          <td class="analysis-rate">${fmt(quote.lastPrice)}</td>
+          <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
+          <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(quote.new52WHL || (isHigh ? quote.week52High : quote.week52Low))}</td>
+          <td class="analysis-rate">${fmt(quote.prev52WHL || 0)}</td>
+          <td>${escapeHtml(quote.prevHLDate || '-')}</td>
+        </tr>`;
+      }
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
+      const netChange = quote.lastPrice - (quote.prevClose || quote.lastPrice);
       return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
         <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
-        <td class="analysis-rate">${fmt(quote.open || 0)}</td>
-        <td class="analysis-rate">${fmt(quote.high || 0)}</td>
-        <td class="analysis-rate">${fmt(quote.low || 0)}</td>
-        <td class="analysis-rate">${fmt(quote.prevClose || 0)}</td>
         <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
         <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
-        <td class="analysis-rate">${quote.volume ? quote.volume.toLocaleString('en-IN') : '-'}</td>
-        <td class="analysis-rate">${quote.turnover ? (quote.turnover / 100000).toLocaleString('en-IN', {maximumFractionDigits: 2}) : '-'}</td>
-        <td title="${escapeHtml(quote.ca || '-')}">${escapeHtml((quote.ca && quote.ca !== '-') ? (quote.ca.length > 15 ? quote.ca.substring(0, 15) + '...' : quote.ca) : '-')}</td>
+        <td class="${netChange >= 0 ? 'positive' : 'negative'}">${fmt(netChange)}</td>
+        <td class="analysis-rate">${fmt(quote.high || 0)}</td>
+        <td class="analysis-rate">${fmt(quote.low || 0)}</td>
+        <td class="analysis-rate">${fmt(quote.open || 0)}</td>
       </tr>`;
     } else if (state.analysisTab === 'quantity' || state.analysisTab === 'traded') {
       return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
@@ -683,17 +706,14 @@ function updateLiveChartTick(quotes) {
 }
 
 async function refreshQuotes(silent = false) {
-  // Always poll via REST — this keeps the server-side simulation ticking
-  // and ensures data flows even if WebSocket is connected (server deduplicates)
   try {
     const response = await fetch('/api/market-watch/refresh', { method: 'POST' });
     if (!response.ok) throw new Error('Unable to refresh quotes');
     const data = await response.json();
     applyTerminalPayload(data);
     if (!silent) toast(data.session?.mode === 'LIVE' ? 'Live IIFL quotes refreshed' : 'Simulation quotes refreshed');
-  } catch (_) {
-    state.quotes = state.quotes.map((quote) => quoteFromPrice({ ...quote, lastPrice: +(quote.lastPrice * (1 + (Math.random() - .49) * .0015)).toFixed(2), pctChange: quote.pctChange + (Math.random() - .5) * .08 }));
-    renderMarket(); renderAnalysis(); if (!silent) toast('Showing local simulation quotes');
+  } catch (err) {
+    if (!silent) console.warn('Refresh failed:', err.message);
   }
 }
 
