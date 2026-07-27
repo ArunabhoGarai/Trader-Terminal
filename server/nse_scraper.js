@@ -9,25 +9,18 @@ let global52WHighs = [{
   exchange: 'NSEEQ',
   instrumentId: 'NSE_LOAD',
   companyName: 'Connecting to NSE via Stealth Puppeteer...',
-  lastPrice: 0,
-  pctChange: 0,
-  week52High: 0,
-  week52Low: 0,
-  updatedAt: Date.now(),
-  isRealNSEData: true
+  lastPrice: 0, pctChange: 0, week52High: 0, week52Low: 0, updatedAt: Date.now(), isRealNSEData: true
 }];
 let global52WLows = [{
   symbol: 'FETCHING...',
   exchange: 'NSEEQ',
   instrumentId: 'NSE_LOAD',
   companyName: 'Connecting to NSE via Stealth Puppeteer...',
-  lastPrice: 0,
-  pctChange: 0,
-  week52High: 0,
-  week52Low: 0,
-  updatedAt: Date.now(),
-  isRealNSEData: true
+  lastPrice: 0, pctChange: 0, week52High: 0, week52Low: 0, updatedAt: Date.now(), isRealNSEData: true
 }];
+
+let mc52WHighs = [];
+let mc52WLows = [];
 
 let globalGainers = [];
 let globalLosers = [];
@@ -144,6 +137,72 @@ async function scrapeMoneycontrolGainersLosers() {
 
   } catch (err) {
     console.warn('[NSE Scraper] ⚠️ Failed fetching from Moneycontrol:', err.message);
+  }
+}
+
+async function scrapeMoneycontrol52W() {
+  const options = {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+    }
+  };
+
+  try {
+    const [highsRes, lowsRes] = await Promise.all([
+      axios.get('https://www.moneycontrol.com/stocks/market-stats/52-week-high-nse/?indexName=All%20NSE&id=-2', options),
+      axios.get('https://www.moneycontrol.com/stocks/market-stats/52-week-low-nse/?indexName=All%20NSE&id=-2', options)
+    ]);
+
+    const parse52WTable = (html, isHigh) => {
+      const $ = cheerio.load(html);
+      const rows = $('table').eq(1).find('tbody tr').toArray();
+      // Parse top 50 items
+      return rows.slice(0, 50).map(row => {
+        const cols = $(row).find('td');
+        if (cols.length < 7) return null;
+        
+        let companyName = $(cols[0]).find('a').first().text().trim() || $(cols[0]).text().trim();
+        companyName = companyName.replace(/(?:Vol Shocker|ATH|ATL|Only Buyers|Only Sellers).*$/i, '').trim();
+        const symbol = companyName;
+
+        const priceText = $(cols[2]).text().replace(/,/g, '');
+        const ltpMatch = priceText.match(/^([\d.]+)/);
+        const lastPrice = ltpMatch ? parseFloat(ltpMatch[1]) : 0;
+        
+        const pctMatch = priceText.match(/\(([-\d.]+)%\)/);
+        const pctChange = pctMatch ? parseFloat(pctMatch[1]) : 0;
+
+        const w52high = parseFloat($(cols[5]).text().replace(/,/g, '')) || 0;
+        const w52low = parseFloat($(cols[6]).text().replace(/,/g, '')) || 0;
+        
+        return {
+          symbol: symbol.substring(0, 20),
+          exchange: 'NSEEQ',
+          segment: 'Equity',
+          series: 'EQ',
+          instrumentId: `NSE_${symbol.replace(/\s+/g, '')}`,
+          companyName: symbol,
+          lastPrice: lastPrice,
+          pctChange: pctChange,
+          new52WHL: isHigh ? w52high : w52low,
+          prev52WHL: 0,
+          prevHLDate: '-',
+          week52High: w52high,
+          week52Low: w52low,
+          updatedAt: Date.now(),
+          isRealNSEData: true
+        };
+      }).filter(Boolean);
+    };
+
+    mc52WHighs = parse52WTable(highsRes.data, true);
+    console.log(`[NSE Scraper] ✅ Fetched ${mc52WHighs.length} 52-week Highs from Moneycontrol.`);
+
+    mc52WLows = parse52WTable(lowsRes.data, false);
+    console.log(`[NSE Scraper] ✅ Fetched ${mc52WLows.length} 52-week Lows from Moneycontrol.`);
+
+  } catch (err) {
+    console.warn('[NSE Scraper] ⚠️ Failed fetching 52-week data from Moneycontrol:', err.message);
   }
 }
 
@@ -286,14 +345,18 @@ async function scrapeNSE(manual = false) {
 function startNSEScraper(intervalMs = 5 * 60 * 1000) { // Default 5 minutes
   // Initial run
   scrapeNSE();
+  scrapeMoneycontrol52W();
   // Schedule recurring runs
   setInterval(scrapeNSE, intervalMs);
+  setInterval(scrapeMoneycontrol52W, 30 * 1000); // 30 seconds for Moneycontrol
 }
 
 function getNSEMarketWideData() {
   return {
     highs: global52WHighs,
     lows: global52WLows,
+    highs_mc: mc52WHighs,
+    lows_mc: mc52WLows,
     gainers: globalGainers,
     losers: globalLosers,
     volume: globalVolume,
