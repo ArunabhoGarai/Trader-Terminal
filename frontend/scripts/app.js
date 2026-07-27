@@ -514,11 +514,11 @@ async function openChart(key) {
   if (!chartInstance) {
     try {
       const container = el('chart-container');
-      chartInstance = LightweightCharts.createChart(container, {
-        layout: { background: { color: '#000' }, textColor: '#d1d4dc' },
-        grid: { vertLines: { color: '#2b2b43' }, horzLines: { color: '#2b2b43' } },
-        timeScale: { timeVisible: true, secondsVisible: false },
-        width: container.clientWidth || 760,
+        chartInstance = LightweightCharts.createChart(container, {
+          layout: { background: { color: '#000' }, textColor: '#d1d4dc' },
+          grid: { vertLines: { color: '#2b2b43' }, horzLines: { color: '#2b2b43' } },
+          timeScale: { timeVisible: true, secondsVisible: true },
+          width: container.clientWidth || 760,
         height: container.clientHeight || 420,
       });
       // v3 API: addCandlestickSeries(); v4 API: addSeries(type)
@@ -612,17 +612,17 @@ async function loadChartData() {
 }
 
 function updateLiveChartTick(quotes) {
-  if (!chartInstance || !activeChartQuote) return;
-  if (el('chart-window').classList.contains('is-hidden')) return;
-
-  const tickQuote = quotes.find(q => keyFor(q) === keyFor(activeChartQuote));
-  if (!tickQuote) return;
-
-  activeChartQuote = tickQuote;
+    if (!chartInstance || !activeChartQuote) return;
+    if (el('chart-window').classList.contains('is-hidden')) return;
   
-  const d = new Date();
+    const tickQuote = quotes.find(q => keyFor(q) === keyFor(activeChartQuote));
+    if (!tickQuote) return;
   
-  if (activeTimeframe === 'live' && areaSeries) {
+    activeChartQuote = tickQuote;
+    
+    const d = tickQuote.updatedAt ? new Date(tickQuote.updatedAt) : new Date();
+    
+    if (activeTimeframe === 'live' && areaSeries) {
     // Area Chart: Simple { time, value } update with exact timestamp to draw new segments continuously
     const exactTime = Math.floor(d.getTime() / 1000);
     areaSeries.update({ time: exactTime, value: tickQuote.lastPrice });
@@ -842,13 +842,27 @@ function bindEvents() {
     if (row) openChart(row.dataset.key);
   });
   
-  // Smooth Drag-and-Drop Swapping via SortableJS
+  let sortableInstance = null;
+  let isEditMode = false;
+
+  el('edit-watchlist')?.addEventListener('click', (e) => {
+    isEditMode = !isEditMode;
+    e.target.textContent = isEditMode ? 'Done' : 'Edit';
+    e.target.style.background = isEditMode ? '#ffefc2' : '';
+    if (sortableInstance) sortableInstance.option('disabled', !isEditMode);
+  });
+
+  function init() {
+    state.searchRequest = 0;
+    
+    // Smooth Drag-and-Drop Swapping via SortableJS
     const tbody = el('market-body');
     if (typeof Sortable !== 'undefined') {
-      new Sortable(tbody, {
+      sortableInstance = new Sortable(tbody, {
         animation: 150,
         swap: true, // Enable swap plugin
         swapClass: 'sortable-swap-highlight', // Class applied to the target during swap
+        disabled: true, // Disabled by default to prevent accidental scroll-dragging
         onEnd: function () {
           // Save new order after drag ends
           const newKeys = Array.from(tbody.querySelectorAll('tr[data-key]')).map(row => row.dataset.key);
