@@ -239,11 +239,21 @@ function quoteFromPayload(raw, fallback, position) {
       : +(ltp * 0.85).toFixed(2);
   }
 
+  let tickTime = extract(raw, ['TickTime', 'tickTime', 'tickTimestamp', 'timestamp', 'Time', 'time'], null);
+  let parsedTime = new Date().toISOString();
+  if (tickTime) {
+    if (typeof tickTime === 'string' && tickTime.startsWith('/Date(')) {
+      parsedTime = new Date(parseInt(tickTime.substr(6))).toISOString();
+    } else {
+      let d = new Date(tickTime);
+      if (!isNaN(d.getTime())) parsedTime = d.toISOString();
+    }
+  }
+
   return {
-    ...fallback,
+    exchange: raw.exchange ?? raw.ExchangeSegment ?? fallback.exchange,
     instrumentId: String(raw.instrumentId ?? raw.token ?? raw.ExchangeInstrumentID ?? raw.ExchangeInstrumentId ?? fallback.instrumentId),
     symbol: raw.symbol ?? raw.tradingSymbol ?? raw.TradingSymbol ?? raw.DisplayName ?? raw.displayName ?? fallback.symbol,
-    exchange: raw.exchange ?? raw.ExchangeSegment ?? fallback.exchange,
     lastPrice: ltp,
     pctChange: extract(raw, ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'priceChangePercent', 'NetChangePercentage', 'PcntChg'], pctChange),
     close: prevClose,
@@ -257,7 +267,8 @@ function quoteFromPayload(raw, fallback, position) {
     tradedVolume: extract(raw, ['tradedVolume', 'totalQty', 'totalTradedQuantity', 'TotalQty', 'Volume', 'TotalTradedQuantity', 'TotalTradedQty', 'TradedVolume', 'VolumeTraded', 'TTQ'], fallback.tradedVolume),
     week52High, 
     week52Low,
-    updatedAt: new Date().toISOString(), position,
+    updatedAt: parsedTime, 
+    position: fallback.position,
   };
 }
 
