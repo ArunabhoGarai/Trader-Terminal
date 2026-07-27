@@ -587,6 +587,8 @@ async function refreshLiveQuotes(session) {
     const realNseData = nseScraper.getNSEMarketWideData();
     session.marketAnalysis.highs = realNseData.highs;
     session.marketAnalysis.lows = realNseData.lows;
+    session.marketAnalysis.highs_mc = realNseData.highs_mc;
+    session.marketAnalysis.lows_mc = realNseData.lows_mc;
     session.marketAnalysis.gainers = realNseData.gainers;
     session.marketAnalysis.losers = realNseData.losers;
     session.marketAnalysis.volume = realNseData.volume;
@@ -700,6 +702,8 @@ function advanceSimulation(session) {
   const realNseData = nseScraper.getNSEMarketWideData();
   session.marketAnalysis.highs = realNseData.highs;
   session.marketAnalysis.lows = realNseData.lows;
+  session.marketAnalysis.highs_mc = realNseData.highs_mc;
+  session.marketAnalysis.lows_mc = realNseData.lows_mc;
   session.marketAnalysis.gainers = realNseData.gainers;
   session.marketAnalysis.losers = realNseData.losers;
   session.marketAnalysis.volume = realNseData.volume;
