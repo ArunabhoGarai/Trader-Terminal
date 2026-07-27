@@ -1002,6 +1002,65 @@ function bindEvents() {
     document.addEventListener('mouseup', stopDrag);
     document.addEventListener('touchend', stopDrag);
   }
+
+  // --- Chart Window: Drag + Resize ---
+  const chartWin = el('chart-window');
+  const chartTitlebar = chartWin?.querySelector('.analysis-titlebar');
+  if (chartWin && chartTitlebar) {
+    let isDraggingChart = false;
+    let cStartX, cStartY, cInitialTop, cInitialLeft;
+
+    const startChartDrag = (clientX, clientY, target) => {
+      if (target.tagName === 'BUTTON') return;
+      isDraggingChart = true;
+      cStartX = clientX;
+      cStartY = clientY;
+      const rect = chartWin.getBoundingClientRect();
+      cInitialTop = rect.top;
+      cInitialLeft = rect.left;
+      chartWin.style.right = 'auto';
+      chartWin.style.left = cInitialLeft + 'px';
+      chartWin.style.top = cInitialTop + 'px';
+      document.body.style.userSelect = 'none';
+    };
+
+    const doChartDrag = (clientX, clientY) => {
+      if (!isDraggingChart) return;
+      chartWin.style.left = (cInitialLeft + (clientX - cStartX)) + 'px';
+      chartWin.style.top = (cInitialTop + (clientY - cStartY)) + 'px';
+    };
+
+    const stopChartDrag = () => {
+      if (isDraggingChart) {
+        isDraggingChart = false;
+        document.body.style.userSelect = '';
+      }
+    };
+
+    chartTitlebar.addEventListener('mousedown', (e) => startChartDrag(e.clientX, e.clientY, e.target));
+    chartTitlebar.addEventListener('touchstart', (e) => startChartDrag(e.touches[0].clientX, e.touches[0].clientY, e.target), {passive: false});
+
+    document.addEventListener('mousemove', (e) => doChartDrag(e.clientX, e.clientY));
+    document.addEventListener('touchmove', (e) => {
+      if (isDraggingChart) {
+        e.preventDefault();
+        doChartDrag(e.touches[0].clientX, e.touches[0].clientY);
+      }
+    }, {passive: false});
+
+    document.addEventListener('mouseup', stopChartDrag);
+    document.addEventListener('touchend', stopChartDrag);
+
+    // Auto-resize chart when the window is resized via CSS resize handle
+    if (typeof ResizeObserver !== 'undefined') {
+      const chartContainer = el('chart-container');
+      new ResizeObserver(() => {
+        if (chartInstance && chartContainer) {
+          chartInstance.resize(chartContainer.clientWidth, chartContainer.clientHeight);
+        }
+      }).observe(chartWin);
+    }
+  }
 }
 
 async function initialize() {
