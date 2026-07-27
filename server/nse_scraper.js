@@ -1,6 +1,8 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 let global52WHighs = [{
   symbol: 'FETCHING...',
@@ -76,6 +78,75 @@ function mapGainerLoserToQuote(item) {
     isRealNSEData: true
   };
 }
+
+async function scrapeMoneycontrolGainersLosers() {
+  const options = {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+    }
+  };
+
+  try {
+    const [gainersRes, losersRes] = await Promise.all([
+      axios.get('https://www.moneycontrol.com/stocks/market-stats/top-gainers-nse/?indexName=All%20NSE&id=-2', options),
+      axios.get('https://www.moneycontrol.com/stocks/market-stats/top-losers-nse/?indexName=All%20NSE&id=-2', options)
+    ]);
+
+    const parseTable = (html) => {
+      const $ = cheerio.load(html);
+      const rows = $('table').eq(1).find('tbody tr').toArray();
+      // Parse top 50 items
+      return rows.slice(0, 50).map(row => {
+        const cols = $(row).find('td');
+        if (cols.length < 5) return null;
+        
+        let companyName = $(cols[0]).find('a').first().text().trim() || $(cols[0]).text().trim();
+        companyName = companyName.replace(/Vol Shocker.*$/i, '').trim();
+        const symbol = companyName;
+
+        const priceText = $(cols[2]).text().replace(/,/g, '');
+        const ltpMatch = priceText.match(/^([\d.]+)/);
+        const lastPrice = ltpMatch ? parseFloat(ltpMatch[1]) : 0;
+        
+        const pctMatch = priceText.match(/\(([-\d.]+)%\)/);
+        const pctChange = pctMatch ? parseFloat(pctMatch[1]) : 0;
+
+        const high = parseFloat($(cols[3]).text().replace(/,/g, '')) || 0;
+        const low = parseFloat($(cols[4]).text().replace(/,/g, '')) || 0;
+        const open = parseFloat($(cols[5]).text().replace(/,/g, '')) || 0;
+        
+        return {
+          symbol: symbol.substring(0, 20),
+          exchange: 'NSEEQ',
+          segment: 'Equity',
+          series: 'EQ',
+          instrumentId: `NSE_${symbol.replace(/\s+/g, '')}`,
+          open: open,
+          high: high,
+          low: low,
+          prevClose: 0,
+          lastPrice: lastPrice,
+          pctChange: pctChange,
+          volume: 0,
+          turnover: 0,
+          ca: '-',
+          updatedAt: Date.now(),
+          isRealNSEData: true
+        };
+      }).filter(Boolean);
+    };
+
+    globalGainers = parseTable(gainersRes.data);
+    console.log(`[NSE Scraper] ✅ Fetched ${globalGainers.length} Gainers from Moneycontrol.`);
+
+    globalLosers = parseTable(losersRes.data);
+    console.log(`[NSE Scraper] ✅ Fetched ${globalLosers.length} Losers from Moneycontrol.`);
+
+  } catch (err) {
+    console.warn('[NSE Scraper] ⚠️ Failed fetching from Moneycontrol:', err.message);
+  }
+}
+
 
 function mapMostActiveToQuote(item) {
   return {
@@ -163,27 +234,8 @@ async function scrapeNSE(manual = false) {
       }
     } catch (e) { console.warn('[NSE Scraper] ⚠️ Failed 52-week Low:', e.message); }
 
-    console.log('[NSE Scraper] Fetching Gainers...');
-    await new Promise(resolve => setTimeout(resolve, 3500));
-    try {
-      const gainersRes = await page.goto('https://www.nseindia.com/api/live-analysis-variations?index=gainers', { waitUntil: 'domcontentloaded', timeout: 15000 });
-      const gainersJson = await gainersRes.json();
-      if (gainersJson && gainersJson.NIFTY && gainersJson.NIFTY.data) {
-        globalGainers = gainersJson.NIFTY.data.map(mapGainerLoserToQuote);
-        console.log(`[NSE Scraper] ✅ Fetched ${globalGainers.length} Gainers.`);
-      }
-    } catch (e) { console.warn('[NSE Scraper] ⚠️ Failed Gainers:', e.message); }
-
-    console.log('[NSE Scraper] Fetching Losers...');
-    await new Promise(resolve => setTimeout(resolve, 3500));
-    try {
-      const losersRes = await page.goto('https://www.nseindia.com/api/live-analysis-variations?index=loosers', { waitUntil: 'domcontentloaded', timeout: 15000 });
-      const losersJson = await losersRes.json();
-      if (losersJson && losersJson.NIFTY && losersJson.NIFTY.data) {
-        globalLosers = losersJson.NIFTY.data.map(mapGainerLoserToQuote);
-        console.log(`[NSE Scraper] ✅ Fetched ${globalLosers.length} Losers.`);
-      }
-    } catch (e) { console.warn('[NSE Scraper] ⚠️ Failed Losers:', e.message); }
+    console.log('[NSE Scraper] Fetching Gainers and Losers from Moneycontrol...');
+    await scrapeMoneycontrolGainersLosers();
 
     console.log('[NSE Scraper] Fetching Volume Active...');
     await new Promise(resolve => setTimeout(resolve, 3500));
