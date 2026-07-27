@@ -170,9 +170,10 @@ button { cursor: pointer; }
 .analysis-button.alert-flash .alert-badge { animation: alert-pulse .8s ease-out 2; }
 
 /* ── ANALYSIS MODAL ── */
-.analysis-window { position: fixed; z-index: 4; top: 50%; left: 50%; display: grid; grid-template-rows: 31px 31px 30px minmax(220px, 1fr) 28px; width: min(760px, calc(100vw - 80px)); height: min(480px, calc(100vh - 80px)); transform: translate(-50%, -50%); border: 2px solid #758083; background: #f0f2f1; box-shadow: 0 14px 42px rgba(0,0,0,.68); }
+.analysis-window { position: fixed; z-index: 4; top: 120px; right: 20px; display: grid; grid-template-rows: 31px 31px 30px minmax(220px, 1fr) 28px; width: min(760px, calc(100vw - 80px)); height: min(480px, calc(100vh - 80px)); border: 2px solid #758083; background: #f0f2f1; box-shadow: 0 14px 42px rgba(0,0,0,.68); resize: both; overflow: hidden; }
 .analysis-window.is-hidden { display: none; }
-.analysis-titlebar { display: flex; align-items: center; justify-content: space-between; padding-left: 8px; background: linear-gradient(#f4f8f9,#bdced2); border-bottom: 1px solid #899699; color: #263033; }
+.analysis-titlebar { display: flex; align-items: center; justify-content: space-between; padding-left: 8px; background: linear-gradient(#f4f8f9,#bdced2); border-bottom: 1px solid #899699; color: #263033; cursor: grab; }
+.analysis-titlebar:active { cursor: grabbing; }
 .analysis-titlebar strong { font-size: 11px; }
 .analysis-titlebar strong span { font-weight: 400; }
 .analysis-titlebar button { width: 26px; height: 22px; margin-right: 4px; border: 1px solid #8c999c; background: linear-gradient(#fff,#d4e0e2); font-size: 17px; }
