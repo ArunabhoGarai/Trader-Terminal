@@ -609,96 +609,9 @@ async function refreshLiveQuotes(session) {
 // Enhanced simulation — generates visible action watch events
 // ---------------------------------------------------------------------------
 function advanceSimulation(session) {
-  session.simCycle = (session.simCycle || 0) + 1;
-  const previousQuotes = session.quotes;
-
-  const nextQuotes = session.quotes.map((quote, index) => {
-    // Every few cycles, some stocks get a bigger push to break their day range
-    const isBigTick = (index + session.simCycle) % 3 === 0;
-    // Occasionally simulate a gap-down recovery (pink + New High)
-    const isGapDownRecovery = session.simCycle % 7 === 0 && index % 5 === 2;
-
-    let drift;
-    if (isBigTick) {
-      // Force a breakout — push above high or below low
-      const breakDirection = (index + session.simCycle) % 2 === 0 ? 1 : -1;
-      drift = breakDirection * (0.004 + Math.random() * 0.006);
-    } else {
-      drift = (Math.random() - .48) * .005;
-    }
-
-    let lastPrice = +(quote.lastPrice * (1 + drift)).toFixed(2);
-    if (lastPrice <= 0) lastPrice = quote.close > 0 ? quote.close : 100; // prevent zero/negative death spiral
-    let close = quote.close;
-
-    if (isGapDownRecovery && session.simCycle < 30) {
-      // Simulate: stock opened below yesterday's close but is recovering upward
-      // Set close higher than current price range to create "pink New High" scenario
-      close = lastPrice * 1.015;
-      lastPrice = +(lastPrice * 1.003).toFixed(2); // Push price up
-    }
-
-    const spread = Math.max(lastPrice * .00035, .05);
-    const bestBidPrice = Math.max(0, +(lastPrice - spread).toFixed(2));
-    const bestAskPrice = +(lastPrice + spread).toFixed(2);
-    
-    // Bounds must strictly encapsulate the Bid/Ask spread
-    const high = Math.max(quote.high, lastPrice, bestAskPrice);
-    const low = Math.min(quote.low || lastPrice, lastPrice, bestBidPrice);
-    const pctChange = close > 0 ? +(((lastPrice - close) / close) * 100).toFixed(2) : 0;
-
-    return {
-      ...quote, lastPrice, pctChange, close, high, low,
-      bestBidPrice,
-      bestAskPrice,
-      bestBidQty: Math.max(1, Math.round(quote.bestBidQty * (.96 + Math.random() * .08))),
-      bestAskQty: Math.max(1, Math.round(quote.bestAskQty * (.96 + Math.random() * .08))),
-      tradedVolume: quote.tradedVolume + Math.round(Math.random() * 2500),
-      updatedAt: new Date().toISOString(),
-    };
-  });
-
-  session.quotes = nextQuotes;
-
-  // --- MARKET-WIDE SCANNER: simulate quotes for ALL known instruments, not just watchlist ---
-  const watchlistKeys = new Set(nextQuotes.map(q => instrumentKey(q)));
-  // Seed watchlist quotes into scanner map
-  for (const q of nextQuotes) {
-    session.marketScannerQuotes.set(instrumentKey(q), q);
-  }
-  // Simulate all catalog stocks that aren't already in the watchlist
-  for (const inst of STATIC_CATALOG) {
-    const key = instrumentKey(inst);
-    if (watchlistKeys.has(key)) continue; // already covered by watchlist
-    const existing = session.marketScannerQuotes.get(key);
-    if (existing) {
-      // Drift existing scanner quote
-      const d = (Math.random() - 0.48) * 0.004;
-      const ltp = +(existing.lastPrice * (1 + d)).toFixed(2);
-      const cl = existing.close || ltp;
-      const sp = Math.max(ltp * 0.00035, 0.05);
-      session.marketScannerQuotes.set(key, {
-        ...existing,
-        lastPrice: ltp,
-        pctChange: cl > 0 ? +(((ltp - cl) / cl) * 100).toFixed(2) : 0,
-        high: Math.max(existing.high, ltp),
-        low: Math.min(existing.low || ltp, ltp),
-        bestBidPrice: Math.max(0, +(ltp - sp).toFixed(2)),
-        bestAskPrice: +(ltp + sp).toFixed(2),
-        tradedVolume: existing.tradedVolume + Math.round(Math.random() * 1500),
-        // Only update 52W bounds if LTP breaks through them (mirrors real market)
-        week52High: ltp > existing.week52High ? +(ltp * 1.001).toFixed(2) : existing.week52High,
-        week52Low: ltp < existing.week52Low ? +(ltp * 0.999).toFixed(2) : existing.week52Low,
-        updatedAt: new Date().toISOString(),
-      });
-    } else {
-      // First time — create initial simulated quote for this scanner stock
-      session.marketScannerQuotes.set(key, makeSimulationQuote(inst, inst.index || 0));
-    }
-  }
-
-  // Compute market-wide analytics from the FULL scanner map (not just watchlist)
-  const allMarketQuotes = Array.from(session.marketScannerQuotes.values());
+  // STRICTLY live data logic requested by user: no random simulation.
+  // We only sync the background scraped market data (Moneycontrol/NSE) into the session.
+  const nseScraper = require('./nse_scraper');
   const realNseData = nseScraper.getNSEMarketWideData();
   session.marketAnalysis.highs = realNseData.highs;
   session.marketAnalysis.lows = realNseData.lows;
@@ -708,8 +621,8 @@ function advanceSimulation(session) {
   session.marketAnalysis.losers = realNseData.losers;
   session.marketAnalysis.volume = realNseData.volume;
   session.marketAnalysis.value = realNseData.value;
-
-  return updateActionWatch(session, nextQuotes);
+  
+  return []; // no action watch events generated in static mode
 }
 
 // ---------------------------------------------------------------------------
