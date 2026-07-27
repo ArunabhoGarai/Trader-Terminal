@@ -97,12 +97,14 @@ async function scrapeMoneycontrolGainersLosers() {
         companyName = companyName.replace(/Vol Shocker.*$/i, '').trim();
         const symbol = companyName;
 
-        const priceText = $(cols[2]).text().replace(/,/g, '');
-        const ltpMatch = priceText.match(/^([\d.]+)/);
-        const lastPrice = ltpMatch ? parseFloat(ltpMatch[1]) : 0;
-        
-        const pctMatch = priceText.match(/\(([-\d.]+)%\)/);
-        const pctChange = pctMatch ? parseFloat(pctMatch[1]) : 0;
+        const priceP = $(cols[2]).find('p');
+        const lastPriceStr = priceP.clone().children().remove().end().text().trim().replace(/,/g, '');
+        const lastPrice = parseFloat(lastPriceStr) || 0;
+
+        const spanText = priceP.find('span').text().replace(/,/g, '');
+        const spanMatch = spanText.match(/([-\d.]+)\s*\(([-\d.]+)%\)/);
+        const netChange = spanMatch ? parseFloat(spanMatch[1]) : 0;
+        const pctChange = spanMatch ? parseFloat(spanMatch[2]) : 0;
 
         const high = parseFloat($(cols[3]).text().replace(/,/g, '')) || 0;
         const low = parseFloat($(cols[4]).text().replace(/,/g, '')) || 0;
@@ -117,7 +119,7 @@ async function scrapeMoneycontrolGainersLosers() {
           open: open,
           high: high,
           low: low,
-          prevClose: 0,
+          prevClose: lastPrice - netChange,
           lastPrice: lastPrice,
           pctChange: pctChange,
           volume: 0,
@@ -165,15 +167,19 @@ async function scrapeMoneycontrol52W() {
         companyName = companyName.replace(/(?:Vol Shocker|ATH|ATL|Only Buyers|Only Sellers).*$/i, '').trim();
         const symbol = companyName;
 
-        const priceText = $(cols[2]).text().replace(/,/g, '');
-        const ltpMatch = priceText.match(/^([\d.]+)/);
-        const lastPrice = ltpMatch ? parseFloat(ltpMatch[1]) : 0;
-        
-        const pctMatch = priceText.match(/\(([-\d.]+)%\)/);
-        const pctChange = pctMatch ? parseFloat(pctMatch[1]) : 0;
+        const priceP = $(cols[2]).find('p');
+        const lastPriceStr = priceP.clone().children().remove().end().text().trim().replace(/,/g, '');
+        const lastPrice = parseFloat(lastPriceStr) || 0;
 
-        const w52high = parseFloat($(cols[5]).text().replace(/,/g, '')) || 0;
-        const w52low = parseFloat($(cols[6]).text().replace(/,/g, '')) || 0;
+        const spanText = priceP.find('span').text().replace(/,/g, '');
+        const spanMatch = spanText.match(/([-\d.]+)\s*\(([-\d.]+)%\)/);
+        const netChange = spanMatch ? parseFloat(spanMatch[1]) : 0;
+        const pctChange = spanMatch ? parseFloat(spanMatch[2]) : 0;
+
+        const high = parseFloat($(cols[3]).text().replace(/,/g, '')) || 0;
+        const low = parseFloat($(cols[4]).text().replace(/,/g, '')) || 0;
+        const week52Val = parseFloat($(cols[5]).text().replace(/,/g, '')) || 0;
+        const open = parseFloat($(cols[6]).text().replace(/,/g, '')) || 0;
         
         return {
           symbol: symbol.substring(0, 20),
@@ -184,11 +190,14 @@ async function scrapeMoneycontrol52W() {
           companyName: symbol,
           lastPrice: lastPrice,
           pctChange: pctChange,
-          new52WHL: isHigh ? w52high : w52low,
+          prevClose: lastPrice - netChange,
+          open: open,
+          high: high,
+          low: low,
+          week52High: isHigh ? week52Val : 0,
+          week52Low: isHigh ? 0 : week52Val,
           prev52WHL: 0,
           prevHLDate: '-',
-          week52High: w52high,
-          week52Low: w52low,
           updatedAt: Date.now(),
           isRealNSEData: true
         };
