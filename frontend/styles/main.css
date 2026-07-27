@@ -212,7 +212,7 @@ button { cursor: pointer; }
 .toast.show { opacity: 1; transform: translate(-50%,0); }
 
 /* ── CHART MODAL ── */
-#chart-window { display: flex; flex-direction: column; width: min(820px, calc(100vw - 60px)); height: min(520px, calc(100vh - 80px)); border: 2px solid #758083; background: #000; z-index: 5; }
+#chart-window { position: fixed; top: 80px; right: 20px; display: flex; flex-direction: column; width: min(820px, calc(100vw - 60px)); height: min(520px, calc(100vh - 100px)); border: 2px solid #758083; background: #000; z-index: 5; box-shadow: 0 14px 42px rgba(0,0,0,.68); resize: both; overflow: hidden; min-width: 360px; min-height: 300px; }
 #chart-window.is-hidden { display: none; }
 .chart-timeframes { display: flex; gap: 4px; margin-left: auto; margin-right: 15px; }
 .chart-timeframes button { padding: 2px 8px; font-size: 11px; font-weight: 700; color: #3c4c51; background: transparent; border: 1px solid #5a6669; border-radius: 3px; }
