@@ -1120,49 +1120,107 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
   const session = browserSession(req, res);
   const { exchange, instrumentId } = req.params;
   const { timeframe } = req.query; // '1D', '1M', '1Y', '10Y', '20Y'
-  
+
+  // Build IIFL date strings in "dd-MMM-yyyy" format (e.g. "19-Sep-2024")
+  const fmtIIFLDate = (d) => {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `${String(d.getDate()).padStart(2,'0')}-${months[d.getMonth()]}-${d.getFullYear()}`;
+  };
+
   const end = new Date();
   const start = new Date();
-  let compression = 60; // 1 min for intraday
-  
+  let interval; // IIFL interval string
+
   switch(timeframe) {
-    case '1D': start.setDate(end.getDate() - 1); compression = 60; break;
-    case '1M': start.setMonth(end.getMonth() - 1); compression = 86400; break; // 1 day in seconds
-    case '1Y': start.setFullYear(end.getFullYear() - 1); compression = 86400; break;
-    case '10Y': start.setFullYear(end.getFullYear() - 10); compression = 86400; break;
-    case '20Y': start.setFullYear(end.getFullYear() - 20); compression = 86400; break;
-    default: start.setDate(end.getDate() - 1); break;
+    case '1D':
+      start.setDate(end.getDate() - 1);
+      interval = '5 minutes';
+      break;
+    case '1M':
+      start.setMonth(end.getMonth() - 1);
+      interval = '1 day';
+      break;
+    case '1Y':
+      start.setFullYear(end.getFullYear() - 1);
+      interval = 'weekly';
+      break;
+    case '10Y':
+      start.setFullYear(end.getFullYear() - 10);
+      interval = 'monthly';
+      break;
+    case '20Y':
+      start.setFullYear(end.getFullYear() - 20);
+      interval = 'monthly';
+      break;
+    default:
+      start.setDate(end.getDate() - 1);
+      interval = '5 minutes';
   }
 
+  // IIFL API payload — matches docs exactly
   const payload = {
-    ExchangeSegment: exchange.includes('FO') ? 'NSEFO' : (exchange.startsWith('BSE') ? 'BSECM' : 'NSECM'),
-    ExchangeInstrumentID: Number(instrumentId),
-    StartTime: start.toISOString().split('.')[0],
-    EndTime: end.toISOString().split('.')[0],
-    CompressionValue: compression
+    exchange: exchange,           // e.g. "NSEEQ"
+    instrumentId: instrumentId,   // string, e.g. "2885"
+    interval: interval,           // e.g. "5 minutes", "1 day", "monthly"
+    fromDate: fmtIIFLDate(start), // e.g. "19-Sep-2024"
+    toDate: fmtIIFLDate(end)      // e.g. "20-Sep-2024"
+  };
+
+  const isIntraday = timeframe === '1D';
+
+  const parseIIFLCandles = (raw) => {
+    // Response: result[0].candles = [[timestamp, open, high, low, close, volume], ...]
+    const candleArray = Array.isArray(raw?.result)
+      ? (raw.result[0]?.candles || raw.result)
+      : (Array.isArray(raw) ? raw : []);
+    const out = [];
+    for (const c of candleArray) {
+      if (!Array.isArray(c) || c.length < 5) continue;
+      const [t, o, h, l, cl] = c;
+      if (!t || o == null || h == null || l == null || cl == null) continue;
+      let dateObj;
+      const ts = String(t);
+      if (/^\d+$/.test(ts)) {
+        const n = Number(ts);
+        dateObj = new Date(n > 2000000000 ? n : n * 1000);
+      } else {
+        dateObj = new Date(ts.includes('T') ? ts : ts.replace(' ', 'T'));
+      }
+      if (isNaN(dateObj.getTime())) continue;
+      const timeVal = isIntraday ? Math.floor(dateObj.getTime() / 1000) : dateObj.toISOString().split('T')[0];
+      out.push({
+        time: timeVal,
+        open: +Number(o).toFixed(2),
+        high: +Number(h).toFixed(2),
+        low:  +Number(l).toFixed(2),
+        close: +Number(cl).toFixed(2)
+      });
+    }
+    return out;
   };
 
   try {
     if (!session.accessToken) throw new Error('Not authenticated');
-    
+
+    console.log(`[CHART IIFL] Fetching ${timeframe} for ${exchange}:${instrumentId} | interval=${interval} | ${fmtIIFLDate(start)} -> ${fmtIIFLDate(end)}`);
     const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/historicaldata`, payload, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 15000,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
+      timeout: 15000,
     });
-    
-    const rawResult = response.data?.result || response.data?.Data?.Candles || response.data?.data || response.data;
-    const isIntraday = timeframe === '1D';
-    let formatted = parseIIFLHistoricalCandles(rawResult, isIntraday);
+
+    let formatted = parseIIFLCandles(response.data);
 
     if (formatted.length > 0) {
-      // TradingView demands strictly unique and ascending times
       const uniqueMap = new Map();
       formatted.forEach(item => uniqueMap.set(item.time, item));
       formatted = Array.from(uniqueMap.values()).sort((a, b) => a.time > b.time ? 1 : -1);
-      return res.json({ success: true, data: formatted });
+      console.log(`[CHART IIFL] ✅ ${formatted.length} candles returned`);
+      return res.json({ success: true, source: 'iifl', data: formatted });
     }
-    throw new Error('Empty or invalid historical candles response from IIFL');
+    throw new Error('Empty candles from IIFL: ' + JSON.stringify(response.data).substring(0, 200));
   } catch (iiflErr) {
-    // --- Fallback: fetch REAL historical data from Yahoo Finance ---
+    console.warn('[CHART IIFL] Failed:', iiflErr.message);
+    // --- Fallback: Yahoo Finance with real historical data ---
     try {
       const instKey = instrumentKey({ exchange, instrumentId });
       const liveQuote = session.quotes.find(q => instrumentKey(q) === instKey);
@@ -1171,10 +1229,11 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
       
       if (!symbolName) throw new Error('Unknown symbol');
 
-      // Map NSE symbol to Yahoo ticker (e.g. RELIANCE -> RELIANCE.NS)
+      // Strip exchange suffixes before building Yahoo ticker (e.g. "RELIANCE-EQ" -> "RELIANCE")
+      const cleanSymbol = symbolName.replace(/-(EQ|BE|BZ|SM|ST|IL|IV|N1|N2|N3|N4|N5|N6|N7|N8)$/i, '').trim();
       const isNSE = exchange.startsWith('NSE') || exchange === 'NSEEQ';
       const isBSE = exchange.startsWith('BSE') || exchange === 'BSEEQ';
-      const yahooSymbol = isNSE ? `${symbolName}.NS` : isBSE ? `${symbolName}.BO` : symbolName;
+      const yahooSymbol = isNSE ? `${cleanSymbol}.NS` : isBSE ? `${cleanSymbol}.BO` : cleanSymbol;
       
       // Yahoo Finance chart API parameters
       let range, interval;
