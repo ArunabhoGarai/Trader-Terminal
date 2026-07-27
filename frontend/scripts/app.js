@@ -852,32 +852,30 @@ function bindEvents() {
     if (sortableInstance) sortableInstance.option('disabled', !isEditMode);
   });
 
-  function init() {
-    state.searchRequest = 0;
-    
-    // Smooth Drag-and-Drop Swapping via SortableJS
-    const tbody = el('market-body');
-    if (typeof Sortable !== 'undefined') {
-      sortableInstance = new Sortable(tbody, {
-        animation: 150,
-        swap: true, // Enable swap plugin
-        swapClass: 'sortable-swap-highlight', // Class applied to the target during swap
-        disabled: true, // Disabled by default to prevent accidental scroll-dragging
-        onEnd: function () {
-          // Save new order after drag ends
-          const newKeys = Array.from(tbody.querySelectorAll('tr[data-key]')).map(row => row.dataset.key);
-          if (newKeys.length > 0) reorderWatchlist(newKeys);
-        }
-      });
-    }
-
-    // Local Search Filtering
-    el('local-search').addEventListener('input', (e) => {
-      state.localSearch = e.target.value.toLowerCase();
-      renderMarket();
+  // Smooth Drag-and-Drop Swapping via SortableJS
+  const tbody = el('market-body');
+  if (typeof Sortable !== 'undefined') {
+    sortableInstance = new Sortable(tbody, {
+      animation: 150,
+      swap: true, // Enable swap plugin
+      swapClass: 'sortable-swap-highlight', // Class applied to the target during swap
+      disabled: true, // Disabled by default to prevent accidental scroll-dragging
+      onEnd: function () {
+        // Save new order after drag ends
+        const newKeys = Array.from(tbody.querySelectorAll('tr[data-key]')).map(row => row.dataset.key);
+        if (newKeys.length > 0) reorderWatchlist(newKeys);
+      }
     });
+  }
 
-    el('close-chart').addEventListener('click', () => { el('chart-window').classList.add('is-hidden'); activeChartQuote = null; });
+  // Local Search Filtering
+  el('local-search').addEventListener('input', (e) => {
+    state.localSearch = e.target.value.toLowerCase();
+    renderMarket();
+  });
+
+  el('close-chart').addEventListener('click', () => { el('chart-window').classList.add('is-hidden'); activeChartQuote = null; });
+  
   document.querySelectorAll('.chart-timeframes button').forEach(btn => {
     btn.addEventListener('click', (e) => {
       document.querySelectorAll('.chart-timeframes button').forEach(b => b.classList.remove('active'));
@@ -903,3 +901,4 @@ async function initialize() {
 }
 
 initialize();
+
