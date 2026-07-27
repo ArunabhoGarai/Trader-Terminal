@@ -68,7 +68,7 @@
             <thead>
               <tr>
                 <th>Ex</th><th>EX</th><th>DJ</th><th>Now</th><th>Ind</th><th class="symbol-head">Symbol</th>
-                <th>Last Rate</th><th>%chg</th><th>Bid Qty</th><th>Bid Rate</th><th>Offer Qty</th><th>Offer Rate</th>
+                <th>Last Rate</th><th id="sort-pct-change" style="cursor:pointer" title="Click to sort by % change">%chg</th><th>Bid Qty</th><th>Bid Rate</th><th>Offer Qty</th><th>Offer Rate</th>
                 <th>Open</th><th>High</th><th>Low</th><th>PC close</th><th>Total Qty</th><th>Remove</th>
               </tr>
             </thead>
@@ -114,6 +114,9 @@
         <span></span>
         <label><input type="checkbox" checked id="high-filter" data-analysis-filter="high" /> High</label>
         <label><input type="checkbox" checked id="low-filter" data-analysis-filter="low" /> Low</label>
+        <span class="source-toggle-spacer" style="margin: 0 10px; border-left: 1px solid var(--border); padding-left: 10px; display: none;"></span>
+        <label class="source-toggle-label" style="display: none;"><input type="radio" name="source-toggle" value="mc" checked /> Moneycontrol</label>
+        <label class="source-toggle-label" style="display: none;"><input type="radio" name="source-toggle" value="nse" /> NSE</label>
       </div>
       <div class="analysis-table-wrap">
         <table class="analysis-table">
@@ -145,9 +148,9 @@
 
     <!-- Copyright Footer -->
     <div class="copyright-pill">
-      &copy; <script>document.write(new Date().getFullYear())</script> Arunabho Garai | Powered by 
-      <a href="https://www.iifl.com" target="_blank" rel="noopener noreferrer">IIFL</a>, 
-      <a href="https://www.nseindia.com" target="_blank" rel="noopener noreferrer">NSE</a> & 
+      Copyright <script>document.write(new Date().getFullYear())</script> Arunabho Garai , powered by 
+      <a href="https://www.iifl.com" target="_blank" rel="noopener noreferrer">IIFL</a> , 
+      <a href="https://www.nseindia.com" target="_blank" rel="noopener noreferrer">NSE</a> and 
       <a href="https://finance.yahoo.com" target="_blank" rel="noopener noreferrer">Yahoo Finance</a>
     </div>
 
