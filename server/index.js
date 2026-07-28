@@ -1116,6 +1116,91 @@ function parseIIFLHistoricalCandles(rawResult, isIntraday) {
   return candles;
 }
 
+// ---------------------------------------------------------------------------
+// Yahoo Finance chart endpoint - fetches multi-year data in parallel chunks
+// ---------------------------------------------------------------------------
+app.get('/api/chart/yahoo/:symbol', async (req, res) => {
+  const { symbol } = req.params;
+  const { timeframe = '15Y' } = req.query;
+
+  const clean = symbol.replace(/-(EQ|BE|BZ|SM|ST|IL|IV|N[1-9])$/i, '').trim();
+  const yahooSymbol = clean.includes('.') ? clean : `${clean}.NS`;
+
+  const fetchYahoo = async (range, interval) => {
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=${range}&interval=${interval}`;
+      const r = await axios.get(url, { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+      const result = r.data?.chart?.result?.[0];
+      if (!result) return [];
+      const timestamps = result.timestamp || [];
+      const q = result.indicators?.quote?.[0] || {};
+      const opens = q.open || [], highs = q.high || [], lows = q.low || [], closes = q.close || [], vols = q.volume || [];
+      const candles = [];
+      const isIntraday = interval.includes('m') || interval.includes('h');
+      for (let i = 0; i < timestamps.length; i++) {
+        const o = opens[i], h = highs[i], l = lows[i], c = closes[i];
+        if (o == null || h == null || l == null || c == null) continue;
+        const dateObj = new Date(timestamps[i] * 1000);
+        const timeVal = isIntraday ? timestamps[i] : dateObj.toISOString().split('T')[0];
+        candles.push({
+          time: timeVal,
+          open: +Number(o).toFixed(2),
+          high: +Number(h).toFixed(2),
+          low:  +Number(l).toFixed(2),
+          close: +Number(c).toFixed(2),
+          volume: Math.round(vols[i] || 0)
+        });
+      }
+      return candles;
+    } catch (e) {
+      console.warn(`[Yahoo Chart] ${range}/${interval} failed:`, e.message);
+      return [];
+    }
+  };
+
+  try {
+    let candles = [];
+
+    if (timeframe === '1D') {
+      candles = await fetchYahoo('1d', '5m');
+    } else if (timeframe === '1W') {
+      candles = await fetchYahoo('5d', '15m');
+    } else if (timeframe === '1M') {
+      candles = await fetchYahoo('1mo', '1h');
+    } else if (timeframe === '6M') {
+      candles = await fetchYahoo('6mo', '1d');
+    } else if (timeframe === '1Y') {
+      candles = await fetchYahoo('1y', '1d');
+    } else {
+      // Long-term: monthly max + last 2 years daily in parallel
+      const [monthly, daily] = await Promise.all([
+        fetchYahoo('max', '1mo'),
+        fetchYahoo('2y', '1d'),
+      ]);
+      const twoYearsAgo = new Date();
+      twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
+      const cutoff = twoYearsAgo.toISOString().split('T')[0];
+      const olderMonthly = monthly.filter(c => String(c.time) < cutoff);
+      candles = [...olderMonthly, ...daily];
+    }
+
+    const map = new Map();
+    candles.forEach(c => map.set(c.time, c));
+    const sorted = Array.from(map.values()).sort((a, b) => {
+      if (typeof a.time === 'number') return a.time - b.time;
+      return a.time < b.time ? -1 : 1;
+    });
+
+    if (sorted.length === 0) {
+      return res.json({ success: false, error: `No data for ${yahooSymbol}` });
+    }
+    console.log(`[Yahoo Chart] ${yahooSymbol} (${timeframe}): ${sorted.length} candles`);
+    return res.json({ success: true, symbol: yahooSymbol, data: sorted });
+  } catch (err) {
+    return res.json({ success: false, error: err.message });
+  }
+});
+
 app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
   const session = browserSession(req, res);
   const { exchange, instrumentId } = req.params;
