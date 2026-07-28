@@ -542,220 +542,318 @@ async function reorderWatchlist(keys) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Chart — TradingView-style line + volume, Yahoo Finance data, 15-year history
-// ---------------------------------------------------------------------------
-let mainChart = null;
-let volumeChart = null;
-let mainLineSeries = null;
-let mainCandleSeries = null;
-let volumeSeries = null;
-let chartAllData = [];       // full stitched dataset
-let activeChartSymbol = '';  // Yahoo ticker (e.g. RELIANCE.NS)
-let chartInitDone = false;
+// =============================================================================
+// PROFESSIONAL CHART ENGINE — multi-stage loading, single LW instance
+// =============================================================================
+let _chart = null;           // LightweightCharts instance
+let _priceSeries = null;     // AreaSeries for price line
+let _volSeries = null;       // HistogramSeries for volume (same chart, separate scale)
+let _chartData = [];         // full accumulated & sorted candle dataset
+let _chartSymbol = '';       // Yahoo-compatible symbol e.g. "RELIANCE.NS"
+let _chartLive = false;      // true = IIFL live ticks updating
 
-function openChart(key) {
-  const quote = state.quotes.find(q => keyFor(q) === key)
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+function _findQuote(key) {
+  return state.quotes.find(q => keyFor(q) === key)
     || state.marketAnalysis?.highs?.find(q => keyFor(q) === key)
     || state.marketAnalysis?.lows?.find(q => keyFor(q) === key)
     || state.marketAnalysis?.gainers?.find(q => keyFor(q) === key)
     || state.marketAnalysis?.losers?.find(q => keyFor(q) === key);
-  if (!quote) return;
-  activeChartQuote = quote;
-
-  const rawSymbol = quote.symbol || '';
-  // Strip -EQ and similar suffixes for Yahoo
-  activeChartSymbol = rawSymbol.replace(/-(EQ|BE|BZ|SM|ST|IL|IV|N[1-9])$/i, '').trim();
-
-  el('chart-title').textContent = `${rawSymbol}`;
-  el('chart-symbol-label').textContent = `${rawSymbol} · ${activeTimeframe}`;
-  el('chart-source-label').textContent = '';
-  el('chart-window').classList.remove('is-hidden');
-
-  initChartInstances();
-  loadYahooChartData(activeTimeframe);
 }
 
-function initChartInstances() {
-  if (chartInitDone) return;
-  chartInitDone = true;
+function _fmtPrice(p) {
+  return '₹' + Number(p).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
+// ── chart initialization ──────────────────────────────────────────────────────
+
+function _ensureChart() {
+  if (_chart) return;
   const container = el('chart-container');
-  const volContainer = el('chart-volume-container');
 
-  const commonOpts = {
-    layout: { background: { color: '#0b0f1a' }, textColor: '#6d8fa8' },
-    grid: { vertLines: { color: '#111827' }, horzLines: { color: '#111827' } },
-    crosshair: { mode: 1 },
-    rightPriceScale: { borderColor: '#1e2d3d', textColor: '#6d8fa8' },
-    timeScale: { borderColor: '#1e2d3d', timeVisible: true, secondsVisible: false },
-    handleScroll: true,
-    handleScale: true,
-  };
-
-  mainChart = LightweightCharts.createChart(container, {
-    ...commonOpts,
+  _chart = LightweightCharts.createChart(container, {
+    layout: {
+      background: { color: '#0d1117' },
+      textColor: '#8b949e',
+      fontSize: 11,
+    },
+    grid: {
+      vertLines: { color: '#161b22' },
+      horzLines: { color: '#161b22' },
+    },
+    crosshair: {
+      mode: 1,
+      vertLine: { color: '#374151', width: 1, style: 0, labelBackgroundColor: '#1f2937' },
+      horzLine: { color: '#374151', width: 1, style: 0, labelBackgroundColor: '#1f2937' },
+    },
+    rightPriceScale: {
+      borderColor: '#21262d',
+      textColor: '#8b949e',
+    },
+    timeScale: {
+      borderColor: '#21262d',
+      textColor: '#8b949e',
+      timeVisible: true,
+      secondsVisible: false,
+      rightOffset: 5,
+      shiftVisibleRangeOnNewBar: false,
+    },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+    handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: true, price: false } },
     width: container.clientWidth,
     height: container.clientHeight,
-    timeScale: { ...commonOpts.timeScale, secondsVisible: true },
   });
 
-  volumeChart = LightweightCharts.createChart(volContainer, {
-    ...commonOpts,
-    width: volContainer.clientWidth,
-    height: volContainer.clientHeight,
-    rightPriceScale: { visible: false },
-    leftPriceScale: { visible: false },
-    timeScale: { visible: false },
-    crosshair: { mode: 1, vertLine: { visible: false }, horzLine: { visible: false } },
-  });
-
-  // Line series for the main chart
-  mainLineSeries = mainChart.addLineSeries({
-    color: '#2962FF',
+  // Area price series
+  _priceSeries = _chart.addAreaSeries({
+    lineColor: '#2962FF',
+    topColor: 'rgba(41,98,255,0.22)',
+    bottomColor: 'rgba(41,98,255,0.0)',
     lineWidth: 2,
     crosshairMarkerVisible: true,
     crosshairMarkerRadius: 4,
+    crosshairMarkerBorderColor: '#2962FF',
+    crosshairMarkerBackgroundColor: '#0d1117',
     lastValueVisible: true,
     priceLineVisible: true,
     priceLineColor: '#2962FF',
+    priceLineStyle: 2,
   });
 
-  // Volume bars
-  volumeSeries = volumeChart.addHistogramSeries({
-    color: '#26a69a',
+  // Volume histogram pinned to bottom 20% of the same chart
+  _volSeries = _chart.addHistogramSeries({
     priceFormat: { type: 'volume' },
+    priceScaleId: 'vol',
+    color: 'rgba(38,166,154,0.45)',
+  });
+  _chart.priceScale('vol').applyOptions({
+    scaleMargins: { top: 0.82, bottom: 0 },
   });
 
-  // Sync time ranges between main and volume chart
-  mainChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-    if (range) volumeChart.timeScale().setVisibleLogicalRange(range);
-  });
-  volumeChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-    if (range) mainChart.timeScale().setVisibleLogicalRange(range);
-  });
-
-  // Crosshair OHLC display
-  mainChart.subscribeCrosshairMove(param => {
-    if (!param || !param.time || !mainLineSeries) return;
-    const d = param.seriesData.get(mainLineSeries);
+  // Crosshair: update info bar with hovered price
+  _chart.subscribeCrosshairMove(param => {
+    if (!param?.time || !_priceSeries) { _updateInfoBar(); return; }
+    const d = param.seriesData?.get(_priceSeries);
     if (!d) return;
-    const price = typeof d === 'object' ? (d.close ?? d.value) : d;
-    el('chart-ohlc-label').textContent = price ? `₹${Number(price).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '';
+    const price = d.value !== undefined ? d.value : d.close;
+    const infoEl = el('chart-ohlc-label');
+    if (infoEl) infoEl.textContent = _fmtPrice(price);
   });
 
-  // Resize observer
-  const ro = new ResizeObserver(() => {
-    if (mainChart && container.clientWidth > 0) {
-      mainChart.resize(container.clientWidth, container.clientHeight);
-    }
-    if (volumeChart && volContainer.clientWidth > 0) {
-      volumeChart.resize(volContainer.clientWidth, volContainer.clientHeight);
-    }
-  });
-  ro.observe(container);
-  ro.observe(volContainer);
+  // Auto-resize
+  new ResizeObserver(() => {
+    if (_chart && container.clientWidth > 0)
+      _chart.resize(container.clientWidth, container.clientHeight);
+  }).observe(container);
 }
 
-async function loadYahooChartData(timeframe) {
-  if (!activeChartSymbol) return;
-  el('chart-loader').style.display = 'block';
-  el('chart-ohlc-label').textContent = 'Loading…';
-  el('chart-source-label').textContent = '';
+// ── data helpers ──────────────────────────────────────────────────────────────
 
-  // Update active tab
-  document.querySelectorAll('.chart-timeframes button').forEach(b => {
-    b.classList.toggle('active', b.dataset.tf === timeframe);
+function _sortKey(c) {
+  return typeof c.time === 'number' ? c.time : c.time;
+}
+
+function _mergeData(existing, incoming) {
+  const map = new Map(existing.map(c => [String(c.time), c]));
+  // Incoming fills gaps but does NOT overwrite existing (existing is more precise)
+  incoming.forEach(c => { if (!map.has(String(c.time))) map.set(String(c.time), c); });
+  return Array.from(map.values()).sort((a, b) => {
+    const ka = _sortKey(a), kb = _sortKey(b);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
   });
-  el('chart-symbol-label').textContent = `${activeChartSymbol.replace('.NS','').replace('.BO','')} · ${timeframe}`;
+}
 
-  try {
-    const res = await fetch(`/api/chart/yahoo/${encodeURIComponent(activeChartSymbol)}?timeframe=${timeframe}`);
-    const result = await res.json();
+function _applyData(data, preserveView) {
+  if (!_priceSeries || !_volSeries || !data.length) return;
 
-    if (!result.success || !result.data?.length) {
-      toast(result.error || 'No chart data');
-      el('chart-loader').style.display = 'none';
-      el('chart-ohlc-label').textContent = '';
-      return;
-    }
+  let savedRange = null;
+  let oldLen = _chartData.length;
+  if (preserveView) savedRange = _chart.timeScale().getVisibleLogicalRange();
 
-    chartAllData = result.data;
-    const isIntraday = timeframe === '1D' || timeframe === '1W';
+  _chartData = data;
 
-    // Build line data (close prices)
-    const lineData = chartAllData.map(c => ({ time: c.time, value: c.close }));
+  _priceSeries.setData(data.map(c => ({ time: c.time, value: c.close })));
+  _volSeries.setData(data.map((c, i) => ({
+    time: c.time,
+    value: c.volume || 0,
+    color: i === 0 || c.close >= data[i - 1].close
+      ? 'rgba(38,166,154,0.45)'
+      : 'rgba(239,83,80,0.45)',
+  })));
 
-    // Build volume data with green/red colouring
-    const volData = chartAllData.map((c, i) => ({
-      time: c.time,
-      value: c.volume || 0,
-      color: i === 0 ? '#26a69a' : (c.close >= chartAllData[i - 1].close ? 'rgba(38,166,154,0.6)' : 'rgba(239,83,80,0.6)'),
-    }));
-
-    mainLineSeries.setData(lineData);
-    volumeSeries.setData(volData);
-
-    // Fit and show last 15% of data by default (like TradingView "integrated view")
-    mainChart.timeScale().fitContent();
-    if (timeframe === '15Y' || timeframe === '10Y') {
-      // Show last 2 years by default, let user scroll back
-      setTimeout(() => {
-        const total = lineData.length;
-        const from = Math.max(0, total - 500); // ~500 daily bars ≈ 2 years
-        mainChart.timeScale().setVisibleLogicalRange({ from, to: total - 1 });
-        volumeChart.timeScale().setVisibleLogicalRange({ from, to: total - 1 });
-      }, 50);
-    }
-
-    // Update info bar
-    const last = chartAllData[chartAllData.length - 1];
-    el('chart-ohlc-label').textContent = last ? `₹${Number(last.close).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '';
-    el('chart-source-label').textContent = `Yahoo Finance · ${chartAllData.length} candles`;
-    currentLiveCandle = { ...last };
-
-    // If intraday, start real-time tick updates
-    if (isIntraday && activeChartQuote) {
-      el('chart-source-label').textContent += ' · Live ticks ●';
-    }
-  } catch (err) {
-    console.error('[Chart] Load error:', err);
-    toast('Error loading chart data');
-    el('chart-ohlc-label').textContent = '';
-  } finally {
-    el('chart-loader').style.display = 'none';
+  if (preserveView && savedRange) {
+    const shift = data.length - oldLen;
+    _chart.timeScale().setVisibleLogicalRange({
+      from: savedRange.from + shift,
+      to: savedRange.to + shift,
+    });
   }
 }
 
-function updateLiveChartTick(quotes) {
-  if (!mainChart || !activeChartQuote || !mainLineSeries) return;
-  if (el('chart-window').classList.contains('is-hidden')) return;
-
-  const tickQuote = quotes.find(q => keyFor(q) === keyFor(activeChartQuote));
-  if (!tickQuote) return;
-  activeChartQuote = tickQuote;
-
-  // Only update line for intraday timeframes
-  if (activeTimeframe !== '1D' && activeTimeframe !== '1W') return;
-
-  const d = tickQuote.updatedAt ? new Date(tickQuote.updatedAt) : new Date();
-  const exactTime = Math.floor(d.getTime() / 1000);
-
-  mainLineSeries.update({ time: exactTime, value: tickQuote.lastPrice });
-
-  // Update volume (last bar)
-  const prev = chartAllData[chartAllData.length - 2];
-  volumeSeries.update({
-    time: exactTime,
-    value: tickQuote.tradedVolume || 0,
-    color: (!prev || tickQuote.lastPrice >= prev.close) ? 'rgba(38,166,154,0.6)' : 'rgba(239,83,80,0.6)',
-  });
-
-  // Update info bar live price
-  el('chart-ohlc-label').textContent = `₹${Number(tickQuote.lastPrice).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function _updateInfoBar() {
+  const last = _chartData[_chartData.length - 1];
+  const infoEl = el('chart-ohlc-label');
+  if (infoEl && last) infoEl.textContent = _fmtPrice(last.close);
 }
 
+// ── entry point ───────────────────────────────────────────────────────────────
 
+function openChart(key) {
+  const quote = _findQuote(key);
+  if (!quote) return;
+  activeChartQuote = quote;
+
+  _chartSymbol = (quote.symbol || '').replace(/-(EQ|BE|BZ|SM|ST|IL|IV|N[1-9])$/i, '').trim();
+  _chartData = [];
+  _chartLive = false;
+
+  el('chart-title').textContent = quote.symbol || 'Chart';
+  const symLbl = el('chart-symbol-label');
+  const srcLbl = el('chart-source-label');
+  if (symLbl) symLbl.textContent = quote.symbol || '';
+  if (srcLbl) srcLbl.textContent = '';
+
+  el('chart-window').classList.remove('is-hidden');
+  _ensureChart();
+  _startLoad();
+}
+
+// ── multi-stage loading ───────────────────────────────────────────────────────
+
+async function _startLoad() {
+  const loader = el('chart-loader');
+  if (loader) loader.style.display = 'block';
+
+  // Stage 1: Intraday (show immediately)
+  await _loadIntraday();
+
+  // Stage 2 & 3: Historical in background (non-blocking)
+  _loadDailyBackground().catch(() => {});
+}
+
+async function _loadIntraday() {
+  const loader = el('chart-loader');
+  try {
+    let data = null;
+
+    // Try IIFL intraday first (server decides based on auth)
+    if (activeChartQuote?.exchange && activeChartQuote?.instrumentId) {
+      const r = await fetch(`/api/chart/${activeChartQuote.exchange}/${activeChartQuote.instrumentId}?timeframe=1D`);
+      const result = await r.json();
+      if (result.success && result.data?.length > 0) {
+        data = result.data;
+        _chartLive = result.source === 'iifl';
+        const srcLbl = el('chart-source-label');
+        if (srcLbl) srcLbl.textContent = _chartLive ? '● IIFL Live' : 'Yahoo · 1D';
+      }
+    }
+
+    if (!data?.length) {
+      // Yahoo 1D fallback
+      const r = await fetch(`/api/chart/yahoo/${encodeURIComponent(_chartSymbol)}?timeframe=1D`);
+      const result = await r.json();
+      if (result.success && result.data?.length > 0) {
+        data = result.data;
+        const srcLbl = el('chart-source-label');
+        if (srcLbl) srcLbl.textContent = 'Yahoo · 1D';
+      }
+    }
+
+    if (data?.length) {
+      _applyData(data, false);
+      // Zoom into today's intraday data
+      _chart.timeScale().fitContent();
+      _updateInfoBar();
+    }
+  } catch (e) {
+    console.warn('[Chart intraday]', e.message);
+  } finally {
+    if (loader) loader.style.display = 'none';
+  }
+}
+
+async function _loadDailyBackground() {
+  // Stage 2: 2-year daily
+  try {
+    const r = await fetch(`/api/chart/yahoo/${encodeURIComponent(_chartSymbol)}?timeframe=1Y`);
+    const result = await r.json();
+    if (result.success && result.data?.length) {
+      const merged = _mergeData(result.data, _chartData);
+      _applyData(merged, true);
+      const srcLbl = el('chart-source-label');
+      if (srcLbl) srcLbl.textContent = (_chartLive ? '● IIFL Live + ' : '') + `Yahoo · ${merged.length} bars`;
+    }
+  } catch (e) {
+    console.warn('[Chart daily bg]', e.message);
+  }
+
+  // Stage 3: Full lifetime monthly (max range)
+  try {
+    const r = await fetch(`/api/chart/yahoo/${encodeURIComponent(_chartSymbol)}?timeframe=15Y`);
+    const result = await r.json();
+    if (result.success && result.data?.length) {
+      const merged = _mergeData(result.data, _chartData);
+      _applyData(merged, true);
+      const srcLbl = el('chart-source-label');
+      if (srcLbl) srcLbl.textContent = (_chartLive ? '● IIFL Live + ' : '') + `Yahoo · ${merged.length} bars (lifetime)`;
+      _updateInfoBar();
+    }
+  } catch (e) {
+    console.warn('[Chart history bg]', e.message);
+  }
+}
+
+// ── live tick updates (from IIFL WebSocket) ───────────────────────────────────
+
+function updateLiveChartTick(quotes) {
+  if (!_chart || !_priceSeries || !activeChartQuote) return;
+  if (el('chart-window').classList.contains('is-hidden')) return;
+
+  const tick = quotes.find(q => keyFor(q) === keyFor(activeChartQuote));
+  if (!tick) return;
+  activeChartQuote = tick;
+
+  const d = tick.updatedAt ? new Date(tick.updatedAt) : new Date();
+  const t = Math.floor(d.getTime() / 1000);
+
+  _priceSeries.update({ time: t, value: tick.lastPrice });
+  if (_volSeries) {
+    const prev = _chartData[_chartData.length - 1];
+    _volSeries.update({
+      time: t,
+      value: tick.tradedVolume || 0,
+      color: (!prev || tick.lastPrice >= prev.close)
+        ? 'rgba(38,166,154,0.45)'
+        : 'rgba(239,83,80,0.45)',
+    });
+  }
+  const infoEl = el('chart-ohlc-label');
+  if (infoEl) infoEl.textContent = _fmtPrice(tick.lastPrice);
+}
+
+// ── chart controls (called from bindEvents) ───────────────────────────────────
+
+function _chartZoom(factor) {
+  if (!_chart) return;
+  const ts = _chart.timeScale();
+  const r = ts.getVisibleLogicalRange();
+  if (!r) return;
+  const mid = (r.from + r.to) / 2;
+  const half = (r.to - r.from) * factor / 2;
+  ts.setVisibleLogicalRange({ from: Math.max(0, mid - half), to: mid + half });
+}
+
+function _chartPan(bars) {
+  if (!_chart) return;
+  const ts = _chart.timeScale();
+  const r = ts.getVisibleLogicalRange();
+  if (!r) return;
+  ts.setVisibleLogicalRange({ from: r.from + bars, to: r.to + bars });
+}
+
+// Legacy stubs so nothing breaks
+function loadYahooChartData(tf) { if (_chartSymbol) _startLoad(); }
 
 async function refreshQuotes(silent = false) {
   try {
@@ -1005,48 +1103,11 @@ function bindEvents() {
   });
 
   // Navigation controls
-  const PAN_AMOUNT = 10; // bars to pan per click
-  el('chart-zoom-in')?.addEventListener('click', () => {
-    if (!mainChart) return;
-    const ts = mainChart.timeScale();
-    const range = ts.getVisibleLogicalRange();
-    if (!range) return;
-    const mid = (range.from + range.to) / 2;
-    const half = (range.to - range.from) * 0.35;
-    ts.setVisibleLogicalRange({ from: mid - half, to: mid + half });
-    volumeChart?.timeScale().setVisibleLogicalRange({ from: mid - half, to: mid + half });
-  });
-  el('chart-zoom-out')?.addEventListener('click', () => {
-    if (!mainChart) return;
-    const ts = mainChart.timeScale();
-    const range = ts.getVisibleLogicalRange();
-    if (!range) return;
-    const mid = (range.from + range.to) / 2;
-    const half = (range.to - range.from) * 0.7;
-    ts.setVisibleLogicalRange({ from: mid - half, to: mid + half });
-    volumeChart?.timeScale().setVisibleLogicalRange({ from: mid - half, to: mid + half });
-  });
-  el('chart-pan-left')?.addEventListener('click', () => {
-    if (!mainChart) return;
-    const ts = mainChart.timeScale();
-    const range = ts.getVisibleLogicalRange();
-    if (!range) return;
-    ts.setVisibleLogicalRange({ from: range.from - PAN_AMOUNT, to: range.to - PAN_AMOUNT });
-    volumeChart?.timeScale().setVisibleLogicalRange({ from: range.from - PAN_AMOUNT, to: range.to - PAN_AMOUNT });
-  });
-  el('chart-pan-right')?.addEventListener('click', () => {
-    if (!mainChart) return;
-    const ts = mainChart.timeScale();
-    const range = ts.getVisibleLogicalRange();
-    if (!range) return;
-    ts.setVisibleLogicalRange({ from: range.from + PAN_AMOUNT, to: range.to + PAN_AMOUNT });
-    volumeChart?.timeScale().setVisibleLogicalRange({ from: range.from + PAN_AMOUNT, to: range.to + PAN_AMOUNT });
-  });
-  el('chart-reset')?.addEventListener('click', () => {
-    if (!mainChart) return;
-    mainChart.timeScale().fitContent();
-    volumeChart?.timeScale().fitContent();
-  });
+  el('chart-zoom-in')?.addEventListener('click', () => _chartZoom(0.7));   // zoom in
+  el('chart-zoom-out')?.addEventListener('click', () => _chartZoom(1.4));  // zoom out
+  el('chart-pan-left')?.addEventListener('click', () => _chartPan(-20));
+  el('chart-pan-right')?.addEventListener('click', () => _chartPan(20));
+  el('chart-reset')?.addEventListener('click', () => _chart?.timeScale().fitContent());
 
 
   // Draggable Analysis Window
