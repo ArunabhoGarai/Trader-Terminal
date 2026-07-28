@@ -8,6 +8,7 @@
     <meta name="description" content="Desktop-style market watch powered by the IIFL Markets API." />
     <link rel="stylesheet" href="styles/main.css" />
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
   </head>
   <body>
@@ -129,36 +130,18 @@
 
     <!-- CHART MODAL -->
     <section class="analysis-window is-hidden" id="chart-window" aria-modal="true" role="dialog" aria-labelledby="chart-title">
-      <header class="analysis-titlebar" id="chart-titlebar">
-        <strong id="chart-title" style="flex:1;font-size:12px;">Historical Data</strong>
+      <header class="analysis-titlebar">
+        <strong id="chart-title" style="flex: 1;">Historical Data</strong>
         <div class="chart-timeframes">
-          <button data-tf="1D">1D</button>
-          <button data-tf="1W">1W</button>
-          <button data-tf="1M">1M</button>
-          <button data-tf="6M">6M</button>
-          <button data-tf="1Y">1Y</button>
-          <button class="active" data-tf="15Y">Max</button>
+          <button data-tf="live">Live Area</button>
+          <button class="active" data-tf="advanced">Advanced Chart</button>
         </div>
         <button id="close-chart" aria-label="Close chart">×</button>
       </header>
-      <!-- Stock info bar -->
-      <div id="chart-info-bar">
-        <span id="chart-symbol-label"></span>
-        <span id="chart-ohlc-label"></span>
-        <span id="chart-source-label"></span>
+      <div id="chart-container" style="flex: 1; min-height: 400px; background: #000; position: relative; display: none;">
+        <div id="chart-loader" style="position: absolute; top:50%; left:50%; transform: translate(-50%, -50%); color: #666; display: none;">Loading data from IIFL...</div>
       </div>
-      <!-- Main chart fills remaining space -->
-      <div id="chart-container" style="flex:1;min-height:0;background:#0d1117;position:relative;">
-        <div id="chart-loader">Loading chart data…</div>
-      </div>
-      <!-- Controls -->
-      <div id="chart-controls">
-        <button id="chart-zoom-out" title="Zoom out">−</button>
-        <button id="chart-zoom-in" title="Zoom in">+</button>
-        <button id="chart-pan-left" title="Pan left">&#8592;</button>
-        <button id="chart-pan-right" title="Pan right">&#8594;</button>
-        <button id="chart-reset" title="Reset view">⊙ Reset</button>
-      </div>
+      <div id="tv_chart_container" style="flex: 1; min-height: 400px; background: #fff; position: relative;"></div>
     </section>
 
     <!-- Copyright Footer -->
