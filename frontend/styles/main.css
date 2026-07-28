@@ -212,30 +212,14 @@ button { cursor: pointer; }
 .toast.show { opacity: 1; transform: translate(-50%,0); }
 
 /* ── CHART MODAL ── */
-#chart-window { position: fixed; top: 80px; right: 20px; display: flex; flex-direction: column; width: min(900px, calc(100vw - 40px)); height: min(600px, calc(100vh - 90px)); border: 1px solid #2a3a4a; background: #0b0f1a; z-index: 5; box-shadow: 0 20px 60px rgba(0,0,0,.85); resize: both; overflow: hidden; min-width: 400px; min-height: 320px; border-radius: 6px; }
+#chart-window { position: fixed; top: 80px; right: 20px; display: flex; flex-direction: column; width: min(820px, calc(100vw - 60px)); height: min(520px, calc(100vh - 100px)); border: 2px solid #758083; background: #000; z-index: 5; box-shadow: 0 14px 42px rgba(0,0,0,.68); resize: both; overflow: hidden; min-width: 360px; min-height: 300px; }
 #chart-window.is-hidden { display: none; }
-#chart-window .analysis-titlebar { background: linear-gradient(#1a2332, #111827); border-bottom: 1px solid #1e2d3d; flex-shrink: 0; }
-#chart-window .analysis-titlebar strong { color: #9ab0c8; }
-#close-chart { width: 26px; height: 22px; margin-right: 4px; border: 1px solid #2a3a4a; background: #1a2332; color: #9ab0c8; font-size: 17px; border-radius: 3px; }
-#close-chart:hover { background: #ef5350; color: white; }
-.chart-timeframes { display: flex; gap: 3px; margin-left: auto; margin-right: 8px; }
-.chart-timeframes button { padding: 2px 8px; font-size: 10px; font-weight: 700; color: #6d8fa8; background: transparent; border: 1px solid #2a3a4a; border-radius: 3px; transition: all .15s; }
-.chart-timeframes button:hover { background: #1e2d3d; color: #c8d8e8; }
+.chart-timeframes { display: flex; gap: 4px; margin-left: auto; margin-right: 15px; }
+.chart-timeframes button { padding: 2px 8px; font-size: 11px; font-weight: 700; color: #3c4c51; background: transparent; border: 1px solid #5a6669; border-radius: 3px; }
+.chart-timeframes button:hover { background: #3b4648; color: white; }
 .chart-timeframes button.active { background: #1a73e8; border-color: #1a73e8; color: white; }
-/* Info bar */
-#chart-info-bar { display: flex; align-items: center; gap: 14px; padding: 3px 10px; background: #0d1521; border-bottom: 1px solid #1e2d3d; font-size: 11px; color: #6d8fa8; flex-shrink: 0; min-height: 22px; }
-#chart-symbol-label { font-weight: 700; color: #c8d8e8; font-size: 12px; }
-#chart-ohlc-label { color: #9ab0c8; letter-spacing: .3px; }
-#chart-source-label { margin-left: auto; font-size: 9px; color: #3d5568; font-style: italic; }
-/* Chart containers */
-#chart-container { position: relative; background: #0d1117; }
-#chart-loader { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #3d5568; font-size: 12px; pointer-events: none; display: none; }
-/* Navigation controls */
-#chart-controls { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 5px 10px; background: #0d1521; border-top: 1px solid #1e2d3d; flex-shrink: 0; }
-#chart-controls button { width: 28px; height: 24px; border: 1px solid #2a3a4a; background: #1a2332; color: #9ab0c8; border-radius: 4px; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all .15s; }
-#chart-controls button:hover { background: #1e3a58; color: white; border-color: #1a73e8; }
-#chart-reset { width: auto !important; padding: 0 10px !important; font-size: 11px !important; color: #6d8fa8 !important; }
-#chart-reset:hover { color: white !important; }
+#chart-window .analysis-titlebar { background: linear-gradient(#f4f8f9,#bdced2); }
+#close-chart { width: 26px; height: 22px; margin-right: 4px; border: 1px solid #8c999c; background: linear-gradient(#fff,#d4e0e2); font-size: 17px; }
 
 /* ── RESPONSIVE ── */
 @media (max-width: 900px) {
