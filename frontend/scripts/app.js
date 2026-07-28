@@ -38,7 +38,7 @@ let chartInstance = null;
 let candleSeries = null;
 let areaSeries = null;
 let activeChartQuote = null;
-let activeTimeframe = '1D';
+let activeTimeframe = 'advanced';
 let currentLiveCandle = null;
 
 const el = (id) => document.getElementById(id);
@@ -542,318 +542,217 @@ async function reorderWatchlist(keys) {
   }
 }
 
-// =============================================================================
-// PROFESSIONAL CHART ENGINE — multi-stage loading, single LW instance
-// =============================================================================
-let _chart = null;           // LightweightCharts instance
-let _priceSeries = null;     // AreaSeries for price line
-let _volSeries = null;       // HistogramSeries for volume (same chart, separate scale)
-let _chartData = [];         // full accumulated & sorted candle dataset
-let _chartSymbol = '';       // Yahoo-compatible symbol e.g. "RELIANCE.NS"
-let _chartLive = false;      // true = IIFL live ticks updating
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-function _findQuote(key) {
-  return state.quotes.find(q => keyFor(q) === key)
+async function openChart(key) {
+  const quote = state.quotes.find(q => keyFor(q) === key)
     || state.marketAnalysis?.highs?.find(q => keyFor(q) === key)
     || state.marketAnalysis?.lows?.find(q => keyFor(q) === key)
     || state.marketAnalysis?.gainers?.find(q => keyFor(q) === key)
     || state.marketAnalysis?.losers?.find(q => keyFor(q) === key);
+  showChart(quote);
 }
 
-function _fmtPrice(p) {
-  return '₹' + Number(p).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-// ── chart initialization ──────────────────────────────────────────────────────
-
-function _ensureChart() {
-  if (_chart) return;
-  const container = el('chart-container');
-
-  _chart = LightweightCharts.createChart(container, {
-    layout: {
-      background: { color: '#0d1117' },
-      textColor: '#8b949e',
-      fontSize: 11,
-    },
-    grid: {
-      vertLines: { color: '#161b22' },
-      horzLines: { color: '#161b22' },
-    },
-    crosshair: {
-      mode: 1,
-      vertLine: { color: '#374151', width: 1, style: 0, labelBackgroundColor: '#1f2937' },
-      horzLine: { color: '#374151', width: 1, style: 0, labelBackgroundColor: '#1f2937' },
-    },
-    rightPriceScale: {
-      borderColor: '#21262d',
-      textColor: '#8b949e',
-    },
-    timeScale: {
-      borderColor: '#21262d',
-      textColor: '#8b949e',
-      timeVisible: true,
-      secondsVisible: false,
-      rightOffset: 5,
-      shiftVisibleRangeOnNewBar: false,
-    },
-    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
-    handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: true, price: false } },
-    width: container.clientWidth,
-    height: container.clientHeight,
-  });
-
-  // Area price series
-  _priceSeries = _chart.addAreaSeries({
-    lineColor: '#2962FF',
-    topColor: 'rgba(41,98,255,0.22)',
-    bottomColor: 'rgba(41,98,255,0.0)',
-    lineWidth: 2,
-    crosshairMarkerVisible: true,
-    crosshairMarkerRadius: 4,
-    crosshairMarkerBorderColor: '#2962FF',
-    crosshairMarkerBackgroundColor: '#0d1117',
-    lastValueVisible: true,
-    priceLineVisible: true,
-    priceLineColor: '#2962FF',
-    priceLineStyle: 2,
-  });
-
-  // Volume histogram pinned to bottom 20% of the same chart
-  _volSeries = _chart.addHistogramSeries({
-    priceFormat: { type: 'volume' },
-    priceScaleId: 'vol',
-    color: 'rgba(38,166,154,0.45)',
-  });
-  _chart.priceScale('vol').applyOptions({
-    scaleMargins: { top: 0.82, bottom: 0 },
-  });
-
-  // Crosshair: update info bar with hovered price
-  _chart.subscribeCrosshairMove(param => {
-    if (!param?.time || !_priceSeries) { _updateInfoBar(); return; }
-    const d = param.seriesData?.get(_priceSeries);
-    if (!d) return;
-    const price = d.value !== undefined ? d.value : d.close;
-    const infoEl = el('chart-ohlc-label');
-    if (infoEl) infoEl.textContent = _fmtPrice(price);
-  });
-
-  // Auto-resize
-  new ResizeObserver(() => {
-    if (_chart && container.clientWidth > 0)
-      _chart.resize(container.clientWidth, container.clientHeight);
-  }).observe(container);
-}
-
-// ── data helpers ──────────────────────────────────────────────────────────────
-
-function _sortKey(c) {
-  return typeof c.time === 'number' ? c.time : c.time;
-}
-
-function _mergeData(existing, incoming) {
-  const map = new Map(existing.map(c => [String(c.time), c]));
-  // Incoming fills gaps but does NOT overwrite existing (existing is more precise)
-  incoming.forEach(c => { if (!map.has(String(c.time))) map.set(String(c.time), c); });
-  return Array.from(map.values()).sort((a, b) => {
-    const ka = _sortKey(a), kb = _sortKey(b);
-    return ka < kb ? -1 : ka > kb ? 1 : 0;
-  });
-}
-
-function _applyData(data, preserveView) {
-  if (!_priceSeries || !_volSeries || !data.length) return;
-
-  let savedRange = null;
-  let oldLen = _chartData.length;
-  if (preserveView) savedRange = _chart.timeScale().getVisibleLogicalRange();
-
-  _chartData = data;
-
-  _priceSeries.setData(data.map(c => ({ time: c.time, value: c.close })));
-  _volSeries.setData(data.map((c, i) => ({
-    time: c.time,
-    value: c.volume || 0,
-    color: i === 0 || c.close >= data[i - 1].close
-      ? 'rgba(38,166,154,0.45)'
-      : 'rgba(239,83,80,0.45)',
-  })));
-
-  if (preserveView && savedRange) {
-    const shift = data.length - oldLen;
-    _chart.timeScale().setVisibleLogicalRange({
-      from: savedRange.from + shift,
-      to: savedRange.to + shift,
-    });
-  }
-}
-
-function _updateInfoBar() {
-  const last = _chartData[_chartData.length - 1];
-  const infoEl = el('chart-ohlc-label');
-  if (infoEl && last) infoEl.textContent = _fmtPrice(last.close);
-}
-
-// ── entry point ───────────────────────────────────────────────────────────────
-
-function openChart(key) {
-  const quote = _findQuote(key);
+function showChart(quote) {
   if (!quote) return;
   activeChartQuote = quote;
-
-  _chartSymbol = (quote.symbol || '').replace(/-(EQ|BE|BZ|SM|ST|IL|IV|N[1-9])$/i, '').trim();
-  _chartData = [];
-  _chartLive = false;
-
-  el('chart-title').textContent = quote.symbol || 'Chart';
-  const symLbl = el('chart-symbol-label');
-  const srcLbl = el('chart-source-label');
-  if (symLbl) symLbl.textContent = quote.symbol || '';
-  if (srcLbl) srcLbl.textContent = '';
-
+  el('chart-title').textContent = `${quote.symbol} - ${quote.exchange}`;
   el('chart-window').classList.remove('is-hidden');
-  _ensureChart();
-  _startLoad();
+  
+  if (activeTimeframe === 'advanced') {
+    el('chart-container').style.display = 'none';
+    el('tv_chart_container').style.display = 'block';
+  } else {
+    el('chart-container').style.display = 'block';
+    el('tv_chart_container').style.display = 'none';
+  }
+  
+  if (!chartInstance && activeTimeframe !== 'advanced') {
+    try {
+      const container = el('chart-container');
+        chartInstance = LightweightCharts.createChart(container, {
+          layout: { background: { color: '#000' }, textColor: '#d1d4dc' },
+          grid: { vertLines: { color: '#2b2b43' }, horzLines: { color: '#2b2b43' } },
+          timeScale: { timeVisible: true, secondsVisible: true },
+          width: container.clientWidth || 760,
+        height: container.clientHeight || 420,
+      });
+      // v3 API: addCandlestickSeries(); v4 API: addSeries(type)
+      if (typeof chartInstance.addCandlestickSeries === 'function') {
+        candleSeries = chartInstance.addCandlestickSeries({
+          upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+          wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+        });
+        areaSeries = chartInstance.addAreaSeries({
+          lineColor: '#2962FF', topColor: 'rgba(41, 98, 255, 0.5)', bottomColor: 'rgba(41, 98, 255, 0.05)',
+          lineWidth: 2,
+        });
+      } else if (typeof chartInstance.addSeries === 'function' && LightweightCharts.CandlestickSeries) {
+        candleSeries = chartInstance.addSeries(LightweightCharts.CandlestickSeries, {
+          upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+          wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+        });
+        areaSeries = chartInstance.addSeries(LightweightCharts.AreaSeries, {
+          lineColor: '#2962FF', topColor: 'rgba(41, 98, 255, 0.5)', bottomColor: 'rgba(41, 98, 255, 0.05)',
+          lineWidth: 2,
+        });
+      } else {
+        console.error('LightweightCharts API not compatible');
+        toast('Chart library error — please refresh');
+        return;
+      }
+      
+      new ResizeObserver(entries => {
+        if (entries.length === 0 || entries[0].target !== container) return;
+        const newRect = entries[0].contentRect;
+        if (newRect.width > 0 && newRect.height > 0) {
+          chartInstance.applyOptions({ width: newRect.width, height: newRect.height });
+        }
+      }).observe(container);
+    } catch (err) {
+      console.error('Chart creation failed:', err);
+      toast('Chart initialization error');
+      chartInstance = null;
+      candleSeries = null;
+      return;
+    }
+  }
+
+  setTimeout(() => {
+    if (chartInstance && el('chart-container')) {
+      const w = el('chart-container').clientWidth || 760;
+      const h = el('chart-container').clientHeight || 420;
+      chartInstance.applyOptions({ width: w, height: h });
+    }
+  }, 50);
+
+  loadChartData();
 }
 
-// ── multi-stage loading ───────────────────────────────────────────────────────
+async function loadChartData() {
+  if (!activeChartQuote) return;
+  
+  if (activeTimeframe === 'advanced') {
+    el('chart-container').style.display = 'none';
+    el('tv_chart_container').style.display = 'block';
+    
+    const cleanSymbol = activeChartQuote.symbol.replace(/-(EQ|BE|BZ|SM|ST|IL|IV|N1|N2|N3|N4|N5|N6|N7|N8)$/i, '').trim();
+    const exchangePrefix = (activeChartQuote.exchange.startsWith('BSE') || activeChartQuote.exchange === 'BSEEQ') ? 'BSE' : 'NSE';
+    const tvSymbol = `${exchangePrefix}:${cleanSymbol}`;
 
-async function _startLoad() {
-  const loader = el('chart-loader');
-  if (loader) loader.style.display = 'block';
+    el('tv_chart_container').innerHTML = ''; // clear old chart
+    if (typeof TradingView !== 'undefined') {
+      new TradingView.widget({
+        "container_id": "tv_chart_container",
+        "width": "100%",
+        "height": "100%",
+        "symbol": tvSymbol,
+        "interval": "D",
+        "timezone": "Asia/Kolkata",
+        "theme": "light",
+        "style": "1",
+        "toolbar_bg": "#f1f3f6",
+        "range": "120M",
+        "withdateranges": true,
+        "hide_side_toolbar": false,
+        "allow_symbol_change": true,
+        "save_image": false,
+        "locale": "en"
+      });
+    } else {
+      toast('TradingView library failed to load');
+    }
+    return;
+  }
+  
+  el('chart-container').style.display = 'block';
+  el('tv_chart_container').style.display = 'none';
+  if (!candleSeries || !areaSeries) return;
+  el('chart-loader').style.display = 'block';
+  
+  // Toggle visibility
+  if (activeTimeframe === 'live') {
+    candleSeries.applyOptions({ visible: false });
+    areaSeries.applyOptions({ visible: true });
+  } else {
+    areaSeries.applyOptions({ visible: false });
+    candleSeries.applyOptions({ visible: true });
+  }
 
-  // Stage 1: Intraday (show immediately)
-  await _loadIntraday();
-
-  // Stage 2 & 3: Historical in background (non-blocking)
-  _loadDailyBackground().catch(() => {});
-}
-
-async function _loadIntraday() {
-  const loader = el('chart-loader');
   try {
-    let data = null;
-
-    // Try IIFL intraday first (server decides based on auth)
-    if (activeChartQuote?.exchange && activeChartQuote?.instrumentId) {
-      const r = await fetch(`/api/chart/${activeChartQuote.exchange}/${activeChartQuote.instrumentId}?timeframe=1D`);
-      const result = await r.json();
-      if (result.success && result.data?.length > 0) {
-        data = result.data;
-        _chartLive = result.source === 'iifl';
-        const srcLbl = el('chart-source-label');
-        if (srcLbl) srcLbl.textContent = _chartLive ? '● IIFL Live' : 'Yahoo · 1D';
+    // If 'live', fetch '1D' to seed the area chart with today's history
+    const tfToFetch = activeTimeframe === 'live' ? '1D' : activeTimeframe;
+    const res = await fetch(`/api/chart/${activeChartQuote.exchange}/${activeChartQuote.instrumentId}?timeframe=${tfToFetch}`);
+    const result = await res.json();
+    if (result.success && Array.isArray(result.data) && result.data.length > 0) {
+      if (activeTimeframe === 'live') {
+        const areaData = result.data.map(d => ({ time: d.time, value: d.close }));
+        areaSeries.setData(areaData);
+      } else {
+        candleSeries.setData(result.data);
       }
+      currentLiveCandle = { ...result.data[result.data.length - 1] };
+      chartInstance.timeScale().fitContent();
+    } else {
+      toast('No chart data available for this timeframe');
     }
-
-    if (!data?.length) {
-      // Yahoo 1D fallback
-      const r = await fetch(`/api/chart/yahoo/${encodeURIComponent(_chartSymbol)}?timeframe=1D`);
-      const result = await r.json();
-      if (result.success && result.data?.length > 0) {
-        data = result.data;
-        const srcLbl = el('chart-source-label');
-        if (srcLbl) srcLbl.textContent = 'Yahoo · 1D';
-      }
-    }
-
-    if (data?.length) {
-      _applyData(data, false);
-      // Zoom into today's intraday data
-      _chart.timeScale().fitContent();
-      _updateInfoBar();
-    }
-  } catch (e) {
-    console.warn('[Chart intraday]', e.message);
+  } catch (err) {
+    console.error('Chart data load error:', err);
+    toast('Error loading chart data');
   } finally {
-    if (loader) loader.style.display = 'none';
+    el('chart-loader').style.display = 'none';
   }
 }
-
-async function _loadDailyBackground() {
-  // Stage 2: 2-year daily
-  try {
-    const r = await fetch(`/api/chart/yahoo/${encodeURIComponent(_chartSymbol)}?timeframe=1Y`);
-    const result = await r.json();
-    if (result.success && result.data?.length) {
-      const merged = _mergeData(result.data, _chartData);
-      _applyData(merged, true);
-      const srcLbl = el('chart-source-label');
-      if (srcLbl) srcLbl.textContent = (_chartLive ? '● IIFL Live + ' : '') + `Yahoo · ${merged.length} bars`;
-    }
-  } catch (e) {
-    console.warn('[Chart daily bg]', e.message);
-  }
-
-  // Stage 3: Full lifetime monthly (max range)
-  try {
-    const r = await fetch(`/api/chart/yahoo/${encodeURIComponent(_chartSymbol)}?timeframe=15Y`);
-    const result = await r.json();
-    if (result.success && result.data?.length) {
-      const merged = _mergeData(result.data, _chartData);
-      _applyData(merged, true);
-      const srcLbl = el('chart-source-label');
-      if (srcLbl) srcLbl.textContent = (_chartLive ? '● IIFL Live + ' : '') + `Yahoo · ${merged.length} bars (lifetime)`;
-      _updateInfoBar();
-    }
-  } catch (e) {
-    console.warn('[Chart history bg]', e.message);
-  }
-}
-
-// ── live tick updates (from IIFL WebSocket) ───────────────────────────────────
 
 function updateLiveChartTick(quotes) {
-  if (!_chart || !_priceSeries || !activeChartQuote) return;
-  if (el('chart-window').classList.contains('is-hidden')) return;
-
-  const tick = quotes.find(q => keyFor(q) === keyFor(activeChartQuote));
-  if (!tick) return;
-  activeChartQuote = tick;
-
-  const d = tick.updatedAt ? new Date(tick.updatedAt) : new Date();
-  const t = Math.floor(d.getTime() / 1000);
-
-  _priceSeries.update({ time: t, value: tick.lastPrice });
-  if (_volSeries) {
-    const prev = _chartData[_chartData.length - 1];
-    _volSeries.update({
-      time: t,
-      value: tick.tradedVolume || 0,
-      color: (!prev || tick.lastPrice >= prev.close)
-        ? 'rgba(38,166,154,0.45)'
-        : 'rgba(239,83,80,0.45)',
-    });
+    if (!chartInstance || !activeChartQuote) return;
+    if (el('chart-window').classList.contains('is-hidden')) return;
+  
+    const tickQuote = quotes.find(q => keyFor(q) === keyFor(activeChartQuote));
+    if (!tickQuote) return;
+  
+    activeChartQuote = tickQuote;
+    
+    const d = tickQuote.updatedAt ? new Date(tickQuote.updatedAt) : new Date();
+    
+    if (activeTimeframe === 'live' && areaSeries) {
+    // Area Chart: Simple { time, value } update with exact timestamp to draw new segments continuously
+    const exactTime = Math.floor(d.getTime() / 1000);
+    areaSeries.update({ time: exactTime, value: tickQuote.lastPrice });
+    return;
   }
-  const infoEl = el('chart-ohlc-label');
-  if (infoEl) infoEl.textContent = _fmtPrice(tick.lastPrice);
+  
+  if (!candleSeries) return;
+
+  let timeParam;
+  const isIntraday = activeTimeframe === '1D';
+  
+  if (isIntraday) {
+    // Round down to current minute timestamp for 1D (minute bars)
+    timeParam = Math.floor(d.getTime() / 1000);
+    timeParam = timeParam - (timeParam % 60); 
+  } else {
+    // Format YYYY-MM-DD for daily historical
+    timeParam = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  // If current bucket ended (e.g. minute rolled over), start a new candle
+  if (!currentLiveCandle || currentLiveCandle.time !== timeParam) {
+    currentLiveCandle = {
+      time: timeParam,
+      open: tickQuote.lastPrice,
+      high: tickQuote.lastPrice,
+      low: tickQuote.lastPrice,
+      close: tickQuote.lastPrice
+    };
+  } else {
+    // Dynamically expand the highs and lows of the current candle in real-time
+    currentLiveCandle.high = Math.max(currentLiveCandle.high, tickQuote.lastPrice);
+    currentLiveCandle.low = Math.min(currentLiveCandle.low, tickQuote.lastPrice);
+    currentLiveCandle.close = tickQuote.lastPrice;
+  }
+
+  // Pushes the tick directly into the charting engine without HTTP requests
+  candleSeries.update(currentLiveCandle);
 }
-
-// ── chart controls (called from bindEvents) ───────────────────────────────────
-
-function _chartZoom(factor) {
-  if (!_chart) return;
-  const ts = _chart.timeScale();
-  const r = ts.getVisibleLogicalRange();
-  if (!r) return;
-  const mid = (r.from + r.to) / 2;
-  const half = (r.to - r.from) * factor / 2;
-  ts.setVisibleLogicalRange({ from: Math.max(0, mid - half), to: mid + half });
-}
-
-function _chartPan(bars) {
-  if (!_chart) return;
-  const ts = _chart.timeScale();
-  const r = ts.getVisibleLogicalRange();
-  if (!r) return;
-  ts.setVisibleLogicalRange({ from: r.from + bars, to: r.to + bars });
-}
-
-// Legacy stubs so nothing breaks
-function loadYahooChartData(tf) { if (_chartSymbol) _startLoad(); }
 
 async function refreshQuotes(silent = false) {
   try {
@@ -1093,22 +992,15 @@ function bindEvents() {
   });
 
   el('close-chart').addEventListener('click', () => { el('chart-window').classList.add('is-hidden'); activeChartQuote = null; });
-
-  // Timeframe buttons — now call Yahoo chart loader
+  
   document.querySelectorAll('.chart-timeframes button').forEach(btn => {
     btn.addEventListener('click', (e) => {
-      activeTimeframe = e.currentTarget.dataset.tf;
-      if (activeChartSymbol) loadYahooChartData(activeTimeframe);
+      document.querySelectorAll('.chart-timeframes button').forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      activeTimeframe = e.target.dataset.tf;
+      loadChartData();
     });
   });
-
-  // Navigation controls
-  el('chart-zoom-in')?.addEventListener('click', () => _chartZoom(0.7));   // zoom in
-  el('chart-zoom-out')?.addEventListener('click', () => _chartZoom(1.4));  // zoom out
-  el('chart-pan-left')?.addEventListener('click', () => _chartPan(-20));
-  el('chart-pan-right')?.addEventListener('click', () => _chartPan(20));
-  el('chart-reset')?.addEventListener('click', () => _chart?.timeScale().fitContent());
-
 
   // Draggable Analysis Window
   const analysisWin = el('analysis-window');
