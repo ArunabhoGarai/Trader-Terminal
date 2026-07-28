@@ -129,20 +129,37 @@
 
     <!-- CHART MODAL -->
     <section class="analysis-window is-hidden" id="chart-window" aria-modal="true" role="dialog" aria-labelledby="chart-title">
-      <header class="analysis-titlebar">
-        <strong id="chart-title" style="flex: 1;">Historical Data</strong>
+      <header class="analysis-titlebar" id="chart-titlebar">
+        <strong id="chart-title" style="flex:1;font-size:12px;">Historical Data</strong>
         <div class="chart-timeframes">
-          <button data-tf="live">Live Area</button>
-          <button class="active" data-tf="1D">1D</button>
+          <button data-tf="1D">1D</button>
+          <button data-tf="1W">1W</button>
           <button data-tf="1M">1M</button>
+          <button data-tf="6M">6M</button>
           <button data-tf="1Y">1Y</button>
-          <button data-tf="10Y">10Y</button>
-          <button data-tf="20Y">20Y</button>
+          <button class="active" data-tf="15Y">Max</button>
         </div>
         <button id="close-chart" aria-label="Close chart">×</button>
       </header>
-      <div id="chart-container" style="flex: 1; min-height: 400px; background: #000; position: relative;">
-        <div id="chart-loader" style="position: absolute; top:50%; left:50%; transform: translate(-50%, -50%); color: #666; display: none;">Loading data from IIFL...</div>
+      <!-- Stock info bar -->
+      <div id="chart-info-bar">
+        <span id="chart-symbol-label"></span>
+        <span id="chart-ohlc-label"></span>
+        <span id="chart-source-label"></span>
+      </div>
+      <!-- Main chart -->
+      <div id="chart-container" style="flex:1;min-height:0;background:#0b0f1a;position:relative;">
+        <div id="chart-loader">Loading chart data…</div>
+      </div>
+      <!-- Volume bar -->
+      <div id="chart-volume-container"></div>
+      <!-- Controls -->
+      <div id="chart-controls">
+        <button id="chart-zoom-out" title="Zoom out">−</button>
+        <button id="chart-zoom-in" title="Zoom in">+</button>
+        <button id="chart-pan-left" title="Pan left">&#8592;</button>
+        <button id="chart-pan-right" title="Pan right">&#8594;</button>
+        <button id="chart-reset" title="Reset view">⊙ Reset</button>
       </div>
     </section>
 
