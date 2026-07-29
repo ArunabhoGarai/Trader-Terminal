@@ -232,32 +232,6 @@ function mapMostActiveToQuote(item) {
   };
 }
 
-let sharedBrowser = null;
-
-async function getSharedBrowser() {
-  if (sharedBrowser && sharedBrowser.isConnected()) return sharedBrowser;
-  if (sharedBrowser) {
-    try { await sharedBrowser.close(); } catch (_) {}
-  }
-  sharedBrowser = await puppeteer.launch({
-    headless: true,
-    args: [
-      '--no-sandbox', '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--single-process',
-      '--no-zygote',
-      '--disable-extensions',
-      '--disable-background-networking',
-      '--disable-default-apps',
-      '--disable-sync',
-      '--disable-translate',
-      '--js-flags=--max-old-space-size=128'
-    ]
-  });
-  return sharedBrowser;
-}
-
 let lastScrapeTime = 0;
 let isScraping = false;
 
@@ -273,11 +247,14 @@ async function scrapeNSE(manual = false) {
   isScraping = true;
   lastScrapeTime = Date.now();
   console.log('[NSE Scraper] Waking up to fetch full NSE analysis data...');
-  let page;
+  let browser;
   try {
-    const browser = await getSharedBrowser();
+    browser = await puppeteer.launch({ 
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+    });
     
-    page = await browser.newPage();
+    const page = await browser.newPage();
     
     // Set a solid User-Agent and viewport
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
@@ -369,27 +346,18 @@ async function scrapeNSE(manual = false) {
     globalValue = [...global52WHighs];
   } finally {
     isScraping = false;
-    // Close only the page tab, keep the shared browser alive for reuse
-    if (page) try { await page.close(); } catch (_) {}
+    if (browser) await browser.close();
   }
   return { success: true, message: 'NSE data successfully refreshed.' };
 }
 
-let scraperIntervalsStarted = false;
-
-// Called on-demand when the Market Analysis tab is opened
-function scrapeOnDemand() {
-  // Run an immediate scrape
+function startNSEScraper(intervalMs = 5 * 60 * 1000) { // Default 5 minutes
+  // Initial run
   scrapeNSE();
   scrapeMoneycontrol52W();
-  
-  // Start background refresh intervals (only once, so they don't stack)
-  if (!scraperIntervalsStarted) {
-    scraperIntervalsStarted = true;
-    setInterval(scrapeNSE, 5 * 60 * 1000);            // NSE every 5 min
-    setInterval(scrapeMoneycontrol52W, 2 * 60 * 1000); // MC every 2 min
-    console.log('[NSE Scraper] Background refresh intervals started (triggered by Market Analysis tab).');
-  }
+  // Schedule recurring runs
+  setInterval(scrapeNSE, intervalMs);
+  setInterval(scrapeMoneycontrol52W, 30 * 1000); // 30 seconds for Moneycontrol
 }
 
 function getNSEMarketWideData() {
@@ -406,7 +374,7 @@ function getNSEMarketWideData() {
 }
 
 module.exports = {
-  scrapeOnDemand,
+  startNSEScraper,
   getNSEMarketWideData,
   scrapeNSE
 };
