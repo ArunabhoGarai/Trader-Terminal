@@ -934,8 +934,24 @@ function bindEvents() {
   const autoLoginBtn = el('force-auto-login');
   if (autoLoginBtn) {
     autoLoginBtn.addEventListener('click', async () => {
-      toast('Auto-login triggered. Watch server terminal.');
-      try { await fetch('/api/force-auto-login'); } catch(e){}
+      autoLoginBtn.disabled = true;
+      toast('Auto-login started. Please wait...');
+      try {
+        const res = await fetch('/api/force-auto-login');
+        const json = await res.json();
+        if (!res.ok || !json.success) {
+          toast('Auto-login failed: ' + (json.error || 'Unknown error'), 5000);
+          if (json.screenshot) {
+            window.open(json.screenshot, '_blank');
+          }
+        } else {
+          toast('Auto-login completed successfully!');
+        }
+      } catch (e) {
+        toast('Error triggering auto-login: ' + e.message);
+      } finally {
+        autoLoginBtn.disabled = false;
+      }
     });
   }
   document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { state.analysisTab = button.dataset.analysisTab; document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); renderAnalysis(); }));
