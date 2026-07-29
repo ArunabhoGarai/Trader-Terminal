@@ -1,6 +1,6 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const { authenticator } = require('otplib');
+const OTPAuth = require('otpauth');
 
 puppeteer.use(StealthPlugin());
 
@@ -16,7 +16,14 @@ async function runAutoLogin(port = 3001) {
   }
 
   // Generate TOTP
-  const totpCode = authenticator.generate(totpSecret);
+  let totpCode;
+  try {
+    const totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(totpSecret) });
+    totpCode = totp.generate();
+  } catch (err) {
+    console.error('[AUTO-LOGIN] Failed to generate TOTP:', err.message);
+    return { success: false, error: 'Invalid TOTP secret in .env' };
+  }
   
   let browser;
   try {
