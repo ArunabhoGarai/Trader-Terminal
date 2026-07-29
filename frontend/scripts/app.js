@@ -938,7 +938,13 @@ function bindEvents() {
       toast('Auto-login started. Please wait...');
       try {
         const res = await fetch('/api/force-auto-login');
-        const json = await res.json();
+        let json;
+        try {
+          json = await res.json();
+        } catch (parseError) {
+          throw new Error(`Server returned a non-JSON response (Status ${res.status}). This usually means the request timed out or the server crashed. Please check the backend server terminal logs for the exact error.`);
+        }
+        
         if (!res.ok || !json.success) {
           toast('Auto-login failed: ' + (json.error || 'Unknown error'), 5000);
           if (json.screenshot) {
@@ -948,7 +954,7 @@ function bindEvents() {
           toast('Auto-login completed successfully!');
         }
       } catch (e) {
-        toast('Error triggering auto-login: ' + e.message);
+        toast('Error triggering auto-login: ' + e.message, 5000);
       } finally {
         autoLoginBtn.disabled = false;
       }
@@ -1156,9 +1162,8 @@ async function initialize() {
   connectWebSocket();
   startHeartbeat();
 
-  // Always poll via REST to keep server simulation ticking + fetch fresh data
+  // Initial fetch to paint the UI; subsequent updates will stream via WebSocket
   await refreshQuotes(true);
-  setInterval(() => refreshQuotes(true), 2500);
 }
 
 initialize();
