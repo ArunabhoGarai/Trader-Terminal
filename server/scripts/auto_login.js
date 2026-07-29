@@ -50,9 +50,19 @@ async function runAutoLogin(port = 3001) {
     // might have long-polling trackers that prevent networkidle from ever firing.
     await page.goto(iiflLoginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    // Wait for the IIFL page to fully render (it may use JS frameworks)
-    console.log('[AUTO-LOGIN] Waiting for IIFL login page to render...');
-    await new Promise(r => setTimeout(r, 3000));
+    // Wait for the IIFL page to fully render its JS framework (React/Angular)
+    console.log('[AUTO-LOGIN] Waiting for IIFL login inputs to render...');
+    await page.waitForFunction(() => {
+      const inputs = document.querySelectorAll('input');
+      for (const input of inputs) {
+        if (input.type === 'hidden' || input.type === 'submit' || input.type === 'button') continue;
+        if (input.offsetParent !== null) return true; // found a visible input
+      }
+      return false;
+    }, { timeout: 30000 });
+    
+    // Extra brief pause for any animations to settle
+    await new Promise(r => setTimeout(r, 1000));
 
     // Log what inputs are actually on the page for debugging
     const inputDebug = await page.evaluate(() => {
