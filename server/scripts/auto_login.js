@@ -27,6 +27,15 @@ async function runAutoLogin(port = 3001) {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
 
+    // Listen to browser console and network for debugging
+    page.on('console', msg => console.log(`[BROWSER CONSOLE] ${msg.type().toUpperCase()}: ${msg.text()}`));
+    page.on('pageerror', err => console.error(`[BROWSER ERROR] ${err.toString()}`));
+    page.on('response', response => {
+      if (!response.ok() && (response.url().includes('login') || response.url().includes('auth'))) {
+        console.log(`[BROWSER NETWORK ERROR] ${response.status()} from ${response.url()}`);
+      }
+    });
+
     // Navigate to our local login route, which redirects to IIFL
     const localLoginUrl = `http://localhost:${port}/auth/login`;
     console.log(`[AUTO-LOGIN] Navigating to ${localLoginUrl}`);
@@ -106,14 +115,20 @@ async function runAutoLogin(port = 3001) {
     
   } catch (err) {
     console.error('[AUTO-LOGIN] ❌ Failed:', err.message);
-    // Optionally dump page HTML on failure for debugging
+    // Optionally dump page HTML and screenshot on failure for debugging
     if (browser) {
        try {
          const pages = await browser.pages();
-         const html = await pages[pages.length-1].content();
-         require('fs').writeFileSync('auto_login_error_dump.html', html);
-         console.log('[AUTO-LOGIN] Dumped error page to auto_login_error_dump.html');
-       } catch (e) {}
+         const errorPage = pages[pages.length-1];
+         if (errorPage) {
+           const html = await errorPage.content();
+           require('fs').writeFileSync('auto_login_error_dump.html', html);
+           await errorPage.screenshot({ path: 'auto_login_error_screenshot.png' });
+           console.log('[AUTO-LOGIN] Dumped error page to auto_login_error_dump.html and auto_login_error_screenshot.png');
+         }
+       } catch (e) {
+         console.error('[AUTO-LOGIN] Could not dump error state:', e.message);
+       }
     }
   } finally {
     if (browser) {
