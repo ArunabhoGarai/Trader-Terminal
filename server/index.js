@@ -1334,6 +1334,16 @@ app.get('/auth/logout', (req, res) => {
   res.json({ success: true });
 });
 
+app.get('/api/force-auto-login', async (req, res) => {
+  console.log('[API] Manual auto-login triggered');
+  const result = await runAutoLogin(CONFIG.port);
+  if (result && !result.success) {
+    res.status(500).json(result);
+  } else {
+    res.json({ success: true, message: 'Auto-login successful' });
+  }
+});
+
 app.get('*', sendTerminal);
 
 // ---------------------------------------------------------------------------
@@ -1379,15 +1389,6 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-app.get('/api/force-auto-login', async (req, res) => {
-  console.log('[API] Manual auto-login triggered');
-  const result = await runAutoLogin(CONFIG.port);
-  if (result && !result.success) {
-    res.status(500).json(result);
-  } else {
-    res.json({ success: true, message: 'Auto-login successful' });
-  }
-});
 
 server.listen(CONFIG.port, () => {
   console.log(`Trader Terminal running at http://localhost:${CONFIG.port}`);
