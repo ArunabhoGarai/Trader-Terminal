@@ -15,13 +15,12 @@ async function runAutoLogin(port = 3001) {
     return { success: false, error: 'Missing credentials in .env' };
   }
 
-  // Generate TOTP
-  let totpCode;
+  // Prepare TOTP object but don't generate the time-based code yet
+  let totp;
   try {
-    const totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(totpSecret) });
-    totpCode = totp.generate();
+    totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(totpSecret) });
   } catch (err) {
-    console.error('[AUTO-LOGIN] Failed to generate TOTP:', err.message);
+    console.error('[AUTO-LOGIN] Failed to initialize TOTP:', err.message);
     return { success: false, error: 'Invalid TOTP secret in .env' };
   }
   
@@ -90,7 +89,8 @@ async function runAutoLogin(port = 3001) {
     // Wait a brief moment for any animations
     await new Promise(r => setTimeout(r, 1000));
 
-    // Type the TOTP
+    // Generate the code at the exact moment we need it to prevent 30s expiration
+    const totpCode = totp.generate();
     console.log(`[AUTO-LOGIN] Typing TOTP: ${totpCode}`);
     const activeOtpInputs = await page.$$('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
     // We assume the first empty or appropriately named input is the OTP one
