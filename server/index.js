@@ -858,6 +858,12 @@ app.get('/api/nse52week', (req, res) => {
   res.json(data);
 });
 
+// On-demand trigger: frontend calls this when Market Analysis tab is opened
+app.get('/api/nse-scrape-trigger', (req, res) => {
+  nseScraper.scrapeOnDemand();
+  res.json({ success: true, message: 'NSE scraper triggered.' });
+});
+
 // Utility: Fetch IIFL INDICES.json to dynamically resolve SENSEX token
 async function fetchSensexToken() {
   try {
@@ -1405,7 +1411,7 @@ server.listen(CONFIG.port, () => {
   console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
   console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
   startPolling();
-  nseScraper.startNSEScraper(5 * 60 * 1000);
+  // NSE scraper is now on-demand — triggered when Market Analysis tab is opened
   
   // Initialize dynamic Sensex mapping and refresh it every 24 hours
   fetchSensexToken();
