@@ -338,11 +338,7 @@ function loadGlobalState() {
 }
 
 let lastStateJson = '';
-let lastStateSaveTime = 0;
 function saveGlobalState() {
-  const now = Date.now();
-  // Throttle: only write to disk at most once every 30 seconds
-  if (now - lastStateSaveTime < 30000) return;
   const session = browserSessions.get(GLOBAL_SESSION_ID);
   if (!session) return;
   const state = {
@@ -359,7 +355,6 @@ function saveGlobalState() {
   if (json !== lastStateJson) {
     fs.writeFileSync(STATE_FILE, json, 'utf8');
     lastStateJson = json;
-    lastStateSaveTime = now;
   }
 }
 
@@ -608,8 +603,8 @@ async function refreshLiveQuotes(session) {
     console.error('[IIFL API ERROR]', error.response?.data || error.message);
     if (error.response?.status === 401 || error.response?.status === 403) {
       const authAge = Date.now() - new Date(session.authenticatedAt).getTime();
-      if (authAge < 45000) {
-        console.warn(`[IIFL API] 401/403 received ${Math.round(authAge/1000)}s after login. Temporarily ignoring to allow IIFL token propagation.`);
+      if (authAge < 10000) {
+        console.warn('[IIFL API] 401/403 received within 10s of login. Temporarily ignoring to allow IIFL token propagation.');
       } else {
         clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
       }
@@ -856,12 +851,6 @@ const indexSimState = Object.fromEntries(
 app.get('/api/nse52week', (req, res) => {
   const data = nseScraper.getNSEMarketWideData();
   res.json(data);
-});
-
-// On-demand trigger: frontend calls this when Market Analysis tab is opened
-app.get('/api/nse-scrape-trigger', (req, res) => {
-  nseScraper.scrapeOnDemand();
-  res.json({ success: true, message: 'NSE scraper triggered.' });
 });
 
 // Utility: Fetch IIFL INDICES.json to dynamically resolve SENSEX token
@@ -1411,7 +1400,7 @@ server.listen(CONFIG.port, () => {
   console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
   console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
   startPolling();
-  // NSE scraper is now on-demand — triggered when Market Analysis tab is opened
+  nseScraper.startNSEScraper(5 * 60 * 1000);
   
   // Initialize dynamic Sensex mapping and refresh it every 24 hours
   fetchSensexToken();
