@@ -375,13 +375,21 @@ async function scrapeNSE(manual = false) {
   return { success: true, message: 'NSE data successfully refreshed.' };
 }
 
-function startNSEScraper(intervalMs = 5 * 60 * 1000) { // Default 5 minutes
-  // Initial run
+let scraperIntervalsStarted = false;
+
+// Called on-demand when the Market Analysis tab is opened
+function scrapeOnDemand() {
+  // Run an immediate scrape
   scrapeNSE();
   scrapeMoneycontrol52W();
-  // Schedule recurring runs
-  setInterval(scrapeNSE, intervalMs);
-  setInterval(scrapeMoneycontrol52W, 2 * 60 * 1000); // Every 2 minutes (was 30s — saves CPU)
+  
+  // Start background refresh intervals (only once, so they don't stack)
+  if (!scraperIntervalsStarted) {
+    scraperIntervalsStarted = true;
+    setInterval(scrapeNSE, 5 * 60 * 1000);            // NSE every 5 min
+    setInterval(scrapeMoneycontrol52W, 2 * 60 * 1000); // MC every 2 min
+    console.log('[NSE Scraper] Background refresh intervals started (triggered by Market Analysis tab).');
+  }
 }
 
 function getNSEMarketWideData() {
@@ -398,7 +406,7 @@ function getNSEMarketWideData() {
 }
 
 module.exports = {
-  startNSEScraper,
+  scrapeOnDemand,
   getNSEMarketWideData,
   scrapeNSE
 };
