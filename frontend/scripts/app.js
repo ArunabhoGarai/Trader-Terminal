@@ -372,10 +372,13 @@ function updateAlertBadge(alertCount) {
 
 function showAnalysis() {
   el('analysis-window').classList.remove('is-hidden');
-  loadNSE52WeekData(); // Always fetch latest NSE data when panel opens
+  startAnalysisPolling();
   renderAnalysis();
 }
-function closeAnalysis() { el('analysis-window').classList.add('is-hidden'); }
+function closeAnalysis() { 
+  el('analysis-window').classList.add('is-hidden'); 
+  stopAnalysisPolling();
+}
 function toast(message) { const target = el('toast'); target.textContent = message; target.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => target.classList.remove('show'), 2600); }
 
 function setSession(session) {
@@ -837,29 +840,43 @@ function startIndicesPoll() {
 }
 
 // ---------------------------------------------------------------------------
-// NSE 52-Week data — direct poll from background scraper endpoint
+// JIT Analysis Fetching
 // ---------------------------------------------------------------------------
-async function loadNSE52WeekData() {
+let analysisPollTimer = null;
+
+async function fetchAnalysisData() {
+  if (el('analysis-window').classList.contains('is-hidden')) return; 
+  
+  const tab = state.analysisTab || 'high';
   try {
-    const res = await fetch('/api/nse52week');
+    const res = await fetch(`/api/analysis/refresh?tab=${tab}`);
     if (!res.ok) return;
     const data = await res.json();
     if (!state.marketAnalysis) state.marketAnalysis = {};
     if (Array.isArray(data.highs) && data.highs.length > 0) state.marketAnalysis.highs = data.highs;
     if (Array.isArray(data.lows) && data.lows.length > 0) state.marketAnalysis.lows = data.lows;
+    if (Array.isArray(data.highs_mc) && data.highs_mc.length > 0) state.marketAnalysis.highs_mc = data.highs_mc;
+    if (Array.isArray(data.lows_mc) && data.lows_mc.length > 0) state.marketAnalysis.lows_mc = data.lows_mc;
     if (Array.isArray(data.gainers) && data.gainers.length > 0) state.marketAnalysis.gainers = data.gainers;
     if (Array.isArray(data.losers) && data.losers.length > 0) state.marketAnalysis.losers = data.losers;
     if (Array.isArray(data.volume) && data.volume.length > 0) state.marketAnalysis.volume = data.volume;
     if (Array.isArray(data.value) && data.value.length > 0) state.marketAnalysis.value = data.value;
     
-    // Re-render if the analysis window is open
     if (!el('analysis-window').classList.contains('is-hidden')) renderAnalysis();
   } catch (_) { /* non-critical */ }
 }
 
-function startNSE52WeekPoll() {
-  loadNSE52WeekData();
-  setInterval(loadNSE52WeekData, 5 * 60 * 1000); // refresh every 5 minutes
+function startAnalysisPolling() {
+  stopAnalysisPolling();
+  fetchAnalysisData();
+  analysisPollTimer = setInterval(fetchAnalysisData, 30000); 
+}
+
+function stopAnalysisPolling() {
+  if (analysisPollTimer) {
+    clearInterval(analysisPollTimer);
+    analysisPollTimer = null;
+  }
 }
 
 function startClock() {
@@ -920,7 +937,12 @@ function bindEvents() {
     }
   });
   el('connect-iifl').addEventListener('click', () => { if (state.session.mode !== 'LIVE') window.location.assign('/auth/login'); });
-  document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { state.analysisTab = button.dataset.analysisTab; document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); renderAnalysis(); }));
+  document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { 
+    state.analysisTab = button.dataset.analysisTab; 
+    document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); 
+    renderAnalysis(); 
+    fetchAnalysisData(); 
+  }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
   document.querySelectorAll('input[name="source-toggle"]').forEach((radio) => radio.addEventListener('change', renderAnalysis));
   
@@ -1114,7 +1136,7 @@ function bindEvents() {
 }
 
 async function initialize() {
-  renderMarket(); renderAnalysis(); bindEvents(); startClock(); startIndicesPoll(); startNSE52WeekPoll();
+  renderMarket(); renderAnalysis(); bindEvents(); startClock(); startIndicesPoll(); 
   await getSession();
   await loadWatchlist();
 
