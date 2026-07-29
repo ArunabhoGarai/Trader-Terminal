@@ -1415,7 +1415,14 @@ server.listen(CONFIG.port, () => {
   console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
   startPolling();
   
-  // Background scrapers (NSE & Sensex) are now deferred until IIFL successfully authenticates
+  // Background scrapers (NSE & Sensex) are deferred until IIFL successfully authenticates.
+  // However, if the server restarted and a session is already LIVE, start them immediately.
+  for (const session of globalSessions.values()) {
+    if (session.mode === 'LIVE') {
+      startBackgroundScrapers();
+      break;
+    }
+  }
 
   // Schedule auto-login everyday at 06:00 AM
   cron.schedule('0 6 * * *', () => {
