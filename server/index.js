@@ -16,8 +16,6 @@ const axios = require('axios');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const nseScraper = require('./nse_scraper');
-const cron = require('node-cron');
-const { runAutoLogin } = require('./scripts/auto_login');
 
 loadDotEnv(path.join(__dirname, '.env'));
 
@@ -601,16 +599,8 @@ async function refreshLiveQuotes(session) {
     return { success: true, events };
   } catch (error) {
     console.error('[IIFL API ERROR]', error.response?.data || error.message);
-    if (error.response?.status === 401 || error.response?.status === 403) {
-      const authAge = Date.now() - new Date(session.authenticatedAt).getTime();
-      if (authAge < 10000) {
-        console.warn('[IIFL API] 401/403 received within 10s of login. Temporarily ignoring to allow IIFL token propagation.');
-      } else {
-        clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
-      }
-    } else {
-      session.lastError = 'IIFL market data request failed: ' + (error.response?.data?.message || error.message);
-    }
+    if (error.response?.status === 401 || error.response?.status === 403) clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
+    else session.lastError = 'IIFL market data request failed: ' + (error.response?.data?.message || error.message);
     return { success: false, events: [] };
   }
 }
@@ -1328,27 +1318,6 @@ app.get('/auth/callback', async (req, res) => {
   }
 });
 
-app.get('/auth/logout', (req, res) => {
-  const session = browserSession(req, res);
-  clearSession(session, 'Logged out manually.');
-  res.json({ success: true });
-});
-
-app.get('/api/force-auto-login', async (req, res) => {
-  try {
-    console.log('[API] Manual auto-login triggered');
-    const result = await runAutoLogin(CONFIG.port);
-    if (result && !result.success) {
-      res.status(500).json(result);
-    } else {
-      res.json({ success: true, message: 'Auto-login successful' });
-    }
-  } catch (error) {
-    console.error('[API] Auto-login route error:', error);
-    res.status(500).json({ success: false, error: 'Internal server error: ' + error.message });
-  }
-});
-
 app.get('*', sendTerminal);
 
 // ---------------------------------------------------------------------------
@@ -1394,7 +1363,6 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-
 server.listen(CONFIG.port, () => {
   console.log(`Trader Terminal running at http://localhost:${CONFIG.port}`);
   console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
@@ -1405,11 +1373,5 @@ server.listen(CONFIG.port, () => {
   // Initialize dynamic Sensex mapping and refresh it every 24 hours
   fetchSensexToken();
   setInterval(fetchSensexToken, 24 * 60 * 60 * 1000);
-
-  // Schedule auto-login everyday at 06:00 AM
-  cron.schedule('0 6 * * *', () => {
-    console.log('[CRON] Executing scheduled auto-login...');
-    runAutoLogin(CONFIG.port);
-  });
 });
 
