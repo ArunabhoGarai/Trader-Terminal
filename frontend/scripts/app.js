@@ -388,11 +388,6 @@ function setSession(session) {
   const connect = el('connect-iifl');
   connect.textContent = live ? 'IIFL Connected' : 'Connect IIFL';
   connect.classList.toggle('connected', live);
-  
-  const logoutBtn = el('logout-iifl');
-  if (logoutBtn) logoutBtn.style.display = live ? 'inline-block' : 'none';
-  const autoLoginBtn = el('force-auto-login');
-  if (autoLoginBtn) autoLoginBtn.style.display = live ? 'none' : 'inline-block';
 }
 
 function applyTerminalPayload(data) {
@@ -925,41 +920,6 @@ function bindEvents() {
     }
   });
   el('connect-iifl').addEventListener('click', () => { if (state.session.mode !== 'LIVE') window.location.assign('/auth/login'); });
-  const logoutBtn = el('logout-iifl');
-  if (logoutBtn) {
-    logoutBtn.addEventListener('click', async () => {
-      try { await fetch('/auth/logout'); toast('Logged out.'); } catch (e) { toast('Logout failed'); }
-    });
-  }
-  const autoLoginBtn = el('force-auto-login');
-  if (autoLoginBtn) {
-    autoLoginBtn.addEventListener('click', async () => {
-      autoLoginBtn.disabled = true;
-      toast('Auto-login started. Please wait...');
-      try {
-        const res = await fetch('/api/force-auto-login');
-        let json;
-        try {
-          json = await res.json();
-        } catch (parseError) {
-          throw new Error(`Server returned a non-JSON response (Status ${res.status}). This usually means the request timed out or the server crashed. Please check the backend server terminal logs for the exact error.`);
-        }
-        
-        if (!res.ok || !json.success) {
-          toast('Auto-login failed: ' + (json.error || 'Unknown error'), 5000);
-          if (json.screenshot) {
-            window.open(json.screenshot, '_blank');
-          }
-        } else {
-          toast('Auto-login completed successfully!');
-        }
-      } catch (e) {
-        toast('Error triggering auto-login: ' + e.message, 5000);
-      } finally {
-        autoLoginBtn.disabled = false;
-      }
-    });
-  }
   document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { state.analysisTab = button.dataset.analysisTab; document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); renderAnalysis(); }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
   document.querySelectorAll('input[name="source-toggle"]').forEach((radio) => radio.addEventListener('change', renderAnalysis));
