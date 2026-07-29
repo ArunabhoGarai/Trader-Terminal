@@ -59,8 +59,6 @@
         <button id="edit-watchlist" class="native-button" title="Enable drag-and-drop repositioning">Edit</button>
         <button id="open-action-watch" class="analysis-button">🔥 <span>Market Analysis</span><em id="alert-badge" class="alert-badge hidden">0</em></button>
         <div class="toolbar-spacer"></div>
-        <button id="force-auto-login" class="connect-button" style="background: #2b2b43;">Auto Login</button>
-        <button id="logout-iifl" class="connect-button" style="background: #ef5350; display: none;">Logout</button>
         <button id="connect-iifl" class="connect-button">Connect IIFL</button>
       </section>
 
@@ -85,12 +83,7 @@
           <button title="Refresh" id="refresh-quotes">↻</button>
           <span class="action-divider"></span>
           <span id="watch-scope" class="details-label">All Instruments</span>
-          <div class="watch-actions-spacer" style="display: flex; justify-content: center; align-items: center; color: #888; font-size: 11px; z-index: 1;">
-            Copyright <script>document.write(new Date().getFullYear())</script> Arunabho Garai, powered by&nbsp;
-            <a href="https://www.iifl.com" target="_blank" rel="noopener noreferrer" style="color:#888; text-decoration:underline;">IIFL</a>,&nbsp;
-            <a href="https://www.nseindia.com" target="_blank" rel="noopener noreferrer" style="color:#888; text-decoration:underline;">NSE</a>&nbsp;and&nbsp;
-            <a href="https://finance.yahoo.com" target="_blank" rel="noopener noreferrer" style="color:#888; text-decoration:underline;">Yahoo Finance</a>
-          </div>
+          <div class="watch-actions-spacer"></div>
           <span id="script-count" class="details-label" style="font-family:var(--mono);font-size:10px;"></span>
         </div>
       </section>
@@ -151,7 +144,13 @@
       <div id="tv_chart_container" style="flex: 1; min-height: 400px; background: #fff; position: relative;"></div>
     </section>
 
-    <!-- End of application -->
+    <!-- Copyright Footer -->
+    <div class="copyright-pill">
+      Copyright <script>document.write(new Date().getFullYear())</script> Arunabho Garai , powered by 
+      <a href="https://www.iifl.com" target="_blank" rel="noopener noreferrer">IIFL</a> , 
+      <a href="https://www.nseindia.com" target="_blank" rel="noopener noreferrer">NSE</a> and 
+      <a href="https://finance.yahoo.com" target="_blank" rel="noopener noreferrer">Yahoo Finance</a>
+    </div>
 
     <div id="toast" class="toast" role="status"></div>
     <script src="scripts/app.js"></script>
