@@ -15,15 +15,7 @@ async function runAutoLogin(port = 3001) {
     return { success: false, error: 'Missing credentials in .env' };
   }
 
-  // Generate TOTP
-  let totpCode;
-  try {
-    const totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(totpSecret) });
-    totpCode = totp.generate();
-  } catch (err) {
-    console.error('[AUTO-LOGIN] Failed to generate TOTP:', err.message);
-    return { success: false, error: 'Invalid TOTP secret in .env' };
-  }
+  // We will generate the TOTP right before we type it, so it doesn't expire during page navigation.
   
   let browser;
   try {
@@ -46,7 +38,9 @@ async function runAutoLogin(port = 3001) {
     // Navigate to our local login route, which redirects to IIFL
     const localLoginUrl = `http://localhost:${port}/auth/login`;
     console.log(`[AUTO-LOGIN] Navigating to ${localLoginUrl}`);
-    await page.goto(localLoginUrl, { waitUntil: 'networkidle2' });
+    // We use domcontentloaded instead of networkidle2 because IIFL's login page
+    // might have long-polling trackers that prevent networkidle from ever firing.
+    await page.goto(localLoginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
     // Wait for the IIFL page to load. We look for input fields
     console.log('[AUTO-LOGIN] Waiting for IIFL Client ID field...');
@@ -90,8 +84,15 @@ async function runAutoLogin(port = 3001) {
     // Wait a brief moment for any animations
     await new Promise(r => setTimeout(r, 1000));
 
-    // Type the TOTP
-    console.log(`[AUTO-LOGIN] Typing TOTP: ${totpCode}`);
+    // Generate TOTP exactly when we are ready to type it
+    let totpCode;
+    try {
+      const totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(totpSecret) });
+      totpCode = totp.generate();
+      console.log(`[AUTO-LOGIN] Generated fresh TOTP: ${totpCode}`);
+    } catch (err) {
+      throw new Error('Failed to generate TOTP: ' + err.message);
+    }
     const activeOtpInputs = await page.$$('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
     // We assume the first empty or appropriately named input is the OTP one
     let typed = false;
