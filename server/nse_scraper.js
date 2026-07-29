@@ -232,6 +232,32 @@ function mapMostActiveToQuote(item) {
   };
 }
 
+let sharedBrowser = null;
+
+async function getSharedBrowser() {
+  if (sharedBrowser && sharedBrowser.isConnected()) return sharedBrowser;
+  if (sharedBrowser) {
+    try { await sharedBrowser.close(); } catch (_) {}
+  }
+  sharedBrowser = await puppeteer.launch({
+    headless: true,
+    args: [
+      '--no-sandbox', '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--single-process',
+      '--no-zygote',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--disable-translate',
+      '--js-flags=--max-old-space-size=128'
+    ]
+  });
+  return sharedBrowser;
+}
+
 let lastScrapeTime = 0;
 let isScraping = false;
 
@@ -247,14 +273,11 @@ async function scrapeNSE(manual = false) {
   isScraping = true;
   lastScrapeTime = Date.now();
   console.log('[NSE Scraper] Waking up to fetch full NSE analysis data...');
-  let browser;
+  let page;
   try {
-    browser = await puppeteer.launch({ 
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-    });
+    const browser = await getSharedBrowser();
     
-    const page = await browser.newPage();
+    page = await browser.newPage();
     
     // Set a solid User-Agent and viewport
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
@@ -346,7 +369,8 @@ async function scrapeNSE(manual = false) {
     globalValue = [...global52WHighs];
   } finally {
     isScraping = false;
-    if (browser) await browser.close();
+    // Close only the page tab, keep the shared browser alive for reuse
+    if (page) try { await page.close(); } catch (_) {}
   }
   return { success: true, message: 'NSE data successfully refreshed.' };
 }
@@ -357,7 +381,7 @@ function startNSEScraper(intervalMs = 5 * 60 * 1000) { // Default 5 minutes
   scrapeMoneycontrol52W();
   // Schedule recurring runs
   setInterval(scrapeNSE, intervalMs);
-  setInterval(scrapeMoneycontrol52W, 30 * 1000); // 30 seconds for Moneycontrol
+  setInterval(scrapeMoneycontrol52W, 2 * 60 * 1000); // Every 2 minutes (was 30s — saves CPU)
 }
 
 function getNSEMarketWideData() {
