@@ -15,18 +15,21 @@ async function runAutoLogin(port = 3001) {
     return { success: false, error: 'Missing credentials in .env' };
   }
 
-  // We will generate the TOTP right before we type it, so it doesn't expire during page navigation.
+  // Generate TOTP
+  let totpCode;
+  try {
+    const totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(totpSecret) });
+    totpCode = totp.generate();
+  } catch (err) {
+    console.error('[AUTO-LOGIN] Failed to generate TOTP:', err.message);
+    return { success: false, error: 'Invalid TOTP secret in .env' };
+  }
   
   let browser;
   try {
     browser = await puppeteer.launch({ 
       headless: true, // run invisibly 
-      args: [
-        '--no-sandbox', '--disable-setuid-sandbox', '--window-size=1280,800',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-extensions'
-      ]
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1280,800']
     });
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
@@ -40,84 +43,30 @@ async function runAutoLogin(port = 3001) {
       }
     });
 
-    // Navigate directly to the IIFL login URL (same URL as manual login)
-    const marketsUrl = (process.env.IIFL_MARKETS_URL || 'https://markets.iiflcapital.com').replace(/\/$/, '');
-    const appKey = process.env.IIFL_APP_KEY || '';
-    const redirectUri = process.env.IIFL_REDIRECT_URI || `http://localhost:${port}/auth/callback`;
-    const iiflLoginUrl = `${marketsUrl}/?v=1&appkey=${encodeURIComponent(appKey)}&redirecturl=${redirectUri}`;
-    console.log(`[AUTO-LOGIN] Navigating directly to IIFL: ${iiflLoginUrl}`);
-    // We use domcontentloaded instead of networkidle2 because IIFL's login page
-    // might have long-polling trackers that prevent networkidle from ever firing.
-    await page.goto(iiflLoginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Navigate to our local login route, which redirects to IIFL
+    const localLoginUrl = `http://localhost:${port}/auth/login`;
+    console.log(`[AUTO-LOGIN] Navigating to ${localLoginUrl}`);
+    await page.goto(localLoginUrl, { waitUntil: 'networkidle2' });
 
-    // Wait for the IIFL page to fully render its JS framework (React/Angular)
-    console.log('[AUTO-LOGIN] Waiting for IIFL login inputs to render...');
-    await page.waitForFunction(() => {
-      const inputs = document.querySelectorAll('input');
-      for (const input of inputs) {
-        if (input.type === 'hidden' || input.type === 'submit' || input.type === 'button') continue;
-        if (input.offsetParent !== null) return true; // found a visible input
-      }
-      return false;
-    }, { timeout: 30000 });
+    // Wait for the IIFL page to load. We look for input fields
+    console.log('[AUTO-LOGIN] Waiting for IIFL Client ID field...');
     
-    // Extra brief pause for any animations to settle
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Log what inputs are actually on the page for debugging
-    const inputDebug = await page.evaluate(() => {
-      const all = document.querySelectorAll('input');
-      return Array.from(all).map(i => ({
-        type: i.type, name: i.name, id: i.id, placeholder: i.placeholder,
-        visible: i.offsetParent !== null, value: i.value
-      }));
-    });
-    console.log('[AUTO-LOGIN] Found inputs on page:', JSON.stringify(inputDebug));
-
-    // Find the first visible, non-hidden input (Client ID field)
-    const filled = await page.evaluate((clientId) => {
-      const inputs = document.querySelectorAll('input');
-      for (const input of inputs) {
-        if (input.type === 'hidden' || input.type === 'submit' || input.type === 'button' || input.type === 'checkbox' || input.type === 'radio') continue;
-        if (input.offsetParent === null) continue; // not visible
-        input.focus();
-        // Use native input setter to work with React/Angular controlled inputs
-        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        nativeInputValueSetter.call(input, clientId);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      }
-      return false;
-    }, clientId);
-
-    if (!filled) {
-      throw new Error("Could not find any visible input field for Client ID.");
+    // Use an aggressive search to find the Client ID input, assuming it might be named/id'd variably
+    const clientIdSelector = 'input[type="text"], input[name="client_id"], input[id*="user"]';
+    await page.waitForSelector(clientIdSelector, { timeout: 15000 });
+    
+    // Some login pages might have multiple text inputs, we type into the first one that is visible
+    const inputs = await page.$$(clientIdSelector);
+    if (inputs.length > 0) {
+      await inputs[0].type(clientId);
+    } else {
+      throw new Error("Could not find Client ID input field.");
     }
 
     console.log('[AUTO-LOGIN] Filled Client ID. Looking for Password...');
     const passSelector = 'input[type="password"]';
-    try {
-      // Wait up to 6 seconds to see if the password field is already there (1-step login)
-      await page.waitForSelector(passSelector, { timeout: 6000, visible: true });
-    } catch (e) {
-      // If it's not there, it might be a 2-step login. Hit Enter to proceed to the password step.
-      console.log('[AUTO-LOGIN] Password field not immediately visible. Pressing Enter (assuming 2-step login)...');
-      await page.keyboard.press('Enter');
-      await page.waitForSelector(passSelector, { timeout: 15000, visible: true });
-    }
-    
-    // Use native setter for React/Angular compatibility
-    await page.evaluate((password) => {
-      const passInput = document.querySelector('input[type="password"]');
-      if (passInput) {
-        passInput.focus();
-        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        nativeInputValueSetter.call(passInput, password);
-        passInput.dispatchEvent(new Event('input', { bubbles: true }));
-        passInput.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-    }, password);
+    await page.waitForSelector(passSelector, { timeout: 5000 });
+    await page.type(passSelector, password);
 
     console.log('[AUTO-LOGIN] Submitting credentials...');
     // Hit Enter to submit
@@ -136,20 +85,13 @@ async function runAutoLogin(port = 3001) {
         if (input.value === '' || input.name.toLowerCase().includes('otp') || input.id.toLowerCase().includes('otp')) return true;
       }
       return false;
-    }, { timeout: 30000 });
+    }, { timeout: 15000 });
 
     // Wait a brief moment for any animations
     await new Promise(r => setTimeout(r, 1000));
 
-    // Generate TOTP exactly when we are ready to type it
-    let totpCode;
-    try {
-      const totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(totpSecret) });
-      totpCode = totp.generate();
-      console.log(`[AUTO-LOGIN] Generated fresh TOTP: ${totpCode}`);
-    } catch (err) {
-      throw new Error('Failed to generate TOTP: ' + err.message);
-    }
+    // Type the TOTP
+    console.log(`[AUTO-LOGIN] Typing TOTP: ${totpCode}`);
     const activeOtpInputs = await page.$$('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
     // We assume the first empty or appropriately named input is the OTP one
     let typed = false;
@@ -170,27 +112,11 @@ async function runAutoLogin(port = 3001) {
     console.log('[AUTO-LOGIN] Submitting TOTP...');
     await page.keyboard.press('Enter');
 
-    console.log('[AUTO-LOGIN] Waiting for possible Authorize button...');
-    try {
-      await page.waitForFunction(() => {
-        const btns = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a'));
-        return btns.some(b => (b.innerText || b.value || '').toLowerCase().includes('authorize') || (b.innerText || b.value || '').toLowerCase().includes('allow') || (b.innerText || b.value || '').toLowerCase().includes('approve'));
-      }, { timeout: 30000 });
-      console.log('[AUTO-LOGIN] Found Authorize button, clicking...');
-      await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a'));
-        const authBtn = btns.find(b => (b.innerText || b.value || '').toLowerCase().includes('authorize') || (b.innerText || b.value || '').toLowerCase().includes('allow') || (b.innerText || b.value || '').toLowerCase().includes('approve'));
-        if (authBtn) authBtn.click();
-      });
-    } catch (e) {
-      console.log('[AUTO-LOGIN] No Authorize button found or needed. Proceeding...');
-    }
-
-    // Wait for redirection back to localhost or the registered AWS redirect.
+    // Wait for redirection back to localhost.
     console.log('[AUTO-LOGIN] Waiting for redirection to callback...');
     await page.waitForResponse(response => {
-      return response.url().includes('/auth/callback');
-    }, { timeout: 30000 });
+      return response.url().includes('/auth/callback') && response.status() === 200;
+    }, { timeout: 15000 });
 
     console.log('[AUTO-LOGIN] ✅ Successfully logged in and captured session via callback!');
     return { success: true };
