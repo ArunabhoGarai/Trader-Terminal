@@ -1379,10 +1379,14 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-app.get('/api/force-auto-login', (req, res) => {
+app.get('/api/force-auto-login', async (req, res) => {
   console.log('[API] Manual auto-login triggered');
-  runAutoLogin(CONFIG.port);
-  res.send({ status: 'started', message: 'Auto-login flow initiated in headless browser.' });
+  const result = await runAutoLogin(CONFIG.port);
+  if (result && !result.success) {
+    res.status(500).json(result);
+  } else {
+    res.json({ success: true, message: 'Auto-login successful' });
+  }
 });
 
 server.listen(CONFIG.port, () => {
