@@ -338,7 +338,11 @@ function loadGlobalState() {
 }
 
 let lastStateJson = '';
+let lastStateSaveTime = 0;
 function saveGlobalState() {
+  const now = Date.now();
+  // Throttle: only write to disk at most once every 30 seconds
+  if (now - lastStateSaveTime < 30000) return;
   const session = browserSessions.get(GLOBAL_SESSION_ID);
   if (!session) return;
   const state = {
@@ -355,6 +359,7 @@ function saveGlobalState() {
   if (json !== lastStateJson) {
     fs.writeFileSync(STATE_FILE, json, 'utf8');
     lastStateJson = json;
+    lastStateSaveTime = now;
   }
 }
 
