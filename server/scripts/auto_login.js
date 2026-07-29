@@ -59,7 +59,16 @@ async function runAutoLogin(port = 3001) {
 
     console.log('[AUTO-LOGIN] Filled Client ID. Looking for Password...');
     const passSelector = 'input[type="password"]';
-    await page.waitForSelector(passSelector, { timeout: 5000 });
+    try {
+      // Wait up to 6 seconds to see if the password field is already there (1-step login)
+      await page.waitForSelector(passSelector, { timeout: 6000, visible: true });
+    } catch (e) {
+      // If it's not there, it might be a 2-step login. Hit Enter to proceed to the password step.
+      console.log('[AUTO-LOGIN] Password field not immediately visible. Pressing Enter (assuming 2-step login)...');
+      await page.keyboard.press('Enter');
+      await page.waitForSelector(passSelector, { timeout: 15000, visible: true });
+    }
+    
     await page.type(passSelector, password);
 
     console.log('[AUTO-LOGIN] Submitting credentials...');
