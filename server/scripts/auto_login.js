@@ -12,7 +12,7 @@ async function runAutoLogin(port = 3001) {
 
   if (!clientId || !password || !totpSecret) {
     console.error('[AUTO-LOGIN] Missing credentials in .env');
-    return;
+    return { success: false, error: 'Missing credentials in .env' };
   }
 
   // Generate TOTP
@@ -112,24 +112,30 @@ async function runAutoLogin(port = 3001) {
     }, { timeout: 15000 });
 
     console.log('[AUTO-LOGIN] ✅ Successfully logged in and captured session via callback!');
+    return { success: true };
     
   } catch (err) {
     console.error('[AUTO-LOGIN] ❌ Failed:', err.message);
-    // Optionally dump page HTML and screenshot on failure for debugging
+    const result = { success: false, error: err.message };
+    // Dump page HTML and screenshot on failure to frontend folder so UI can show it
     if (browser) {
        try {
+         const path = require('path');
+         const frontendDir = path.join(__dirname, '..', '..', 'frontend');
          const pages = await browser.pages();
          const errorPage = pages[pages.length-1];
          if (errorPage) {
            const html = await errorPage.content();
-           require('fs').writeFileSync('auto_login_error_dump.html', html);
-           await errorPage.screenshot({ path: 'auto_login_error_screenshot.png' });
-           console.log('[AUTO-LOGIN] Dumped error page to auto_login_error_dump.html and auto_login_error_screenshot.png');
+           require('fs').writeFileSync(path.join(frontendDir, 'auto_login_error_dump.html'), html);
+           await errorPage.screenshot({ path: path.join(frontendDir, 'auto_login_error_screenshot.png') });
+           console.log('[AUTO-LOGIN] Dumped error page to frontend/auto_login_error_dump.html and auto_login_error_screenshot.png');
+           result.screenshot = '/auto_login_error_screenshot.png';
          }
        } catch (e) {
          console.error('[AUTO-LOGIN] Could not dump error state:', e.message);
        }
     }
+    return result;
   } finally {
     if (browser) {
       await browser.close();
