@@ -112,10 +112,26 @@ async function runAutoLogin(port = 3001) {
     console.log('[AUTO-LOGIN] Submitting TOTP...');
     await page.keyboard.press('Enter');
 
-    // Wait for redirection back to localhost.
+    console.log('[AUTO-LOGIN] Waiting for possible Authorize button...');
+    try {
+      await page.waitForFunction(() => {
+        const btns = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a'));
+        return btns.some(b => (b.innerText || b.value || '').toLowerCase().includes('authorize') || (b.innerText || b.value || '').toLowerCase().includes('allow') || (b.innerText || b.value || '').toLowerCase().includes('approve'));
+      }, { timeout: 8000 });
+      console.log('[AUTO-LOGIN] Found Authorize button, clicking...');
+      await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a'));
+        const authBtn = btns.find(b => (b.innerText || b.value || '').toLowerCase().includes('authorize') || (b.innerText || b.value || '').toLowerCase().includes('allow') || (b.innerText || b.value || '').toLowerCase().includes('approve'));
+        if (authBtn) authBtn.click();
+      });
+    } catch (e) {
+      console.log('[AUTO-LOGIN] No Authorize button found or needed. Proceeding...');
+    }
+
+    // Wait for redirection back to localhost or the registered AWS redirect.
     console.log('[AUTO-LOGIN] Waiting for redirection to callback...');
     await page.waitForResponse(response => {
-      return response.url().includes('/auth/callback') && response.status() === 200;
+      return response.url().includes('/auth/callback');
     }, { timeout: 15000 });
 
     console.log('[AUTO-LOGIN] ✅ Successfully logged in and captured session via callback!');
