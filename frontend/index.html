@@ -85,7 +85,12 @@
           <button title="Refresh" id="refresh-quotes">↻</button>
           <span class="action-divider"></span>
           <span id="watch-scope" class="details-label">All Instruments</span>
-          <div class="watch-actions-spacer"></div>
+          <div class="watch-actions-spacer" style="display: flex; justify-content: center; align-items: center; color: #888; font-size: 11px; z-index: 1;">
+            Copyright <script>document.write(new Date().getFullYear())</script> Arunabho Garai, powered by&nbsp;
+            <a href="https://www.iifl.com" target="_blank" rel="noopener noreferrer" style="color:#888; text-decoration:underline;">IIFL</a>,&nbsp;
+            <a href="https://www.nseindia.com" target="_blank" rel="noopener noreferrer" style="color:#888; text-decoration:underline;">NSE</a>&nbsp;and&nbsp;
+            <a href="https://finance.yahoo.com" target="_blank" rel="noopener noreferrer" style="color:#888; text-decoration:underline;">Yahoo Finance</a>
+          </div>
           <span id="script-count" class="details-label" style="font-family:var(--mono);font-size:10px;"></span>
         </div>
       </section>
@@ -146,13 +151,7 @@
       <div id="tv_chart_container" style="flex: 1; min-height: 400px; background: #fff; position: relative;"></div>
     </section>
 
-    <!-- Copyright Footer -->
-    <div class="copyright-pill">
-      Copyright <script>document.write(new Date().getFullYear())</script> Arunabho Garai , powered by 
-      <a href="https://www.iifl.com" target="_blank" rel="noopener noreferrer">IIFL</a> , 
-      <a href="https://www.nseindia.com" target="_blank" rel="noopener noreferrer">NSE</a> and 
-      <a href="https://finance.yahoo.com" target="_blank" rel="noopener noreferrer">Yahoo Finance</a>
-    </div>
+    <!-- End of application -->
 
     <div id="toast" class="toast" role="status"></div>
     <script src="scripts/app.js"></script>
