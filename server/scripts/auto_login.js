@@ -88,7 +88,7 @@ async function runAutoLogin(port = 3001) {
         if (input.value === '' || input.name.toLowerCase().includes('otp') || input.id.toLowerCase().includes('otp')) return true;
       }
       return false;
-    }, { timeout: 15000 });
+    }, { timeout: 30000 });
 
     // Wait a brief moment for any animations
     await new Promise(r => setTimeout(r, 1000));
@@ -127,7 +127,7 @@ async function runAutoLogin(port = 3001) {
       await page.waitForFunction(() => {
         const btns = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a'));
         return btns.some(b => (b.innerText || b.value || '').toLowerCase().includes('authorize') || (b.innerText || b.value || '').toLowerCase().includes('allow') || (b.innerText || b.value || '').toLowerCase().includes('approve'));
-      }, { timeout: 8000 });
+      }, { timeout: 30000 });
       console.log('[AUTO-LOGIN] Found Authorize button, clicking...');
       await page.evaluate(() => {
         const btns = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], a'));
@@ -142,7 +142,7 @@ async function runAutoLogin(port = 3001) {
     console.log('[AUTO-LOGIN] Waiting for redirection to callback...');
     await page.waitForResponse(response => {
       return response.url().includes('/auth/callback');
-    }, { timeout: 15000 });
+    }, { timeout: 30000 });
 
     console.log('[AUTO-LOGIN] ✅ Successfully logged in and captured session via callback!');
     return { success: true };
