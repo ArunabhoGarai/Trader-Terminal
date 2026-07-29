@@ -603,8 +603,8 @@ async function refreshLiveQuotes(session) {
     console.error('[IIFL API ERROR]', error.response?.data || error.message);
     if (error.response?.status === 401 || error.response?.status === 403) {
       const authAge = Date.now() - new Date(session.authenticatedAt).getTime();
-      if (authAge < 10000) {
-        console.warn('[IIFL API] 401/403 received within 10s of login. Temporarily ignoring to allow IIFL token propagation.');
+      if (authAge < 45000) {
+        console.warn(`[IIFL API] 401/403 received ${Math.round(authAge/1000)}s after login. Temporarily ignoring to allow IIFL token propagation.`);
       } else {
         clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
       }
