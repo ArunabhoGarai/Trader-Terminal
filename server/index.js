@@ -286,9 +286,6 @@ function createBrowserSession() {
     intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.lastPrice, low: quote.lastPrice, lastAlertHigh: null, lastAlertLow: null, lastAlertTime: 0 }])),
     // WebSocket clients attached to this session
     wsClients: new Set(),
-    // Market Scanner state
-    marketScannerQuotes: new Map(),
-    marketScannerCursor: 0,
     marketAnalysis: { highs: [], lows: [], gainers: [], losers: [] },
   };
 }
@@ -531,16 +528,7 @@ async function refreshLiveQuotes(session) {
   session.watchlist.forEach((inst) => requestInstruments.set(instrumentKey(inst), { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: true }));
   
   // Add market scanner chunk
-  const allNse = contractCache.get('NSEEQ')?.instruments || STATIC_CATALOG;
-  if (allNse.length > 0) {
-    if (session.marketScannerCursor >= allNse.length) session.marketScannerCursor = 0;
-    const chunk = allNse.slice(session.marketScannerCursor, session.marketScannerCursor + 100);
-    session.marketScannerCursor += 100;
-    chunk.forEach((inst, idx) => {
-      const k = instrumentKey(inst);
-      if (!requestInstruments.has(k)) requestInstruments.set(k, { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, basePrice: inst.basePrice, index: inst.index ?? idx, isWatchlist: false });
-    });
-  }
+  // (Removed: We now use nseScraper for market analysis, so we don't need to manually scan 100 extra stocks per tick)
   
   if (requestInstruments.size === 0) return { success: false, events: [] };
 
@@ -570,20 +558,7 @@ async function refreshLiveQuotes(session) {
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
     
-    // Update Market Scanner map
-    requestInstruments.forEach((info, key) => {
-      if (!info.isWatchlist) {
-        const raw = resultsByKey.get(key);
-        if (raw) {
-          const knownInst = knownInstruments.get(key) || { exchange: info.exchange, instrumentId: info.instrumentId, symbol: info.symbol || raw.symbol || 'Unknown', basePrice: info.basePrice };
-          const fallback = makeEmptyLiveQuote(knownInst, info.index || 0);
-          session.marketScannerQuotes.set(key, quoteFromPayload(raw, fallback, info.index || 0));
-        }
-      }
-    });
-
     // Compute top market-wide analytics
-    const allMarketQuotes = Array.from(session.marketScannerQuotes.values());
     const realNseData = nseScraper.getNSEMarketWideData();
     session.marketAnalysis.highs = realNseData.highs;
     session.marketAnalysis.lows = realNseData.lows;
@@ -836,9 +811,20 @@ const indexSimState = Object.fromEntries(
   Object.entries(TERMINAL_INDEX_MAP).map(([key, data]) => [key, { ltp: data.simBase, close: data.simClose }])
 );
 
-// Dedicated endpoint so the frontend can directly fetch NSE market-wide 52W data
-// independent of the tick cycle - data is always the latest from the background scraper
-app.get('/api/nse52week', (req, res) => {
+// Unified JIT endpoint for frontend to pull latest market-wide data
+app.get('/api/analysis/refresh', async (req, res) => {
+  const tab = String(req.query.tab || 'high');
+  
+  if (tab === 'high' || tab === 'low') {
+    await nseScraper.scrapeMoneycontrol52W();
+    // Fetch NSE as well in case the user toggles the source
+    await nseScraper.scrapeNSE();
+  } else if (tab === 'gainers' || tab === 'losers') {
+    await nseScraper.scrapeMoneycontrolGainersLosers();
+  } else if (tab === 'traded' || tab === 'quantity') {
+    await nseScraper.scrapeNSE();
+  }
+  
   const data = nseScraper.getNSEMarketWideData();
   res.json(data);
 });
