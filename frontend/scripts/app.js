@@ -1162,8 +1162,9 @@ async function initialize() {
   connectWebSocket();
   startHeartbeat();
 
-  // Initial fetch to paint the UI; subsequent updates will stream via WebSocket
+  // Always poll via REST to keep server simulation ticking + fetch fresh data
   await refreshQuotes(true);
+  setInterval(() => refreshQuotes(true), 2500);
 }
 
 initialize();
