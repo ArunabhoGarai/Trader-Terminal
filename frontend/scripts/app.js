@@ -388,6 +388,11 @@ function setSession(session) {
   const connect = el('connect-iifl');
   connect.textContent = live ? 'IIFL Connected' : 'Connect IIFL';
   connect.classList.toggle('connected', live);
+  
+  const logoutBtn = el('logout-iifl');
+  if (logoutBtn) logoutBtn.style.display = live ? 'inline-block' : 'none';
+  const autoLoginBtn = el('force-auto-login');
+  if (autoLoginBtn) autoLoginBtn.style.display = live ? 'none' : 'inline-block';
 }
 
 function applyTerminalPayload(data) {
@@ -920,6 +925,19 @@ function bindEvents() {
     }
   });
   el('connect-iifl').addEventListener('click', () => { if (state.session.mode !== 'LIVE') window.location.assign('/auth/login'); });
+  const logoutBtn = el('logout-iifl');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', async () => {
+      try { await fetch('/auth/logout'); toast('Logged out.'); } catch (e) { toast('Logout failed'); }
+    });
+  }
+  const autoLoginBtn = el('force-auto-login');
+  if (autoLoginBtn) {
+    autoLoginBtn.addEventListener('click', async () => {
+      toast('Auto-login triggered. Watch server terminal.');
+      try { await fetch('/api/force-auto-login'); } catch(e){}
+    });
+  }
   document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { state.analysisTab = button.dataset.analysisTab; document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); renderAnalysis(); }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
   document.querySelectorAll('input[name="source-toggle"]').forEach((radio) => radio.addEventListener('change', renderAnalysis));
