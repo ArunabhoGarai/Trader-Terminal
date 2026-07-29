@@ -282,6 +282,7 @@ function createBrowserSession() {
   const quotes = watchlist.map(makeSimulationQuote);
   return {
     id: crypto.randomUUID(), accessToken: null, expiresAt: null, authenticatedAt: null, mode: 'SIMULATION', lastError: null,
+    autoLoginEnabled: true,
     watchlist, quotes, actionWatch: [], actionWatchDate: indiaTradingDate(),
     // Per-instrument state for the action watch engine
     // Seed intradayRanges from LTP only (not OHLC high/low) so the monotonic breakout check starts clean
@@ -317,6 +318,7 @@ function loadGlobalState() {
           return { ...savedInst, basePrice: savedInst.basePrice || catalogInst?.basePrice || 100 };
         });
       }
+      session.autoLoginEnabled = data.autoLoginEnabled !== false;
       // Rebuild initial quotes matching the loaded watchlist
       session.quotes = session.watchlist.map((inst, idx) => session.mode === 'LIVE' ? makeEmptyLiveQuote(inst, idx) : makeSimulationQuote(inst, idx));
       if (data.intradayRanges) {
@@ -346,6 +348,7 @@ function saveGlobalState() {
     expiresAt: session.expiresAt,
     authenticatedAt: session.authenticatedAt,
     mode: session.mode,
+    autoLoginEnabled: session.autoLoginEnabled !== false,
     watchlist: session.watchlist,
     actionWatch: session.actionWatch,
     actionWatchDate: session.actionWatchDate,
@@ -488,12 +491,31 @@ function updateActionWatch(session, nextQuotes) {
 // ---------------------------------------------------------------------------
 // IIFL API integration
 // ---------------------------------------------------------------------------
+let isAutoLoginRunning = false;
+async function triggerAutoLogin() {
+  if (isAutoLoginRunning) return;
+  const session = browserSessions.get(GLOBAL_SESSION_ID);
+  if (!session || !session.autoLoginEnabled) return;
+  isAutoLoginRunning = true;
+  try {
+    console.log('[AUTO-LOGIN] Triggered by disconnection or startup...');
+    await runAutoLogin(CONFIG.port);
+  } catch (err) {
+    console.error('[AUTO-LOGIN] Failed:', err.message);
+  } finally {
+    isAutoLoginRunning = false;
+  }
+}
+
 function clearSession(session, message) {
   session.accessToken = null;
   session.expiresAt = null;
   session.authenticatedAt = null;
   session.mode = 'SIMULATION';
   session.lastError = message || null;
+  if (session.autoLoginEnabled) {
+    triggerAutoLogin();
+  }
 }
 
 function extractToken(payload) {
@@ -1330,17 +1352,25 @@ app.get('/auth/callback', async (req, res) => {
 
 app.get('/auth/logout', (req, res) => {
   const session = browserSession(req, res);
+  session.autoLoginEnabled = false; // Disable auto-login so it doesn't immediately log back in
   clearSession(session, 'Logged out manually.');
   res.json({ success: true });
 });
 
 app.get('/api/force-auto-login', async (req, res) => {
-  console.log('[API] Manual auto-login triggered');
-  const result = await runAutoLogin(CONFIG.port);
-  if (result && !result.success) {
-    res.status(500).json(result);
-  } else {
-    res.json({ success: true, message: 'Auto-login successful' });
+  try {
+    const session = browserSession(req, res);
+    session.autoLoginEnabled = true;
+    console.log('[API] Manual auto-login triggered');
+    const result = await runAutoLogin(CONFIG.port);
+    if (result && !result.success) {
+      res.status(500).json(result);
+    } else {
+      res.json({ success: true, message: 'Auto-login successful' });
+    }
+  } catch (error) {
+    console.error('[API] Auto-login route error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error: ' + error.message });
   }
 });
 
@@ -1401,10 +1431,7 @@ server.listen(CONFIG.port, () => {
   fetchSensexToken();
   setInterval(fetchSensexToken, 24 * 60 * 60 * 1000);
 
-  // Schedule auto-login everyday at 06:00 AM
-  cron.schedule('0 6 * * *', () => {
-    console.log('[CRON] Executing scheduled auto-login...');
-    runAutoLogin(CONFIG.port);
-  });
+  // Start reactive auto-login if enabled
+  triggerAutoLogin();
 });
 
