@@ -1417,7 +1417,7 @@ server.listen(CONFIG.port, () => {
   
   // Background scrapers (NSE & Sensex) are deferred until IIFL successfully authenticates.
   // However, if the server restarted and a session is already LIVE, start them immediately.
-  for (const session of globalSessions.values()) {
+  for (const session of browserSessions.values()) {
     if (session.mode === 'LIVE') {
       startBackgroundScrapers();
       break;
