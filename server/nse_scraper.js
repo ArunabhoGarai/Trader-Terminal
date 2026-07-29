@@ -27,6 +27,12 @@ let globalLosers = [];
 let globalVolume = [];
 let globalValue = [];
 
+let cacheTimestamps = {
+  mc52W: 0,
+  mcGainersLosers: 0,
+  nseMostActive: 0
+};
+
 function mapNSEToQuote(item, isHigh) {
   // Map NSE JSON object to our terminal's internal quote format
   const ltp = Number(item.ltp) || 0;
@@ -73,6 +79,8 @@ function mapGainerLoserToQuote(item) {
 }
 
 async function scrapeMoneycontrolGainersLosers() {
+  if (Date.now() - cacheTimestamps.mcGainersLosers < 30 * 1000) return { success: true, message: 'Cached' };
+  
   const options = {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
@@ -136,13 +144,16 @@ async function scrapeMoneycontrolGainersLosers() {
 
     globalLosers = parseTable(losersRes.data);
     console.log(`[NSE Scraper] ✅ Fetched ${globalLosers.length} Losers from Moneycontrol.`);
-
+    
+    cacheTimestamps.mcGainersLosers = Date.now();
   } catch (err) {
     console.warn('[NSE Scraper] ⚠️ Failed fetching from Moneycontrol:', err.message);
   }
 }
 
 async function scrapeMoneycontrol52W() {
+  if (Date.now() - cacheTimestamps.mc52W < 30 * 1000) return { success: true, message: 'Cached' };
+
   const options = {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
@@ -209,7 +220,8 @@ async function scrapeMoneycontrol52W() {
 
     mc52WLows = parse52WTable(lowsRes.data, false);
     console.log(`[NSE Scraper] ✅ Fetched ${mc52WLows.length} 52-week Lows from Moneycontrol.`);
-
+    
+    cacheTimestamps.mc52W = Date.now();
   } catch (err) {
     console.warn('[NSE Scraper] ⚠️ Failed fetching 52-week data from Moneycontrol:', err.message);
   }
@@ -236,11 +248,12 @@ let lastScrapeTime = 0;
 let isScraping = false;
 
 async function scrapeNSE(manual = false) {
+  if (Date.now() - cacheTimestamps.nseMostActive < 5 * 60 * 1000) return { success: true, message: 'Cached' };
   if (isScraping) return { success: false, message: 'Scraping is already in progress.' };
   
   const now = Date.now();
-  if (manual && (now - lastScrapeTime) < 5 * 60 * 1000) {
-    const waitMins = Math.ceil((5 * 60 * 1000 - (now - lastScrapeTime)) / 60000);
+  if (manual && (now - lastScrapeTime) < 1 * 60 * 1000) {
+    const waitMins = Math.ceil((1 * 60 * 1000 - (now - lastScrapeTime)) / 60000);
     return { success: false, message: `Cooldown active. Please wait ${waitMins} minute(s).` };
   }
 
@@ -302,8 +315,7 @@ async function scrapeNSE(manual = false) {
       }
     } catch (e) { console.warn('[NSE Scraper] ⚠️ Failed 52-week Low:', e.message); }
 
-    console.log('[NSE Scraper] Fetching Gainers and Losers from Moneycontrol...');
-    await scrapeMoneycontrolGainersLosers();
+    // Moneycontrol Gainers/Losers are fetched directly now, no need to run here.
 
     console.log('[NSE Scraper] Fetching Volume Active...');
     await new Promise(resolve => setTimeout(resolve, 3500));
@@ -348,16 +360,17 @@ async function scrapeNSE(manual = false) {
     isScraping = false;
     if (browser) await browser.close();
   }
+  
+  cacheTimestamps.nseMostActive = Date.now();
   return { success: true, message: 'NSE data successfully refreshed.' };
 }
 
-function startNSEScraper(intervalMs = 5 * 60 * 1000) { // Default 5 minutes
-  // Initial run
+function startNSEScraper(intervalMs = 5 * 60 * 1000) { 
+  // Background polling removed! Scraper will now only run Just-In-Time (JIT) when requested.
+  // We still do one initial pull so the server has data on startup.
   scrapeNSE();
   scrapeMoneycontrol52W();
-  // Schedule recurring runs
-  setInterval(scrapeNSE, intervalMs);
-  setInterval(scrapeMoneycontrol52W, 30 * 1000); // 30 seconds for Moneycontrol
+  scrapeMoneycontrolGainersLosers();
 }
 
 function getNSEMarketWideData() {
@@ -376,5 +389,7 @@ function getNSEMarketWideData() {
 module.exports = {
   startNSEScraper,
   getNSEMarketWideData,
-  scrapeNSE
+  scrapeNSE,
+  scrapeMoneycontrol52W,
+  scrapeMoneycontrolGainersLosers
 };
