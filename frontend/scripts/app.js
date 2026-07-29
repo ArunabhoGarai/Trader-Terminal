@@ -372,6 +372,8 @@ function updateAlertBadge(alertCount) {
 
 function showAnalysis() {
   el('analysis-window').classList.remove('is-hidden');
+  // Trigger NSE scraper on-demand (only starts heavy Puppeteer when this tab is opened)
+  fetch('/api/nse-scrape-trigger').catch(() => {});
   loadNSE52WeekData(); // Always fetch latest NSE data when panel opens
   renderAnalysis();
 }
