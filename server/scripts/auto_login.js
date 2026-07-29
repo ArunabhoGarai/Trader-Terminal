@@ -40,26 +40,49 @@ async function runAutoLogin(port = 3001) {
       }
     });
 
-    // Navigate to our local login route, which redirects to IIFL
-    const localLoginUrl = `http://localhost:${port}/auth/login`;
-    console.log(`[AUTO-LOGIN] Navigating to ${localLoginUrl}`);
+    // Navigate directly to the IIFL login URL (same URL as manual login)
+    const marketsUrl = (process.env.IIFL_MARKETS_URL || 'https://markets.iiflcapital.com').replace(/\/$/, '');
+    const appKey = process.env.IIFL_APP_KEY || '';
+    const redirectUri = process.env.IIFL_REDIRECT_URI || `http://localhost:${port}/auth/callback`;
+    const iiflLoginUrl = `${marketsUrl}/?v=1&appkey=${encodeURIComponent(appKey)}&redirecturl=${redirectUri}`;
+    console.log(`[AUTO-LOGIN] Navigating directly to IIFL: ${iiflLoginUrl}`);
     // We use domcontentloaded instead of networkidle2 because IIFL's login page
     // might have long-polling trackers that prevent networkidle from ever firing.
-    await page.goto(localLoginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(iiflLoginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    // Wait for the IIFL page to load. We look for input fields
-    console.log('[AUTO-LOGIN] Waiting for IIFL Client ID field...');
-    
-    // Use an aggressive search to find the Client ID input, assuming it might be named/id'd variably
-    const clientIdSelector = 'input[type="text"], input[name="client_id"], input[id*="user"]';
-    await page.waitForSelector(clientIdSelector, { timeout: 15000 });
-    
-    // Some login pages might have multiple text inputs, we type into the first one that is visible
-    const inputs = await page.$$(clientIdSelector);
-    if (inputs.length > 0) {
-      await inputs[0].type(clientId);
-    } else {
-      throw new Error("Could not find Client ID input field.");
+    // Wait for the IIFL page to fully render (it may use JS frameworks)
+    console.log('[AUTO-LOGIN] Waiting for IIFL login page to render...');
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Log what inputs are actually on the page for debugging
+    const inputDebug = await page.evaluate(() => {
+      const all = document.querySelectorAll('input');
+      return Array.from(all).map(i => ({
+        type: i.type, name: i.name, id: i.id, placeholder: i.placeholder,
+        visible: i.offsetParent !== null, value: i.value
+      }));
+    });
+    console.log('[AUTO-LOGIN] Found inputs on page:', JSON.stringify(inputDebug));
+
+    // Find the first visible, non-hidden input (Client ID field)
+    const filled = await page.evaluate((clientId) => {
+      const inputs = document.querySelectorAll('input');
+      for (const input of inputs) {
+        if (input.type === 'hidden' || input.type === 'submit' || input.type === 'button' || input.type === 'checkbox' || input.type === 'radio') continue;
+        if (input.offsetParent === null) continue; // not visible
+        input.focus();
+        // Use native input setter to work with React/Angular controlled inputs
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        nativeInputValueSetter.call(input, clientId);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+      return false;
+    }, clientId);
+
+    if (!filled) {
+      throw new Error("Could not find any visible input field for Client ID.");
     }
 
     console.log('[AUTO-LOGIN] Filled Client ID. Looking for Password...');
@@ -74,7 +97,17 @@ async function runAutoLogin(port = 3001) {
       await page.waitForSelector(passSelector, { timeout: 15000, visible: true });
     }
     
-    await page.type(passSelector, password);
+    // Use native setter for React/Angular compatibility
+    await page.evaluate((password) => {
+      const passInput = document.querySelector('input[type="password"]');
+      if (passInput) {
+        passInput.focus();
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        nativeInputValueSetter.call(passInput, password);
+        passInput.dispatchEvent(new Event('input', { bubbles: true }));
+        passInput.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }, password);
 
     console.log('[AUTO-LOGIN] Submitting credentials...');
     // Hit Enter to submit
