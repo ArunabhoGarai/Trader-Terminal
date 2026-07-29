@@ -25,10 +25,7 @@ async function runAutoLogin(port = 3001) {
         '--no-sandbox', '--disable-setuid-sandbox', '--window-size=1280,800',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--single-process',
-        '--no-zygote',
-        '--disable-extensions',
-        '--js-flags=--max-old-space-size=128'
+        '--disable-extensions'
       ]
     });
     const page = await browser.newPage();
