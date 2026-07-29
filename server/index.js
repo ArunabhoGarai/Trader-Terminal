@@ -512,7 +512,10 @@ async function exchangeAuthorizationCode(code, clientId, session) {
     headers: { 'Content-Type': 'application/json', AppKey: CONFIG.appKey }, timeout: 15000,
   });
   const token = extractToken(response.data);
-  if (!token) throw new Error('IIFL did not return an access token. Verify the app key, client ID, redirect URI, and token endpoint settings.');
+  if (!token) {
+    console.error('[IIFL auth] Failed to extract token. Raw response data:', JSON.stringify(response.data));
+    throw new Error('IIFL did not return an access token. Verify the app key, client ID, redirect URI, and token endpoint settings.');
+  }
   session.accessToken = token;
   session.authenticatedAt = new Date().toISOString();
   const expiresIn = number(response.data?.expires_in ?? response.data?.result?.expires_in, 0);
@@ -523,6 +526,17 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   session.actionWatch = [];
   session.actionWatchDate = indiaTradingDate();
   session.intradayRanges.clear();
+  startBackgroundScrapers();
+}
+
+let backgroundScrapersStarted = false;
+function startBackgroundScrapers() {
+  if (backgroundScrapersStarted) return;
+  backgroundScrapersStarted = true;
+  console.log('[SYSTEM] Starting background scrapers (NSE & Sensex) now that IIFL is logged in...');
+  nseScraper.startNSEScraper(5 * 60 * 1000);
+  fetchSensexToken();
+  setInterval(fetchSensexToken, 24 * 60 * 60 * 1000);
 }
 
 async function refreshLiveQuotes(session) {
@@ -1400,11 +1414,8 @@ server.listen(CONFIG.port, () => {
   console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
   console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
   startPolling();
-  nseScraper.startNSEScraper(5 * 60 * 1000);
   
-  // Initialize dynamic Sensex mapping and refresh it every 24 hours
-  fetchSensexToken();
-  setInterval(fetchSensexToken, 24 * 60 * 60 * 1000);
+  // Background scrapers (NSE & Sensex) are now deferred until IIFL successfully authenticates
 
   // Schedule auto-login everyday at 06:00 AM
   cron.schedule('0 6 * * *', () => {
