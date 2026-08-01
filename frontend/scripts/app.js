@@ -392,12 +392,14 @@ function setSession(session) {
   const logout = el('logout-iifl');
   
   if (live) {
-    connect.style.display = 'none';
-    if (logout) logout.style.display = 'block';
+    connect.textContent = 'IIFL Connected';
+    connect.classList.add('connected');
+    connect.style.display = 'inline-block';
+    if (logout) logout.style.display = 'inline-block';
   } else {
-    connect.style.display = 'block';
     connect.textContent = 'Connect IIFL';
     connect.classList.remove('connected');
+    connect.style.display = 'inline-block';
     if (logout) logout.style.display = 'none';
   }
 }
