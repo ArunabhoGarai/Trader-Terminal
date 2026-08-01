@@ -1289,6 +1289,12 @@ app.get('/auth/login', (req, res) => {
   res.redirect(authUrl);
 });
 
+app.post('/api/auth/logout', (req, res) => {
+  const session = browserSession(req, res);
+  clearSession(session, 'Logged out by user.');
+  res.json(publicSession(session));
+});
+
 app.get('/auth/callback', async (req, res) => {
   const session = browserSession(req, res);
   const code = req.query.code || req.query.authCode || req.query.authcode;
