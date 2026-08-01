@@ -389,8 +389,17 @@ function setSession(session) {
   status.classList.toggle('error', state.session.mode === 'ERROR' || !!state.session.lastError);
   status.querySelector('span').textContent = state.session.lastError ? state.session.lastError : (live ? 'IIFL Live' : state.session.mode === 'ERROR' ? 'Connection error' : state.wsConnected ? 'Real-time' : 'Simulation');
   const connect = el('connect-iifl');
-  connect.textContent = live ? 'IIFL Connected' : 'Connect IIFL';
-  connect.classList.toggle('connected', live);
+  const logout = el('logout-iifl');
+  
+  if (live) {
+    connect.style.display = 'none';
+    if (logout) logout.style.display = 'block';
+  } else {
+    connect.style.display = 'block';
+    connect.textContent = 'Connect IIFL';
+    connect.classList.remove('connected');
+    if (logout) logout.style.display = 'none';
+  }
 }
 
 function applyTerminalPayload(data) {
@@ -937,6 +946,21 @@ function bindEvents() {
     }
   });
   el('connect-iifl').addEventListener('click', () => { if (state.session.mode !== 'LIVE') window.location.assign('/auth/login'); });
+  const logoutBtn = el('logout-iifl');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        const response = await fetch('/api/auth/logout', { method: 'POST' });
+        if (response.ok) {
+          const session = await response.json();
+          setSession(session);
+          toast('Logged out successfully.');
+        }
+      } catch (e) {
+        toast('Error logging out.');
+      }
+    });
+  }
   document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { 
     state.analysisTab = button.dataset.analysisTab; 
     document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); 
