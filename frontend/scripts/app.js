@@ -425,8 +425,7 @@ function applyTerminalPayload(data) {
       if (idx.ltp > oldVal && oldVal > 0) flash(v, 'up');
       else if (idx.ltp < oldVal && oldVal > 0) flash(v, 'down');
 
-      v.className = `index-value ${idx.live ? (isUp ? 'up' : 'down') : 'simulated'}`;
-      c.className = `index-change ${idx.live ? (isUp ? 'up' : 'down') : 'simulated'}`;
+      c.className = isUp ? 'positive' : 'negative';
     }
   }
   setSession(data.session);
