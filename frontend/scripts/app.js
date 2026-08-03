@@ -841,8 +841,11 @@ async function fetchAnalysisData() {
   if (el('analysis-window').classList.contains('is-hidden')) return; 
   
   const tab = state.analysisTab || 'high';
+  const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
+  const source = useMC ? 'mc' : 'nse';
+  
   try {
-    const res = await fetch(`/api/analysis/refresh?tab=${tab}`);
+    const res = await fetch(`/api/analysis/refresh?tab=${tab}&source=${source}`);
     if (!res.ok) return;
     const data = await res.json();
     if (!state.marketAnalysis) state.marketAnalysis = {};
@@ -952,7 +955,10 @@ function bindEvents() {
     fetchAnalysisData(); 
   }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
-  document.querySelectorAll('input[name="source-toggle"]').forEach((radio) => radio.addEventListener('change', renderAnalysis));
+  document.querySelectorAll('input[name="source-toggle"]').forEach((radio) => radio.addEventListener('change', () => {
+    renderAnalysis();
+    fetchAnalysisData();
+  }));
   
   // Toggle sort by pct change
   const sortPctBtn = el('sort-pct-change');
