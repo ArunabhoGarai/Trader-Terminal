@@ -853,11 +853,14 @@ const TERMINAL_INDEX_MAP = {
 // Unified JIT endpoint for frontend to pull latest market-wide data
 app.get('/api/analysis/refresh', async (req, res) => {
   const tab = String(req.query.tab || 'high');
+  const source = String(req.query.source || 'mc');
   
   if (tab === 'high' || tab === 'low') {
-    await nseScraper.scrapeMoneycontrol52W();
-    // Fetch NSE as well in case the user toggles the source
-    await nseScraper.scrapeNSE();
+    if (source === 'mc') {
+      await nseScraper.scrapeMoneycontrol52W();
+    } else {
+      await nseScraper.scrapeNSE();
+    }
   } else if (tab === 'gainers' || tab === 'losers') {
     await nseScraper.scrapeMoneycontrolGainersLosers();
   } else if (tab === 'traded' || tab === 'quantity') {
@@ -1278,7 +1281,6 @@ server.listen(CONFIG.port, () => {
   console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
   console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
   startPolling();
-  nseScraper.startNSEScraper(5 * 60 * 1000);
   
   // Initialize dynamic Sensex mapping and refresh it every 24 hours
   fetchSensexToken();
