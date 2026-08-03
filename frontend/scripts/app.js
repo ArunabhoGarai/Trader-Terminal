@@ -98,7 +98,7 @@ function renderMarket() {
   renderWatchlistMeta();
   el('market-body').innerHTML = quotes.map((quote) => {
     const move = quote.pctChange >= 0 ? 'up' : 'down';
-    const rateClass = Math.abs(quote.pctChange) > .25 ? `rate-${move}` : 'plain-rate';
+    const rateClass = quote.pctChange > 0 ? 'rate-up' : quote.pctChange < 0 ? 'rate-down' : 'plain-rate';
     const selected = keyFor(quote) === state.selectedKey ? ' selected' : '';
     return `<tr class="${selected}" data-key="${escapeHtml(keyFor(quote))}" draggable="true">
       <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${quote.pctChange >= 0 ? '▲' : '▼'}</td><td></td>
@@ -409,6 +409,26 @@ function applyTerminalPayload(data) {
   if (data.watchlist) state.watchlist = data.watchlist;
   if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
   if (data.marketAnalysis) state.marketAnalysis = data.marketAnalysis;
+  if (data.indices && Array.isArray(data.indices)) {
+    for (const idx of data.indices) {
+      const v = el(`${idx.name}-value`);
+      const c = el(`${idx.name}-change`);
+      if (!v || !c) continue;
+
+      const oldVal = parseFloat(v.textContent.replace(/,/g, '')) || 0;
+      const isUp = idx.change >= 0;
+      const fmtVal = Number(idx.ltp).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      
+      v.textContent = fmtVal;
+      c.textContent = `${isUp ? '+' : ''}${idx.change} (${idx.pct}%)`;
+      
+      if (idx.ltp > oldVal && oldVal > 0) flash(v, 'up');
+      else if (idx.ltp < oldVal && oldVal > 0) flash(v, 'down');
+
+      v.className = `index-value ${idx.live ? (isUp ? 'up' : 'down') : 'simulated'}`;
+      c.className = `index-change ${idx.live ? (isUp ? 'up' : 'down') : 'simulated'}`;
+    }
+  }
   setSession(data.session);
   if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
   renderMarket();
@@ -809,46 +829,8 @@ async function removeScrip(key) {
   } catch (error) { toast(error.message); }
 }
 
-// ---------------------------------------------------------------------------
-// INDICES — real-time Nifty 50, Sensex, Bank Nifty
-// ---------------------------------------------------------------------------
-function fmtIdx(value) {
-  return Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-async function updateIndices() {
-  try {
-    const res = await fetch('/api/indices');
-    if (!res.ok) return;
-    const data = await res.json();
-    if (!data.success || !Array.isArray(data.indices)) return;
-    for (const idx of data.indices) {
-      const v = el(`${idx.name}-value`);
-      const c = el(`${idx.name}-change`);
-      if (!v || !c) continue;
-
-      if (idx.error) {
-        v.textContent = 'API ERR';
-        c.textContent = (idx.errorReason || 'Failed').substring(0, 40);
-        c.className = 'negative';
-        c.title = idx.errorBody || idx.errorReason || 'API Error';
-      } else {
-        const positive = idx.change >= 0;
-        const sign = positive ? '+' : '';
-        const cls = positive ? 'positive' : 'negative';
-        v.textContent = fmtIdx(idx.ltp);
-        c.textContent = `${sign}${fmtIdx(idx.change)} (${sign}${idx.pct}%)`;
-        c.className = cls;
-        c.removeAttribute('title');
-      }
-    }
-  } catch (_) { /* non-critical */ }
-}
-
-function startIndicesPoll() {
-  updateIndices();
-  setInterval(updateIndices, 3000);
-}
+// -------------------------------------------------// INDICES - Handled directly via applyTerminalPayload() from the WebSocket stream.
+// -------------------------------------------------// INDICES - Handled directly via applyTerminalPayload() from the WebSocket stream.
 
 // ---------------------------------------------------------------------------
 // JIT Analysis Fetching
@@ -1162,7 +1144,7 @@ function bindEvents() {
 }
 
 async function initialize() {
-  renderMarket(); renderAnalysis(); bindEvents(); startClock(); startIndicesPoll(); 
+  renderMarket(); renderAnalysis(); bindEvents(); startClock(); 
   await getSession();
   await loadWatchlist();
 
@@ -1170,9 +1152,8 @@ async function initialize() {
   connectWebSocket();
   startHeartbeat();
 
-  // Always poll via REST to keep server simulation ticking + fetch fresh data
+  // Always fetch fresh data on initial load
   await refreshQuotes(true);
-  setInterval(() => refreshQuotes(true), 2500);
 }
 
 initialize();
