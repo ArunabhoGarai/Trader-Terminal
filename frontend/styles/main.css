@@ -301,10 +301,20 @@ button { cursor: pointer; }
 }
 .local-search-input:focus { border-color: #1a73e8; outline: none; }
 
-/* SortableJS Swap Highlight Animation */
-.sortable-swap-highlight {
-  background-color: rgba(26, 115, 232, 0.15) !important;
-  transition: background-color 0.2s ease;
+/* SortableJS Reordering Styles */
+.sortable-ghost {
+  opacity: 0.3 !important;
+  background-color: #2a3b4c !important;
+}
+.sortable-chosen {
+  background-color: #1e2a38 !important;
+}
+.reorder-mode tr {
+  cursor: grab !important;
+  user-select: none;
+}
+.reorder-mode tr:active {
+  cursor: grabbing !important;
 }
 
 
