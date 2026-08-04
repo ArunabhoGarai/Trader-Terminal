@@ -525,9 +525,6 @@ let globalYahooIndices = [];
 
 async function refreshLiveQuotes(session) {
   if (!session.accessToken) return { success: false, events: [] };
-  
-  // Refresh global Yahoo baseline indices
-  globalYahooIndices = await fetchYahooIndices();
 
   // Build request payload: Watchlist + Indices
   const requestInstruments = new Map();
@@ -748,6 +745,7 @@ async function pollAllSessions() {
         quotes: session.quotes,
         actionWatch: session.actionWatch,
         marketAnalysis: session.marketAnalysis,
+        indices: session.indices,
         newEvents,
         session: publicSession(session),
         watchlist: publicWatchlist(session),
@@ -1249,6 +1247,8 @@ wss.on('connection', (ws, req) => {
     sessionId: session.id,
     quotes: session.quotes,
     actionWatch: session.actionWatch,
+    indices: session.indices,
+    marketAnalysis: session.marketAnalysis,
     session: publicSession(session),
     watchlist: publicWatchlist(session),
     timestamp: new Date().toISOString(),
