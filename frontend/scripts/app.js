@@ -1145,6 +1145,10 @@ async function initialize() {
 
   // Always fetch fresh data on initial load
   await refreshQuotes(true);
+
+  // Lightweight REST polling as a reliable fallback — the backend returns
+  // cached data so this adds zero extra IIFL load
+  setInterval(() => refreshQuotes(true), 2500);
 }
 
 initialize();
