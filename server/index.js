@@ -725,37 +725,37 @@ let pollTimer = null;
 
 async function pollAllSessions() {
   for (const [, session] of browserSessions) {
-    // Only poll if there are WebSocket clients listening OR if the session
-    // was recently active (keep simulation running for responsiveness)
-    // Always poll — even without WS clients — so REST /refresh picks up fresh data
+    try {
+      let newEvents = [];
 
-    let newEvents = [];
+      if (session.mode === 'LIVE') {
+        const result = await refreshLiveQuotes(session);
+        newEvents = result?.events || [];
+      } else {
+        newEvents = advanceSimulation(session) || [];
+      }
 
-    if (session.mode === 'LIVE') {
-      const result = await refreshLiveQuotes(session);
-      newEvents = result.events;
-    } else {
-      newEvents = advanceSimulation(session);
-    }
-
-    // Push updates to all connected WebSocket clients for this session
-    if (session.wsClients.size > 0) {
-      broadcastToSession(session, {
-        type: 'tick',
-        quotes: session.quotes,
-        actionWatch: session.actionWatch,
-        marketAnalysis: session.marketAnalysis,
-        indices: session.indices,
-        newEvents,
-        session: publicSession(session),
-        watchlist: publicWatchlist(session),
-        timestamp: new Date().toISOString(),
-      });
+      // Push updates to all connected WebSocket clients for this session
+      if (session.wsClients.size > 0) {
+        broadcastToSession(session, {
+          type: 'tick',
+          quotes: session.quotes,
+          actionWatch: session.actionWatch,
+          marketAnalysis: session.marketAnalysis,
+          indices: session.indices,
+          newEvents,
+          session: publicSession(session),
+          watchlist: publicWatchlist(session),
+          timestamp: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      console.error('[POLL] Error during poll cycle:', err.message);
     }
   }
   
   // Persist state to disk after polling
-  saveGlobalState();
+  try { saveGlobalState(); } catch (_) {}
 }
 
 function startPolling() {
@@ -781,10 +781,9 @@ app.get('/api/market-watch', (req, res) => {
   res.json(terminalPayload(session));
 });
 
-app.post('/api/market-watch/refresh', async (req, res) => {
+app.post('/api/market-watch/refresh', (req, res) => {
   const session = browserSession(req, res);
-  if (session.mode === 'LIVE') await refreshLiveQuotes(session);
-  if (session.mode !== 'LIVE') advanceSimulation(session);
+  // Return cached data — the background pollAllSessions loop handles IIFL fetching
   res.json(terminalPayload(session));
 });
 
