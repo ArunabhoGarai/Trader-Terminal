@@ -98,7 +98,7 @@ function renderMarket() {
   renderWatchlistMeta();
   el('market-body').innerHTML = quotes.map((quote) => {
     const move = quote.pctChange >= 0 ? 'up' : 'down';
-    const rateClass = Math.abs(quote.pctChange) > .25 ? `rate-${move}` : 'plain-rate';
+    const rateClass = quote.pctChange > 0 ? 'rate-up' : (quote.pctChange < 0 ? 'rate-down' : 'plain-rate');
     const selected = keyFor(quote) === state.selectedKey ? ' selected' : '';
     return `<tr class="${selected}" data-key="${escapeHtml(keyFor(quote))}" draggable="true">
       <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${quote.pctChange >= 0 ? '▲' : '▼'}</td><td></td>
