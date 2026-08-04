@@ -100,7 +100,7 @@ function renderMarket() {
     const move = quote.pctChange >= 0 ? 'up' : 'down';
     const rateClass = quote.pctChange > 0 ? 'rate-up' : (quote.pctChange < 0 ? 'rate-down' : 'plain-rate');
     const selected = keyFor(quote) === state.selectedKey ? ' selected' : '';
-    return `<tr class="${selected}" data-key="${escapeHtml(keyFor(quote))}" draggable="true">
+    return `<tr class="${selected}" data-key="${escapeHtml(keyFor(quote))}">
       <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${quote.pctChange >= 0 ? '▲' : '▼'}</td><td></td>
       <td class="symbol">${escapeHtml(quote.symbol)}</td><td class="${rateClass}">${fmt(quote.lastPrice)}</td><td class="${move === 'up' ? 'positive-text' : 'negative-text'}">${quote.pctChange.toFixed(2)}</td>
       <td>${qty(quote.bidQty)}</td><td>${fmt(quote.bidPrice)}</td><td>${qty(quote.offerQty)}</td><td>${fmt(quote.offerPrice)}</td>
@@ -1015,15 +1015,20 @@ function bindEvents() {
     e.target.textContent = isEditMode ? 'Done' : 'Edit';
     e.target.style.background = isEditMode ? '#ffefc2' : '';
     if (sortableInstance) sortableInstance.option('disabled', !isEditMode);
+    
+    const tbody = el('market-body');
+    if (tbody) {
+      tbody.classList.toggle('reorder-mode', isEditMode);
+    }
   });
 
-  // Smooth Drag-and-Drop Swapping via SortableJS
+  // Smooth Drag-and-Drop Sorting via SortableJS
   const tbody = el('market-body');
   if (typeof Sortable !== 'undefined') {
     sortableInstance = new Sortable(tbody, {
       animation: 150,
-      swap: true, // Enable swap plugin
-      swapClass: 'sortable-swap-highlight', // Class applied to the target during swap
+      ghostClass: 'sortable-ghost',
+      chosenClass: 'sortable-chosen',
       disabled: true, // Disabled by default to prevent accidental scroll-dragging
       onEnd: function () {
         // Save new order after drag ends
