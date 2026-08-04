@@ -307,49 +307,4 @@ button { cursor: pointer; }
   transition: background-color 0.2s ease;
 }
 
-/* Copyright Pill */
-.copyright-pill {
-  position: fixed;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(18, 24, 38, 0.85);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  padding: 6px 16px;
-  border-radius: 20px;
-  color: #a0aec0;
-  font-size: 11px;
-  font-family: 'Inter', sans-serif;
-  z-index: 1000;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  transition: all 0.2s ease;
-  text-align: center;
-  white-space: nowrap;
-}
-.copyright-pill:hover {
-  background: rgba(18, 24, 38, 0.95);
-  transform: translateX(-50%) translateY(-2px);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
-}
-.copyright-pill a {
-  color: #63b3ed;
-  text-decoration: none;
-  font-weight: 600;
-  transition: color 0.2s ease;
-}
-.copyright-pill a:hover {
-  color: #90cdf4;
-  text-decoration: underline;
-}
 
-@media (max-width: 600px) {
-  .copyright-pill {
-    width: 90%;
-    white-space: normal;
-    font-size: 10px;
-    padding: 6px 12px;
-    bottom: 8px;
-  }
-}
