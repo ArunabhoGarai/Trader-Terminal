@@ -497,21 +497,13 @@ function handleWebSocketMessage(data) {
     case 'init':
     case 'tick':
     case 'watchlist':
-      // Apply full payload update
-      if (Array.isArray(data.quotes)) state.quotes = data.quotes.map(quoteFromPrice);
-      if (data.watchlist) state.watchlist = data.watchlist;
-      if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
-      if (data.marketAnalysis) state.marketAnalysis = data.marketAnalysis;
-      if (data.session) setSession(data.session);
+      // Apply full payload update through the unified pipeline
+      applyTerminalPayload(data);
 
       // Check for new action watch events and flash
       if (data.type === 'tick' && Array.isArray(data.newEvents) && data.newEvents.length > 0) {
         flashNewAlerts(data.newEvents);
       }
-
-      if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
-      renderMarket();
-      renderAnalysis();
       
       // Update real-time interactive chart
       if (data.quotes) updateLiveChartTick(state.quotes);
