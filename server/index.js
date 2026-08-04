@@ -286,8 +286,7 @@ function createBrowserSession() {
     intradayRanges: new Map(quotes.map((quote) => [instrumentKey(quote), { high: quote.lastPrice, low: quote.lastPrice, lastAlertHigh: null, lastAlertLow: null, lastAlertTime: 0 }])),
     // WebSocket clients attached to this session
     wsClients: new Set(),
-    marketAnalysis: { highs: [], lows: [], gainers: [], losers: [], volume: [], value: [], highs_mc: [], lows_mc: [] },
-    indices: [],
+    marketAnalysis: { highs: [], lows: [], gainers: [], losers: [] },
   };
 }
 
@@ -377,7 +376,7 @@ function publicWatchlist(session) {
 }
 
 function terminalPayload(session) {
-  return { quotes: session.quotes, session: publicSession(session), watchlist: publicWatchlist(session), actionWatch: session.actionWatch, marketAnalysis: session.marketAnalysis, indices: session.indices };
+  return { quotes: session.quotes, session: publicSession(session), watchlist: publicWatchlist(session), actionWatch: session.actionWatch, marketAnalysis: session.marketAnalysis };
 }
 
 // ---------------------------------------------------------------------------
@@ -521,30 +520,16 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   session.intradayRanges.clear();
 }
 
-let globalYahooIndices = [];
-
 async function refreshLiveQuotes(session) {
   if (!session.accessToken) return { success: false, events: [] };
-
-  // Build request payload: Watchlist + Indices
+  
+  // Build request payload: Watchlist + Next 100 Market Scanner stocks
   const requestInstruments = new Map();
   session.watchlist.forEach((inst) => requestInstruments.set(instrumentKey(inst), { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: true }));
   
-  // Add indices
-  const iiflIndexInstruments = [
-    { exchange: 'NSEEQ', instrumentId: '999920000', name: 'nifty' },
-    { exchange: 'NSEEQ', instrumentId: '999920005', name: 'banknifty' },
-    { 
-      exchange: TERMINAL_INDEX_MAP['sensex'].iiflPayload?.exchange || 'BSEEQ', 
-      instrumentId: String(TERMINAL_INDEX_MAP['sensex'].iiflPayload?.exchangeInstrumentID || '999901'),
-      name: 'sensex'
-    }
-  ];
-
-  iiflIndexInstruments.forEach(inst => {
-    requestInstruments.set(`${inst.exchange}:${inst.instrumentId}`, { exchange: inst.exchange, instrumentId: inst.instrumentId, isIndex: true, name: inst.name });
-  });
-
+  // Add market scanner chunk
+  // (Removed: We now use nseScraper for market analysis, so we don't need to manually scan 100 extra stocks per tick)
+  
   if (requestInstruments.size === 0) return { success: false, events: [] };
 
   try {
@@ -583,31 +568,6 @@ async function refreshLiveQuotes(session) {
     session.marketAnalysis.losers = realNseData.losers;
     session.marketAnalysis.volume = realNseData.volume;
     session.marketAnalysis.value = realNseData.value;
-    
-    // Parse Indices
-    const indices = [];
-    for (const inst of iiflIndexInstruments) {
-      const raw = resultsByKey.get(String(inst.instrumentId).trim());
-      const yahooFallback = globalYahooIndices.find(y => y.name === inst.name);
-      
-      if (raw) {
-        const ltp = Number(raw.lastTradedPrice || raw.LastTradedPrice || raw.ltp || raw.LTP || 0);
-        const cl = yahooFallback ? yahooFallback.close : Number(raw.close || raw.Close || 0);
-        const chg = +(ltp - cl).toFixed(2);
-        const pct = cl > 0 ? +((chg / cl) * 100).toFixed(2) : 0;
-        indices.push({ name: inst.name, ltp: +ltp.toFixed(2), change: chg, pct, live: true });
-      } else {
-        indices.push({ name: inst.name, ltp: 0, change: 0, pct: 0, live: false, error: true, errorReason: 'Token not found in IIFL' });
-      }
-    }
-    
-    const nasdaqEntry = globalYahooIndices.find(y => y.name === 'nasdaq');
-    if (nasdaqEntry) {
-      const chg = nasdaqEntry.ltp - nasdaqEntry.close;
-      const pct = (chg / nasdaqEntry.close) * 100;
-      indices.push({ name: 'nasdaq', ltp: +nasdaqEntry.ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct.toFixed(2), live: true });
-    }
-    session.indices = indices;
 
     const events = updateActionWatch(session, nextQuotes);
     session.quotes = nextQuotes;
@@ -624,9 +584,8 @@ async function refreshLiveQuotes(session) {
 // Enhanced simulation — generates visible action watch events
 // ---------------------------------------------------------------------------
 function advanceSimulation(session) {
-  // Update Yahoo indices (no random simulation)
-  fetchYahooIndices().then(data => { globalYahooIndices = data; session.indices = data; });
-
+  // STRICTLY live data logic requested by user: no random simulation.
+  // We only sync the background scraped market data (Moneycontrol/NSE) into the session.
   const nseScraper = require('./nse_scraper');
   const realNseData = nseScraper.getNSEMarketWideData();
   session.marketAnalysis.highs = realNseData.highs;
@@ -725,37 +684,36 @@ let pollTimer = null;
 
 async function pollAllSessions() {
   for (const [, session] of browserSessions) {
-    try {
-      let newEvents = [];
+    // Only poll if there are WebSocket clients listening OR if the session
+    // was recently active (keep simulation running for responsiveness)
+    // Always poll — even without WS clients — so REST /refresh picks up fresh data
 
-      if (session.mode === 'LIVE') {
-        const result = await refreshLiveQuotes(session);
-        newEvents = result?.events || [];
-      } else {
-        newEvents = advanceSimulation(session) || [];
-      }
+    let newEvents = [];
 
-      // Push updates to all connected WebSocket clients for this session
-      if (session.wsClients.size > 0) {
-        broadcastToSession(session, {
-          type: 'tick',
-          quotes: session.quotes,
-          actionWatch: session.actionWatch,
-          marketAnalysis: session.marketAnalysis,
-          indices: session.indices,
-          newEvents,
-          session: publicSession(session),
-          watchlist: publicWatchlist(session),
-          timestamp: new Date().toISOString(),
-        });
-      }
-    } catch (err) {
-      console.error('[POLL] Error during poll cycle:', err.message);
+    if (session.mode === 'LIVE') {
+      const result = await refreshLiveQuotes(session);
+      newEvents = result.events;
+    } else {
+      newEvents = advanceSimulation(session);
+    }
+
+    // Push updates to all connected WebSocket clients for this session
+    if (session.wsClients.size > 0) {
+      broadcastToSession(session, {
+        type: 'tick',
+        quotes: session.quotes,
+        actionWatch: session.actionWatch,
+        marketAnalysis: session.marketAnalysis,
+        newEvents,
+        session: publicSession(session),
+        watchlist: publicWatchlist(session),
+        timestamp: new Date().toISOString(),
+      });
     }
   }
   
   // Persist state to disk after polling
-  try { saveGlobalState(); } catch (_) {}
+  saveGlobalState();
 }
 
 function startPolling() {
@@ -781,9 +739,10 @@ app.get('/api/market-watch', (req, res) => {
   res.json(terminalPayload(session));
 });
 
-app.post('/api/market-watch/refresh', (req, res) => {
+app.post('/api/market-watch/refresh', async (req, res) => {
   const session = browserSession(req, res);
-  // Return cached data — the background pollAllSessions loop handles IIFL fetching
+  if (session.mode === 'LIVE') await refreshLiveQuotes(session);
+  if (session.mode !== 'LIVE') advanceSimulation(session);
   res.json(terminalPayload(session));
 });
 
@@ -846,6 +805,11 @@ const TERMINAL_INDEX_MAP = {
     simBase: 17800, simClose: 17750
   }
 };
+
+// Keep simulated index values in memory so they drift smoothly
+const indexSimState = Object.fromEntries(
+  Object.entries(TERMINAL_INDEX_MAP).map(([key, data]) => [key, { ltp: data.simBase, close: data.simClose }])
+);
 
 // Unified JIT endpoint for frontend to pull latest market-wide data
 app.get('/api/analysis/refresh', async (req, res) => {
@@ -911,6 +875,105 @@ async function fetchYahooIndices() {
   const results = await Promise.all(fetchPromises);
   return results.filter(Boolean);
 }
+
+app.get('/api/indices/debug', async (req, res) => {
+  res.json({ message: "Legacy debug endpoint disabled." });
+});
+
+app.get('/api/indices', async (req, res) => {
+  const session = browserSession(req, res);
+
+  // Always fetch Yahoo to get reliable previous close baselines
+  const yahooData = await fetchYahooIndices();
+  const getYahoo = (name) => yahooData.find(y => y.name === name);
+
+  if (session.accessToken) {
+    const iiflIndexInstruments = [
+      { exchange: 'NSEEQ', instrumentId: '999920000', name: 'nifty' },
+      { exchange: 'NSEEQ', instrumentId: '999920005', name: 'banknifty' },
+      { 
+        exchange: TERMINAL_INDEX_MAP['sensex'].iiflPayload?.exchange || 'BSEEQ', 
+        instrumentId: String(TERMINAL_INDEX_MAP['sensex'].iiflPayload?.exchangeInstrumentID || '999901'),
+        name: 'sensex'
+      },
+    ];
+
+    let iiflError = null;
+    let iiflRawErrorBody = null;
+    let results = [];
+
+    try {
+      const iiflResponse = await axios.post(
+        `${CONFIG.apiBaseUrl}/marketdata/marketquotes`,
+        iiflIndexInstruments.map(({ exchange, instrumentId }) => ({ exchange, instrumentId })),
+        { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 8000 }
+      );
+      results = Array.isArray(iiflResponse.data?.result) ? iiflResponse.data.result : [];
+    } catch (err) {
+      iiflError = err.message;
+      iiflRawErrorBody = err.response?.data;
+    }
+
+    const indices = [];
+    const byToken = new Map(results.map(r => [String(r.instrumentId ?? r.token ?? ''), r]));
+
+    for (const inst of iiflIndexInstruments) {
+      const raw = byToken.get(inst.instrumentId) || results.find(r => String(r.instrumentId ?? r.token) === inst.instrumentId);
+      const data = TERMINAL_INDEX_MAP[inst.name];
+      const yData = getYahoo(inst.name);
+
+      if (raw) {
+        // Fetch Real-time Live Price from IIFL
+        const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], data.simBase);
+        
+        // Fetch Previous Close from Yahoo (highly reliable) instead of IIFL (which omits it)
+        const cl = yData?.close || data.simClose;
+
+        const chg = +(ltp - cl).toFixed(2);
+        const pct = cl > 0 ? +((chg / cl) * 100).toFixed(2) : 0;
+
+        indices.push({ name: inst.name, ltp: +ltp.toFixed(2), change: chg, pct, live: true });
+      } else if (iiflError) {
+        indices.push({
+          name: inst.name, ltp: 0, change: 0, pct: 0, live: false, error: true,
+          errorReason: `IIFL API ERR: ${iiflError}`,
+          errorBody: JSON.stringify(iiflRawErrorBody).substring(0, 200)
+        });
+      } else {
+        indices.push({
+          name: inst.name, ltp: 0, change: 0, pct: 0, live: false, error: true,
+          errorReason: `Token ${inst.instrumentId} not found in IIFL response`
+        });
+      }
+    }
+
+    // Add NASDAQ strictly from Yahoo
+    const nasdaqEntry = getYahoo('nasdaq');
+    if (nasdaqEntry) {
+      const chg = nasdaqEntry.ltp - nasdaqEntry.close;
+      const pct = (chg / nasdaqEntry.close) * 100;
+      indices.push({ name: 'nasdaq', ltp: +nasdaqEntry.ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct.toFixed(2), live: true });
+    } else {
+      indices.push({ name: 'nasdaq', ltp: 0, change: 0, pct: 0, live: false, error: true, errorReason: 'Yahoo Finance fetch failed' });
+    }
+
+    return res.json({ success: true, live: true, indices });
+  }
+
+  // Fallback: use Yahoo Finance data directly (no random simulation)
+  const indices = Object.entries(TERMINAL_INDEX_MAP).map(([name, data]) => {
+    const yData = getYahoo(name);
+    if (yData) {
+      const chg = +(yData.ltp - yData.close).toFixed(2);
+      const pct = yData.close > 0 ? +((chg / yData.close) * 100).toFixed(2) : 0;
+      return { name, ltp: +yData.ltp.toFixed(2), change: chg, pct, live: true };
+    }
+    // If Yahoo also failed, return static baseline with no drift
+    return { name, ltp: data.simBase, change: 0, pct: 0, live: false };
+  });
+
+  res.json({ success: true, live: false, indices });
+});
 
 app.get('/api/watchlist', (req, res) => {
   const session = browserSession(req, res);
@@ -1246,8 +1309,6 @@ wss.on('connection', (ws, req) => {
     sessionId: session.id,
     quotes: session.quotes,
     actionWatch: session.actionWatch,
-    indices: session.indices,
-    marketAnalysis: session.marketAnalysis,
     session: publicSession(session),
     watchlist: publicWatchlist(session),
     timestamp: new Date().toISOString(),
@@ -1282,12 +1343,5 @@ server.listen(CONFIG.port, () => {
   // Initialize dynamic Sensex mapping and refresh it every 24 hours
   fetchSensexToken();
   setInterval(fetchSensexToken, 24 * 60 * 60 * 1000);
-  
-  // Fetch Yahoo indices every 5 minutes globally for baseline closes
-  fetchYahooIndices().then(res => globalYahooIndices = res);
-  setInterval(async () => {
-    const fresh = await fetchYahooIndices();
-    if (fresh.length > 0) globalYahooIndices = fresh;
-  }, 5 * 60 * 1000);
 });
 
