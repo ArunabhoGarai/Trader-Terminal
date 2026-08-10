@@ -26,7 +26,7 @@ const CONFIG = {
   appKey: process.env.IIFL_APP_KEY || '',
   appSecret: process.env.IIFL_APP_SECRET || '',
   redirectUri: process.env.IIFL_REDIRECT_URI || `http://localhost:${process.env.PORT || 3001}/auth/callback`,
-  quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 2500), 1000),
+  quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 1000), 1000),
 };
 
 const MAX_WATCHLIST_SIZE = 400;
@@ -683,37 +683,34 @@ function broadcastToSession(session, payload) {
 let pollTimer = null;
 
 async function pollAllSessions() {
-  for (const [, session] of browserSessions) {
-    // Only poll if there are WebSocket clients listening OR if the session
-    // was recently active (keep simulation running for responsiveness)
-    // Always poll — even without WS clients — so REST /refresh picks up fresh data
+  try {
+    for (const [, session] of browserSessions) {
+      let newEvents = [];
 
-    let newEvents = [];
+      if (session.mode === 'LIVE') {
+        const result = await refreshLiveQuotes(session);
+        newEvents = result.events;
+      } else {
+        newEvents = advanceSimulation(session);
+      }
 
-    if (session.mode === 'LIVE') {
-      const result = await refreshLiveQuotes(session);
-      newEvents = result.events;
-    } else {
-      newEvents = advanceSimulation(session);
+      if (session.wsClients.size > 0) {
+        broadcastToSession(session, {
+          type: 'tick',
+          quotes: session.quotes,
+          actionWatch: session.actionWatch,
+          marketAnalysis: session.marketAnalysis,
+          newEvents,
+          session: publicSession(session),
+          watchlist: publicWatchlist(session),
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
-
-    // Push updates to all connected WebSocket clients for this session
-    if (session.wsClients.size > 0) {
-      broadcastToSession(session, {
-        type: 'tick',
-        quotes: session.quotes,
-        actionWatch: session.actionWatch,
-        marketAnalysis: session.marketAnalysis,
-        newEvents,
-        session: publicSession(session),
-        watchlist: publicWatchlist(session),
-        timestamp: new Date().toISOString(),
-      });
-    }
+    saveGlobalState();
+  } catch (err) {
+    console.error('[POLL ERROR]', err.message);
   }
-  
-  // Persist state to disk after polling
-  saveGlobalState();
 }
 
 function startPolling() {
