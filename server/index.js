@@ -63,8 +63,7 @@ const EXTRA_NSE_SPECS = [
 ];
 
 function makeInstrument([symbol, instrumentId, basePrice], index) {
-  const formattedSymbol = (symbol.endsWith('-EQ') || symbol.includes('-')) ? symbol : `${symbol}-EQ`;
-  return { symbol: formattedSymbol, instrumentId: String(instrumentId), exchange: 'NSEEQ', segment: 'Equity', basePrice, index };
+  return { symbol, instrumentId: String(instrumentId), exchange: 'NSEEQ', segment: 'Equity', basePrice, index };
 }
 
 const DEFAULT_WATCHLIST = DEFAULT_SPECS.map(makeInstrument);
@@ -615,14 +614,10 @@ function contractRows(payload) {
 
 function normaliseContract(row, code, index) {
   const instrumentId = row.instrumentId ?? row.instrumentID ?? row.InstrumentId ?? row.InstrumentID ?? row.exchangeInstrumentId ?? row.exchangeInstrumentID ?? row.ExchangeInstrumentId ?? row.ExchangeInstrumentID ?? row.token ?? row.Token ?? row.securityId ?? row.securityID ?? row.SecurityId ?? row.SecurityID;
-  let symbol = row.symbol ?? row.Symbol ?? row.tradingSymbol ?? row.TradingSymbol ?? row.tradingSymbolName ?? row.TradingSymbolName ?? row.scripName ?? row.ScripName ?? row.name ?? row.Name ?? row.displayName ?? row.DisplayName;
+  const symbol = row.symbol ?? row.Symbol ?? row.tradingSymbol ?? row.TradingSymbol ?? row.tradingSymbolName ?? row.TradingSymbolName ?? row.scripName ?? row.ScripName ?? row.name ?? row.Name ?? row.displayName ?? row.DisplayName;
   if (!instrumentId || !symbol) return null;
-  symbol = String(symbol).trim().toUpperCase();
-  if (code === 'NSEEQ' && !/-(EQ|BE|BZ|SM|ST|IL|IV|N1|N2|N3|N4|N5|N6|N7|N8)$/i.test(symbol)) {
-    symbol = `${symbol}-EQ`;
-  }
   const instrument = {
-    instrumentId: String(instrumentId), symbol, exchange: code,
+    instrumentId: String(instrumentId), symbol: String(symbol).trim().toUpperCase(), exchange: code,
     segment: segmentLabel(code), displayName: String(row.displayName ?? row.name ?? row.scripName ?? symbol).trim(),
     basePrice: number(row.lastPrice ?? row.close ?? row.strikePrice, 100 + ((index + 1) * 17)),
   };
@@ -658,45 +653,11 @@ async function searchInstruments(exchange, segment, query) {
   }
   const unique = new Map();
   instruments.forEach((instrument) => {
-    let sym = instrument.symbol;
-    if (instrument.exchange === 'NSEEQ' && !/-(EQ|BE|BZ|SM|ST|IL|IV|N1|N2|N3|N4|N5|N6|N7|N8)$/i.test(sym)) {
-      sym = `${sym}-EQ`;
-    }
-    const formattedInst = { ...instrument, symbol: sym };
-    if (!unique.has(formattedInst.symbol)) {
-      unique.set(formattedInst.symbol, formattedInst);
+    if (!unique.has(instrument.symbol)) {
+      unique.set(instrument.symbol, instrument);
     }
   });
-
-  const results = [...unique.values()];
-  
-  results.sort((a, b) => {
-    // 1. -EQ suffix / Equity segment priority (rank -EQ scrips at top)
-    const aIsEq = a.symbol.endsWith('-EQ') || a.exchange === 'NSEEQ';
-    const bIsEq = b.symbol.endsWith('-EQ') || b.exchange === 'NSEEQ';
-    if (aIsEq && !bIsEq) return -1;
-    if (!aIsEq && bIsEq) return 1;
-
-    // 2. Exact match on symbol (ignoring -EQ suffix)
-    const cleanNeedle = needle.replace(/-EQ$/i, '');
-    const aClean = a.symbol.replace(/-EQ$/i, '');
-    const bClean = b.symbol.replace(/-EQ$/i, '');
-    const aExact = aClean === cleanNeedle || a.symbol === needle;
-    const bExact = bClean === cleanNeedle || b.symbol === needle;
-    if (aExact && !bExact) return -1;
-    if (!aExact && bExact) return 1;
-
-    // 3. Prefix match
-    const aPrefix = a.symbol.startsWith(cleanNeedle);
-    const bPrefix = b.symbol.startsWith(cleanNeedle);
-    if (aPrefix && !bPrefix) return -1;
-    if (!aPrefix && bPrefix) return 1;
-
-    // 4. Fallback alphabetical
-    return a.symbol.localeCompare(b.symbol);
-  });
-
-  return results.slice(0, 15);
+  return [...unique.values()].sort((a, b) => a.symbol.localeCompare(b.symbol)).slice(0, 15);
 }
 
 function knownInstrument(exchange, instrumentId) {
