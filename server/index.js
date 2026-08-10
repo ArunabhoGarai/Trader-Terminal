@@ -20,6 +20,7 @@ const nseScraper = require('./nse_scraper');
 loadDotEnv(path.join(__dirname, '.env'));
 
 const CONFIG = {
+  host: process.env.HOST || '0.0.0.0',
   port: Number(process.env.PORT || 3001),
   apiBaseUrl: (process.env.IIFL_API_BASE_URL || 'https://api.iiflcapital.com/v1').replace(/\/$/, ''),
   marketsUrl: (process.env.IIFL_MARKETS_URL || 'https://markets.iiflcapital.com').replace(/\/$/, ''),
@@ -1330,8 +1331,8 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-server.listen(CONFIG.port, () => {
-  console.log(`Trader Terminal running at http://localhost:${CONFIG.port}`);
+server.listen(CONFIG.port, CONFIG.host, () => {
+  console.log(`Trader Terminal running at http://${CONFIG.host}:${CONFIG.port}`);
   console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
   console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
   startPolling();
