@@ -32,6 +32,7 @@ const state = {
   wsConnected: false,
   // Action watch alert flash tracking
   lastAlertCount: 0,
+  isEditMode: false,
 };
 
 let chartInstance = null;
@@ -40,6 +41,7 @@ let areaSeries = null;
 let activeChartQuote = null;
 let activeTimeframe = 'advanced';
 let currentLiveCandle = null;
+let sortableInstance = null;
 
 const el = (id) => document.getElementById(id);
 const fmt = (value, digits = 2) => (value === null || value === undefined || isNaN(Number(value)) || value === '' || Number(value) === 0) ? '-' : Number(value).toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -87,6 +89,7 @@ function renderWatchlistMeta() {
 }
 
 function renderMarket() {
+  if (state.isEditMode) return;
   const searchInput = el('local-search');
   if (searchInput && state.localSearch !== searchInput.value.toLowerCase()) {
     state.localSearch = searchInput.value.toLowerCase();
@@ -422,7 +425,12 @@ function connectWebSocket() {
   if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) return;
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws`;
+  // If running on a dev server (e.g. Live Server on port 5500/5501), target Node backend port 3001
+  let host = window.location.host;
+  if (window.location.port && window.location.port !== '3001') {
+    host = `${window.location.hostname}:3001`;
+  }
+  const wsUrl = `${protocol}//${host}/ws`;
 
   try {
     state.ws = new WebSocket(wsUrl);
@@ -517,13 +525,13 @@ function flashNewAlerts(events) {
   }
 }
 
-// Keep WebSocket alive with periodic pings
+// Keep WebSocket alive with periodic pings (every 5s to prevent proxy/firewall timeouts)
 function startHeartbeat() {
   setInterval(() => {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify({ type: 'ping' }));
     }
-  }, 25000);
+  }, 5000);
 }
 
 // ---------------------------------------------------------------------------
@@ -1007,19 +1015,17 @@ function bindEvents() {
     if (row) openChart(row.dataset.key);
   });
   
-  let sortableInstance = null;
-  let isEditMode = false;
-
   el('edit-watchlist')?.addEventListener('click', (e) => {
-    isEditMode = !isEditMode;
-    e.target.textContent = isEditMode ? 'Done' : 'Edit';
-    e.target.style.background = isEditMode ? '#ffefc2' : '';
-    if (sortableInstance) sortableInstance.option('disabled', !isEditMode);
+    state.isEditMode = !state.isEditMode;
+    e.target.textContent = state.isEditMode ? 'Done' : 'Edit';
+    e.target.style.background = state.isEditMode ? '#ffefc2' : '';
+    if (sortableInstance) sortableInstance.option('disabled', !state.isEditMode);
     
     const tbody = el('market-body');
     if (tbody) {
-      tbody.classList.toggle('reorder-mode', isEditMode);
+      tbody.classList.toggle('reorder-mode', state.isEditMode);
     }
+    if (!state.isEditMode) renderMarket();
   });
 
   // Smooth Drag-and-Drop Sorting via SortableJS
@@ -1175,9 +1181,13 @@ async function initialize() {
   connectWebSocket();
   startHeartbeat();
 
-  // Always poll via REST to keep server simulation ticking + fetch fresh data
+  // Only poll via REST as a fallback if the WebSocket is disconnected
   await refreshQuotes(true);
-  setInterval(() => refreshQuotes(true), 2500);
+  setInterval(() => {
+    if (!state.wsConnected) {
+      refreshQuotes(true);
+    }
+  }, 1000);
 }
 
 initialize();
