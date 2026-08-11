@@ -181,9 +181,9 @@ function analysisRows() {
     }).slice(0, 200);
   }
   const filterRows = (sourceRows) => sourceRows.filter((quote) => {
-    const exchange = String(quote.exchange || '').toUpperCase();
+    const exchange = String(quote.exchange || 'NSEEQ').toUpperCase();
     const isFutureOption = (quote.segment || '').toUpperCase() === 'F&O' || exchange.endsWith('FO');
-    const exchangeAllowed = exchange.startsWith('NSE') ? options.nse : exchange.startsWith('BSE') ? options.bse : false;
+    const exchangeAllowed = (exchange.startsWith('NSE') || !quote.exchange) ? options.nse : exchange.startsWith('BSE') ? options.bse : true;
     return exchangeAllowed && (isFutureOption ? options.fo : options.cash);
   });
 
@@ -192,13 +192,13 @@ function analysisRows() {
     const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
     let data = useMC ? (state.marketAnalysis?.highs_mc || []) : (state.marketAnalysis?.highs || []);
     if (useMC && data.length === 0) data = state.marketAnalysis?.highs || [];
-    return filterRows(data).slice(0, 50);
+    return filterRows(data);
   } else if (state.analysisTab === 'low') {
     if (!options.low) return [];
     const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
     let data = useMC ? (state.marketAnalysis?.lows_mc || []) : (state.marketAnalysis?.lows || []);
     if (useMC && data.length === 0) data = state.marketAnalysis?.lows || [];
-    return filterRows(data).slice(0, 50);
+    return filterRows(data);
   } else if (state.analysisTab === 'gainers') {
     return filterRows(state.marketAnalysis?.gainers || []).slice(0, 50);
   } else if (state.analysisTab === 'losers') {
