@@ -253,13 +253,13 @@ function renderAnalysis() {
       thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr>`;
     } else if (state.analysisTab === 'high') {
       if (useMC && (state.marketAnalysis?.highs_mc?.length > 0)) {
-        thead.innerHTML = `<tr><th>Symbol</th><th>Price</th><th>Chg%</th><th>Inc/Dec in Value</th><th>Day's High</th><th>Day's Low</th><th>52 Week High Price</th><th>Open Price</th></tr>`;
+        thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th>Chg%</th><th>Prev Close</th><th>Realtime Volume</th><th>52 Wk High</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
       } else {
         thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/H price</th><th>Prev.High</th><th>Prev. High Date</th></tr>`;
       }
     } else if (state.analysisTab === 'low') {
       if (useMC && (state.marketAnalysis?.lows_mc?.length > 0)) {
-        thead.innerHTML = `<tr><th>Symbol</th><th>Price</th><th>Chg%</th><th>Inc/Dec in Value</th><th>Day's High</th><th>Day's Low</th><th>52 Week Low Price</th><th>Open Price</th></tr>`;
+        thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th>Chg%</th><th>Prev Close</th><th>Realtime Volume</th><th>52 Wk Low</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
       } else {
         thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/L price</th><th>Prev.Low</th><th>Prev. Low Date</th></tr>`;
       }
@@ -304,15 +304,18 @@ function renderAnalysis() {
       const newPriceColor = isHigh ? '#149339' : '#bf1019';
       const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
       if (useMC && ((isHigh && state.marketAnalysis?.highs_mc?.length > 0) || (!isHigh && state.marketAnalysis?.lows_mc?.length > 0))) {
-        const netChange = quote.lastPrice - (quote.prevClose || quote.lastPrice);
+        const vol = quote.tradedVolume || quote.volume || 0;
+        const volFormatted = vol ? Number(vol).toLocaleString('en-IN') : '-';
         return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
-          <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
-          <td class="analysis-rate">${fmt(quote.lastPrice)}</td>
+          <td style="font-weight:bold; color:#1a73e8">${escapeHtml(quote.symbol || quote.companyName)}</td>
+          <td style="font-size:10px; color:#5b6567">${escapeHtml(quote.companyName || quote.symbol)}</td>
+          <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
           <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
-          <td class="${netChange >= 0 ? 'positive' : 'negative'}">${fmt(netChange)}</td>
+          <td class="analysis-rate">${fmt(quote.prevClose || quote.lastPrice)}</td>
+          <td class="analysis-rate" style="font-weight:bold; color:#107c41">${volFormatted}</td>
+          <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(isHigh ? quote.week52High : quote.week52Low)}</td>
           <td class="analysis-rate">${fmt(quote.high || 0)}</td>
           <td class="analysis-rate">${fmt(quote.low || 0)}</td>
-          <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(isHigh ? quote.week52High : quote.week52Low)}</td>
           <td class="analysis-rate">${fmt(quote.open || 0)}</td>
         </tr>`;
       } else {
