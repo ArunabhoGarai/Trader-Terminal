@@ -3,6 +3,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 const axios = require('axios');
 const cheerio = require('cheerio');
+const nseMaster = require('./nse_master');
 
 let global52WHighs = [{
   symbol: 'FETCHING...',
@@ -79,7 +80,7 @@ function mapGainerLoserToQuote(item) {
 }
 
 async function scrapeMoneycontrolGainersLosers() {
-  if (Date.now() - cacheTimestamps.mcGainersLosers < 30 * 1000) return { success: true, message: 'Cached' };
+  if (Date.now() - cacheTimestamps.mcGainersLosers < 60 * 1000) return { success: true, message: 'Cached' };
   
   const options = {
     headers: {
@@ -152,7 +153,7 @@ async function scrapeMoneycontrolGainersLosers() {
 }
 
 async function scrapeMoneycontrol52W() {
-  if (Date.now() - cacheTimestamps.mc52W < 30 * 1000) return { success: true, message: 'Cached' };
+  if (Date.now() - cacheTimestamps.mc52W < 60 * 1000) return { success: true, message: 'Cached' };
 
   const options = {
     headers: {
@@ -169,14 +170,16 @@ async function scrapeMoneycontrol52W() {
     const parse52WTable = (html, isHigh) => {
       const $ = cheerio.load(html);
       const rows = $('table').eq(1).find('tbody tr').toArray();
-      // Parse top 50 items
-      return rows.slice(0, 50).map(row => {
+      // Parse ALL rows returned by Moneycontrol (100+ stocks)
+      return rows.map(row => {
         const cols = $(row).find('td');
         if (cols.length < 7) return null;
         
         let companyName = $(cols[0]).find('a').first().text().trim() || $(cols[0]).text().trim();
         companyName = companyName.replace(/(?:Vol Shocker|ATH|ATL|Only Buyers|Only Sellers).*$/i, '').trim();
-        const symbol = companyName;
+        
+        const nseSymbol = nseMaster.resolveNSESymbol(companyName) || companyName.replace(/\s+/g, '').toUpperCase();
+        const scripSymbol = `${nseSymbol}-EQ`;
 
         const priceP = $(cols[2]).find('p');
         const lastPriceStr = priceP.clone().children().remove().end().text().trim().replace(/,/g, '');
@@ -193,12 +196,13 @@ async function scrapeMoneycontrol52W() {
         const open = parseFloat($(cols[6]).text().replace(/,/g, '')) || 0;
         
         return {
-          symbol: symbol.substring(0, 20),
+          symbol: scripSymbol,
+          nseSymbol: nseSymbol,
           exchange: 'NSEEQ',
           segment: 'Equity',
           series: 'EQ',
-          instrumentId: `NSE_${symbol.replace(/\s+/g, '')}`,
-          companyName: symbol,
+          instrumentId: `NSE_${nseSymbol}`,
+          companyName: companyName,
           lastPrice: lastPrice,
           pctChange: pctChange,
           prevClose: lastPrice - netChange,
@@ -207,6 +211,8 @@ async function scrapeMoneycontrol52W() {
           low: low,
           week52High: isHigh ? week52Val : 0,
           week52Low: isHigh ? 0 : week52Val,
+          volume: 0,
+          tradedVolume: 0,
           prev52WHL: 0,
           prevHLDate: '-',
           updatedAt: Date.now(),
