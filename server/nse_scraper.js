@@ -157,8 +157,6 @@ async function scrapeMoneycontrol52W() {
 
   const apiHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Origin': 'https://www.moneycontrol.com',
-    'Referer': 'https://www.moneycontrol.com/stocks/market-stats/52-week-high-nse/',
     'Accept': 'application/json, text/plain, */*'
   };
 
@@ -206,8 +204,8 @@ async function scrapeMoneycontrol52W() {
   // Strictly fetch Moneycontrol JSON API for all 100+ stocks
   try {
     const apiResults = await Promise.allSettled([
-      axios.get('https://priceapi.moneycontrol.com/technicalData/v1/marketStats/52-week-high?exchange=NSE&limit=200', { headers: apiHeaders, timeout: 8000 }),
-      axios.get('https://priceapi.moneycontrol.com/technicalData/v1/marketStats/52-week-low?exchange=NSE&limit=200', { headers: { ...apiHeaders, Referer: 'https://www.moneycontrol.com/stocks/market-stats/52-week-low-nse/' }, timeout: 8000 })
+      axios.get('https://priceapi.moneycontrol.com/technicalData/v1/marketStats/52-week-high?exchange=NSE&limit=200', { headers: apiHeaders, timeout: 12000 }),
+      axios.get('https://priceapi.moneycontrol.com/technicalData/v1/marketStats/52-week-low?exchange=NSE&limit=200', { headers: apiHeaders, timeout: 12000 })
     ]);
 
     let highSuccess = false;
