@@ -783,9 +783,14 @@ function knownInstrument(exchange, instrumentId) {
 function findInstrumentBySymbol(symbol) {
   if (!symbol) return null;
   const cleanSym = String(symbol).toUpperCase().replace(/-EQ$/, '').trim();
-  for (const inst of knownInstruments.values()) {
-    const instSym = String(inst.symbol || '').toUpperCase().replace(/-EQ$/, '').trim();
-    if (instSym === cleanSym) return inst;
+  const resolvedSym = nseMaster.resolveNSESymbol(cleanSym);
+  const candidates = new Set([cleanSym, resolvedSym ? resolvedSym.toUpperCase().replace(/-EQ$/, '') : null].filter(Boolean));
+
+  for (const target of candidates) {
+    for (const inst of knownInstruments.values()) {
+      const instSym = String(inst.symbol || '').toUpperCase().replace(/-EQ$/, '').trim();
+      if (instSym === target) return inst;
+    }
   }
   return null;
 }
