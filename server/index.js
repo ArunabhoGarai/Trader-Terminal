@@ -16,6 +16,9 @@ const axios = require('axios');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const nseScraper = require('./nse_scraper');
+const nseMaster = require('./nse_master');
+
+nseMaster.loadNSEMaster();
 
 loadDotEnv(path.join(__dirname, '.env'));
 
@@ -528,9 +531,19 @@ async function refreshLiveQuotes(session) {
   const requestInstruments = new Map();
   session.watchlist.forEach((inst) => requestInstruments.set(instrumentKey(inst), { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: true }));
   
-  // Add market scanner chunk
-  // (Removed: We now use nseScraper for market analysis, so we don't need to manually scan 100 extra stocks per tick)
-  
+  // Add 52W High scrips from Moneycontrol to batch request
+  const realNseData = nseScraper.getNSEMarketWideData();
+  const highsMcList = realNseData.highs_mc || [];
+  highsMcList.forEach((item) => {
+    const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol);
+    if (inst) {
+      const k = instrumentKey(inst);
+      if (!requestInstruments.has(k)) {
+        requestInstruments.set(k, { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: false });
+      }
+    }
+  });
+
   if (requestInstruments.size === 0) return { success: false, events: [] };
 
   try {
@@ -559,11 +572,46 @@ async function refreshLiveQuotes(session) {
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
     
+    // Enrich 52W High items with live IIFL quote data and volume
+    const enrichedHighsMc = highsMcList.map((item) => {
+      const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol);
+      if (inst) {
+        const raw = resultsByKey.get(String(inst.instrumentId).trim());
+        if (raw) {
+          const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP'], item.lastPrice);
+          const close = extract(raw, ['PClose', 'pClose', 'close', 'previousClose', 'pcClose', 'Close'], item.prevClose);
+          const open = extract(raw, ['open', 'Open', 'OpenPrice'], item.open);
+          const high = extract(raw, ['high', 'High', 'HighPrice', 'DayHigh'], item.high);
+          const low = extract(raw, ['low', 'Low', 'LowPrice', 'DayLow'], item.low);
+          const vol = extract(raw, ['tradedVolume', 'totalQty', 'totalTradedQuantity', 'TotalQty', 'Volume', 'TTQ'], item.tradedVolume || item.volume || 0);
+          const pct = close > 0 ? ((ltp - close) / close) * 100 : item.pctChange;
+          
+          return {
+            ...item,
+            symbol: `${inst.symbol.replace(/-EQ$/i, '')}-EQ`,
+            instrumentId: inst.instrumentId,
+            lastPrice: ltp,
+            prevClose: close,
+            open,
+            high,
+            low,
+            pctChange: pct,
+            tradedVolume: vol,
+            volume: vol,
+            updatedAt: Date.now()
+          };
+        }
+      }
+      return item;
+    });
+
+    // Sort by real-time volume in descending order
+    enrichedHighsMc.sort((a, b) => Number(b.tradedVolume || b.volume || 0) - Number(a.tradedVolume || a.volume || 0));
+
     // Compute top market-wide analytics
-    const realNseData = nseScraper.getNSEMarketWideData();
     session.marketAnalysis.highs = realNseData.highs;
     session.marketAnalysis.lows = realNseData.lows;
-    session.marketAnalysis.highs_mc = realNseData.highs_mc;
+    session.marketAnalysis.highs_mc = enrichedHighsMc;
     session.marketAnalysis.lows_mc = realNseData.lows_mc;
     session.marketAnalysis.gainers = realNseData.gainers;
     session.marketAnalysis.losers = realNseData.losers;
@@ -589,9 +637,11 @@ function advanceSimulation(session) {
   // We only sync the background scraped market data (Moneycontrol/NSE) into the session.
   const nseScraper = require('./nse_scraper');
   const realNseData = nseScraper.getNSEMarketWideData();
+  let highsMcList = [...(realNseData.highs_mc || [])];
+  highsMcList.sort((a, b) => Number(b.tradedVolume || b.volume || 0) - Number(a.tradedVolume || a.volume || 0));
   session.marketAnalysis.highs = realNseData.highs;
   session.marketAnalysis.lows = realNseData.lows;
-  session.marketAnalysis.highs_mc = realNseData.highs_mc;
+  session.marketAnalysis.highs_mc = highsMcList;
   session.marketAnalysis.lows_mc = realNseData.lows_mc;
   session.marketAnalysis.gainers = realNseData.gainers;
   session.marketAnalysis.losers = realNseData.losers;
@@ -662,6 +712,16 @@ async function searchInstruments(exchange, segment, query) {
 
 function knownInstrument(exchange, instrumentId) {
   return knownInstruments.get(instrumentKey({ exchange, instrumentId }));
+}
+
+function findInstrumentBySymbol(symbol) {
+  if (!symbol) return null;
+  const cleanSym = String(symbol).toUpperCase().replace(/-EQ$/, '').trim();
+  for (const inst of knownInstruments.values()) {
+    const instSym = String(inst.symbol || '').toUpperCase().replace(/-EQ$/, '').trim();
+    if (instSym === cleanSym) return inst;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
