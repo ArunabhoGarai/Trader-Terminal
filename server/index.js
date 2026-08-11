@@ -1398,6 +1398,16 @@ server.listen(CONFIG.port, CONFIG.host, () => {
   startPolling();
   nseScraper.startNSEScraper(5 * 60 * 1000);
   
+  // Pre-load full NSEEQ contract catalog from IIFL (2000+ stocks)
+  contractsFor('NSEEQ').then((instruments) => {
+    instruments.forEach((inst) => {
+      knownInstruments.set(instrumentKey(inst), inst);
+    });
+    console.log(`[IIFL Catalog] ✅ Pre-loaded ${instruments.length} NSEEQ instruments into memory.`);
+  }).catch((err) => {
+    console.warn('[IIFL Catalog] ⚠️ Could not pre-load NSEEQ contracts:', err.message);
+  });
+
   // Initialize dynamic Sensex mapping and refresh it every 24 hours
   fetchSensexToken();
   setInterval(fetchSensexToken, 24 * 60 * 60 * 1000);
