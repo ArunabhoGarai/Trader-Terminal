@@ -158,7 +158,8 @@ async function scrapeMoneycontrol52W() {
   const apiHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Origin': 'https://www.moneycontrol.com',
-    'Referer': 'https://www.moneycontrol.com/stocks/market-stats/52-week-high-nse/'
+    'Referer': 'https://www.moneycontrol.com/stocks/market-stats/52-week-high-nse/',
+    'Accept': 'application/json, text/plain, */*'
   };
 
   const mapApiItems = (items, isHigh) => {
@@ -202,128 +203,43 @@ async function scrapeMoneycontrol52W() {
     }).filter(Boolean);
   };
 
-  // 1. Try Moneycontrol JSON API first with independent error handling
+  // Strictly fetch Moneycontrol JSON API for all 100+ stocks
   try {
     const apiResults = await Promise.allSettled([
-      axios.get('https://priceapi.moneycontrol.com/technicalData/v1/marketStats/52-week-high?exchange=NSE&limit=200', { headers: apiHeaders, timeout: 6000 }),
-      axios.get('https://priceapi.moneycontrol.com/technicalData/v1/marketStats/52-week-low?exchange=NSE&limit=200', { headers: { ...apiHeaders, Referer: 'https://www.moneycontrol.com/stocks/market-stats/52-week-low-nse/' }, timeout: 6000 })
+      axios.get('https://priceapi.moneycontrol.com/technicalData/v1/marketStats/52-week-high?exchange=NSE&limit=200', { headers: apiHeaders, timeout: 8000 }),
+      axios.get('https://priceapi.moneycontrol.com/technicalData/v1/marketStats/52-week-low?exchange=NSE&limit=200', { headers: { ...apiHeaders, Referer: 'https://www.moneycontrol.com/stocks/market-stats/52-week-low-nse/' }, timeout: 8000 })
     ]);
 
-    let apiSuccess = false;
+    let highSuccess = false;
 
     if (apiResults[0].status === 'fulfilled' && Array.isArray(apiResults[0].value.data?.data) && apiResults[0].value.data.data.length > 0) {
       mc52WHighs = mapApiItems(apiResults[0].value.data.data, true);
       console.log(`[NSE Scraper] ✅ Fetched ${mc52WHighs.length} 52-week Highs from Moneycontrol API.`);
-      apiSuccess = true;
+      highSuccess = true;
+    } else {
+      const reason = apiResults[0].status === 'rejected' ? apiResults[0].reason?.message : 'Empty API data array';
+      const status = apiResults[0].status === 'rejected' ? apiResults[0].reason?.response?.status : apiResults[0].value?.status;
+      console.error(`[NSE Scraper ERROR] ❌ Moneycontrol 52W High API failed! Status: ${status || 'N/A'}, Reason: ${reason}`);
     }
 
     if (apiResults[1].status === 'fulfilled' && Array.isArray(apiResults[1].value.data?.data) && apiResults[1].value.data.data.length > 0) {
       mc52WLows = mapApiItems(apiResults[1].value.data.data, false);
       console.log(`[NSE Scraper] ✅ Fetched ${mc52WLows.length} 52-week Lows from Moneycontrol API.`);
+    } else {
+      const reason = apiResults[1].status === 'rejected' ? apiResults[1].reason?.message : 'Empty API data array';
+      const status = apiResults[1].status === 'rejected' ? apiResults[1].reason?.response?.status : apiResults[1].value?.status;
+      console.warn(`[NSE Scraper WARN] ⚠️ Moneycontrol 52W Low API warning. Status: ${status || 'N/A'}, Reason: ${reason}`);
     }
 
-    if (apiSuccess) {
+    if (highSuccess) {
       cacheTimestamps.mc52W = Date.now();
       return { success: true };
     }
   } catch (apiErr) {
-    console.warn('[NSE Scraper] API endpoint fallback to HTML scraper:', apiErr.message);
+    console.error('[NSE Scraper ERROR] ❌ Unexpected exception fetching Moneycontrol 52W API:', apiErr.message);
   }
 
-  // 2. Comprehensive Multi-Category HTML Scraper Fallback
-  try {
-    const categories = [
-      { name: 'All NSE', id: '-2' },
-      { name: 'Nifty 500', id: '91' },
-      { name: 'Nifty Midcap 100', id: '27' },
-      { name: 'Nifty Smallcap 100', id: '32' },
-      { name: 'Nifty Microcap 250', id: '106' },
-      { name: 'Nifty Smallcap 250', id: '103' },
-      { name: 'Nifty Midcap 150', id: '104' },
-      { name: 'Nifty LargeMidcap 250', id: '102' },
-      { name: 'Nifty Total Market', id: '101' },
-      { name: 'Nifty 50', id: '9' },
-      { name: 'Nifty Next 50', id: '28' }
-    ];
-
-    const parseCategoryPages = async (isHigh) => {
-      const typePath = isHigh ? '52-week-high-nse' : '52-week-low-nse';
-      const map = new Map();
-
-      const htmlResults = await Promise.allSettled(categories.map(cat => {
-        const url = `https://www.moneycontrol.com/stocks/market-stats/${typePath}/?indexName=${encodeURIComponent(cat.name)}&id=${cat.id}`;
-        return axios.get(url, { headers: apiHeaders, timeout: 6000 });
-      }));
-
-      htmlResults.forEach(res => {
-        if (res.status === 'fulfilled' && res.value?.data) {
-          const $ = cheerio.load(res.value.data);
-          const rows = $('table').eq(1).find('tbody tr').toArray();
-          rows.forEach(row => {
-            const cols = $(row).find('td');
-            if (cols.length < 7) return;
-            
-            let companyName = $(cols[0]).find('a').first().text().trim() || $(cols[0]).text().trim();
-            companyName = companyName.replace(/(?:Vol Shocker|ATH|ATL|Only Buyers|Only Sellers).*$/i, '').trim();
-            if (!companyName || map.has(companyName)) return;
-
-            const nseSymbol = nseMaster.resolveNSESymbol(companyName) || companyName.replace(/\s+/g, '').toUpperCase();
-            const scripSymbol = `${nseSymbol}-EQ`;
-
-            const priceP = $(cols[2]).find('p');
-            const lastPriceStr = priceP.clone().children().remove().end().text().trim().replace(/,/g, '');
-            const lastPrice = parseFloat(lastPriceStr) || 0;
-
-            const spanText = priceP.find('span').text().replace(/,/g, '');
-            const spanMatch = spanText.match(/([-\d.]+)\s*\(([-\d.]+)%\)/);
-            const netChange = spanMatch ? parseFloat(spanMatch[1]) : 0;
-            const pctChange = spanMatch ? parseFloat(spanMatch[2]) : 0;
-
-            const high = parseFloat($(cols[3]).text().replace(/,/g, '')) || 0;
-            const low = parseFloat($(cols[4]).text().replace(/,/g, '')) || 0;
-            const week52Val = parseFloat($(cols[5]).text().replace(/,/g, '')) || 0;
-            const open = parseFloat($(cols[6]).text().replace(/,/g, '')) || 0;
-
-            map.set(companyName, {
-              symbol: scripSymbol,
-              nseSymbol: nseSymbol,
-              exchange: 'NSEEQ',
-              segment: 'Equity',
-              series: 'EQ',
-              instrumentId: `NSE_${nseSymbol}`,
-              companyName: companyName,
-              lastPrice: lastPrice,
-              pctChange: pctChange,
-              prevClose: lastPrice - netChange,
-              open: open,
-              high: high,
-              low: low,
-              week52High: isHigh ? week52Val : 0,
-              week52Low: isHigh ? 0 : week52Val,
-              volume: 0,
-              tradedVolume: 0,
-              prev52WHL: 0,
-              prevHLDate: '-',
-              updatedAt: Date.now(),
-              isRealNSEData: true
-            });
-          });
-        }
-      });
-
-      return Array.from(map.values());
-    };
-
-    mc52WHighs = await parseCategoryPages(true);
-    console.log(`[NSE Scraper] ✅ Fetched ${mc52WHighs.length} 52-week Highs from Moneycontrol Multi-Category HTML.`);
-
-    mc52WLows = await parseCategoryPages(false);
-    console.log(`[NSE Scraper] ✅ Fetched ${mc52WLows.length} 52-week Lows from Moneycontrol Multi-Category HTML.`);
-    
-    cacheTimestamps.mc52W = Date.now();
-  } catch (err) {
-    console.warn('[NSE Scraper] ⚠️ Failed fetching 52-week data from Moneycontrol:', err.message);
-  }
+  console.error('[NSE Scraper ERROR] ❌ HTML Fallback is disabled as per requirement. Moneycontrol API did not return data.');
 }
 
 
