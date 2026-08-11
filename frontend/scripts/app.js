@@ -189,16 +189,10 @@ function analysisRows() {
 
   if (state.analysisTab === 'high') {
     if (!options.high) return [];
-    const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
-    let data = useMC ? (state.marketAnalysis?.highs_mc || []) : (state.marketAnalysis?.highs || []);
-    if (useMC && data.length === 0) data = state.marketAnalysis?.highs || [];
-    return filterRows(data);
+    return filterRows(state.marketAnalysis?.highs || []);
   } else if (state.analysisTab === 'low') {
     if (!options.low) return [];
-    const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
-    let data = useMC ? (state.marketAnalysis?.lows_mc || []) : (state.marketAnalysis?.lows || []);
-    if (useMC && data.length === 0) data = state.marketAnalysis?.lows || [];
-    return filterRows(data);
+    return filterRows(state.marketAnalysis?.lows || []);
   } else if (state.analysisTab === 'gainers') {
     return filterRows(state.marketAnalysis?.gainers || []).slice(0, 50);
   } else if (state.analysisTab === 'losers') {
@@ -239,32 +233,17 @@ function renderAnalysis() {
   const wsLabel = state.wsConnected ? '· WebSocket connected' : '· polling';
   el('analysis-summary').textContent = `${tabName} · ${modeLabel} ${wsLabel}`;
 
-  const is52W = state.analysisTab === 'high' || state.analysisTab === 'low';
-  document.querySelectorAll('.source-toggle-label').forEach(e => e.style.display = is52W ? 'inline-block' : 'none');
-  const spacer = document.querySelector('.source-toggle-spacer');
-  if (spacer) spacer.style.display = is52W ? 'inline-block' : 'none';
-
   const isActionTab = state.analysisTab === 'action';
   
   const thead = el('analysis-head');
   if (thead) {
-    const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
     if (isActionTab) {
       thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr>`;
     } else if (state.analysisTab === 'high') {
-      if (useMC && (state.marketAnalysis?.highs_mc?.length > 0)) {
-        thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th>Chg%</th><th>Prev Close</th><th>Realtime Volume</th><th>52 Wk High</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
-      } else {
-        thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/H price</th><th>Prev.High</th><th>Prev. High Date</th></tr>`;
-      }
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th>Chg%</th><th>Prev Close</th><th>Realtime Volume</th><th>52 Wk High</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
     } else if (state.analysisTab === 'low') {
-      if (useMC && (state.marketAnalysis?.lows_mc?.length > 0)) {
-        thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th>Chg%</th><th>Prev Close</th><th>Realtime Volume</th><th>52 Wk Low</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
-      } else {
-        thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>New 52W/L price</th><th>Prev.Low</th><th>Prev. Low Date</th></tr>`;
-      }
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th>Chg%</th><th>Prev Close</th><th>Realtime Volume</th><th>52 Wk Low</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
-      // Gainers and Losers are always using Moneycontrol data
       thead.innerHTML = `<tr><th>Symbol</th><th>Price</th><th>Chng%</th><th>Change in Value</th><th>Day's High</th><th>Day's Low</th><th>Open Price</th></tr>`;
     } else if (state.analysisTab === 'quantity') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
@@ -302,33 +281,20 @@ function renderAnalysis() {
     if (state.analysisTab === 'high' || state.analysisTab === 'low') {
       const isHigh = state.analysisTab === 'high';
       const newPriceColor = isHigh ? '#149339' : '#bf1019';
-      const useMC = document.querySelector('input[name="source-toggle"]:checked')?.value === 'mc';
-      if (useMC && ((isHigh && state.marketAnalysis?.highs_mc?.length > 0) || (!isHigh && state.marketAnalysis?.lows_mc?.length > 0))) {
-        const vol = quote.tradedVolume || quote.volume || 0;
-        const volFormatted = vol ? Number(vol).toLocaleString('en-IN') : '-';
-        return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
-          <td style="font-weight:bold; color:#1a73e8">${escapeHtml(quote.symbol || quote.companyName)}</td>
-          <td style="font-size:10px; color:#5b6567">${escapeHtml(quote.companyName || quote.symbol)}</td>
-          <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
-          <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
-          <td class="analysis-rate">${fmt(quote.prevClose || quote.lastPrice)}</td>
-          <td class="analysis-rate" style="font-weight:bold; color:#107c41">${volFormatted}</td>
-          <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(isHigh ? quote.week52High : quote.week52Low)}</td>
-          <td class="analysis-rate">${fmt(quote.high || 0)}</td>
-          <td class="analysis-rate">${fmt(quote.low || 0)}</td>
-          <td class="analysis-rate">${fmt(quote.open || 0)}</td>
-        </tr>`;
-      } else {
-        return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
-          <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
-          <td>${escapeHtml(quote.series || 'EQ')}</td>
-          <td class="analysis-rate">${fmt(quote.lastPrice)}</td>
-          <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
-          <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(quote.new52WHL || (isHigh ? quote.week52High : quote.week52Low))}</td>
-          <td class="analysis-rate">${fmt(quote.prev52WHL || 0)}</td>
-          <td>${escapeHtml(quote.prevHLDate || '-')}</td>
-        </tr>`;
-      }
+      const vol = quote.tradedVolume || quote.volume || 0;
+      const volFormatted = vol ? Number(vol).toLocaleString('en-IN') : '-';
+      return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
+        <td style="font-weight:bold; color:#1a73e8">${escapeHtml(quote.symbol || quote.companyName)}</td>
+        <td style="font-size:10px; color:#5b6567">${escapeHtml(quote.companyName || quote.symbol)}</td>
+        <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
+        <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
+        <td class="analysis-rate">${fmt(quote.prevClose || quote.lastPrice)}</td>
+        <td class="analysis-rate" style="font-weight:bold; color:#107c41">${volFormatted}</td>
+        <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(isHigh ? (quote.week52High || quote.new52WHL) : (quote.week52Low || quote.new52WHL))}</td>
+        <td class="analysis-rate">${fmt(quote.high || 0)}</td>
+        <td class="analysis-rate">${fmt(quote.low || 0)}</td>
+        <td class="analysis-rate">${fmt(quote.open || 0)}</td>
+      </tr>`;
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
       const netChange = quote.lastPrice - (quote.prevClose || quote.lastPrice);
       return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
@@ -981,7 +947,6 @@ function bindEvents() {
     fetchAnalysisData(); 
   }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
-  document.querySelectorAll('input[name="source-toggle"]').forEach((radio) => radio.addEventListener('change', renderAnalysis));
   
   // Toggle sort by pct change
   const sortPctBtn = el('sort-pct-change');
