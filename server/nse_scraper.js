@@ -5,6 +5,11 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const nseMaster = require('./nse_master');
 
+const fs = require('fs');
+const path = require('path');
+
+const SCRAPER_CACHE_FILE = path.join(__dirname, 'scraper_cache.json');
+
 let global52WHighs = [{
   symbol: 'FETCHING...',
   exchange: 'NSEEQ',
@@ -33,6 +38,49 @@ let cacheTimestamps = {
   mcGainersLosers: 0,
   nseMostActive: 0
 };
+
+function saveScraperCache() {
+  try {
+    const dataToSave = {
+      cacheTimestamps,
+      global52WHighs,
+      global52WLows,
+      mc52WHighs,
+      mc52WLows,
+      globalGainers,
+      globalLosers,
+      globalVolume,
+      globalValue
+    };
+    fs.writeFileSync(SCRAPER_CACHE_FILE, JSON.stringify(dataToSave), 'utf8');
+  } catch (err) {
+    console.warn('[NSE Scraper] ⚠️ Failed to save scraper cache to disk:', err.message);
+  }
+}
+
+function loadScraperCache() {
+  try {
+    if (fs.existsSync(SCRAPER_CACHE_FILE)) {
+      const raw = fs.readFileSync(SCRAPER_CACHE_FILE, 'utf8');
+      const saved = JSON.parse(raw);
+      if (saved.cacheTimestamps) cacheTimestamps = saved.cacheTimestamps;
+      if (Array.isArray(saved.global52WHighs) && saved.global52WHighs.length > 0) global52WHighs = saved.global52WHighs;
+      if (Array.isArray(saved.global52WLows) && saved.global52WLows.length > 0) global52WLows = saved.global52WLows;
+      if (Array.isArray(saved.mc52WHighs) && saved.mc52WHighs.length > 0) mc52WHighs = saved.mc52WHighs;
+      if (Array.isArray(saved.mc52WLows) && saved.mc52WLows.length > 0) mc52WLows = saved.mc52WLows;
+      if (Array.isArray(saved.globalGainers)) globalGainers = saved.globalGainers;
+      if (Array.isArray(saved.globalLosers)) globalLosers = saved.globalLosers;
+      if (Array.isArray(saved.globalVolume)) globalVolume = saved.globalVolume;
+      if (Array.isArray(saved.globalValue)) globalValue = saved.globalValue;
+      console.log(`[NSE Scraper] ✅ Loaded persistent scraper cache from disk (Age: MC 52W ${Math.round((Date.now() - (cacheTimestamps.mc52W||0))/1000)}s, NSE ${Math.round((Date.now() - (cacheTimestamps.nseMostActive||0))/1000)}s).`);
+    }
+  } catch (err) {
+    console.warn('[NSE Scraper] ⚠️ Failed to load scraper cache from disk:', err.message);
+  }
+}
+
+// Initialize cache on startup
+loadScraperCache();
 
 function mapNSEToQuote(item, isHigh) {
   // Map NSE JSON object to our terminal's internal quote format
@@ -227,6 +275,7 @@ async function scrapeMoneycontrol52W() {
     console.log(`[NSE Scraper] ✅ Fetched ${mc52WLows.length} 52-week Lows from Moneycontrol HTML.`);
     
     cacheTimestamps.mc52W = Date.now();
+    saveScraperCache();
   } catch (err) {
     console.warn('[NSE Scraper] ⚠️ Failed fetching 52-week data from Moneycontrol HTML:', err.message);
   }
@@ -552,14 +601,34 @@ async function scrapeNSE(manual = false) {
   }
   
   cacheTimestamps.nseMostActive = Date.now();
+  saveScraperCache();
   return { success: true, message: 'NSE data successfully refreshed.' };
 }
 
-function startNSEScraper(intervalMs = 5 * 60 * 1000) { 
-  // Run initial pulls
-  scrapeNSE();
-  scrapeMoneycontrol52W();
-  scrapeMoneycontrolGainersLosers();
+let isStarted = false;
+
+function startNSEScraper() { 
+  if (isStarted) return;
+  isStarted = true;
+
+  console.log('[NSE Scraper] Starting persistent background scrapers...');
+
+  // Only run initial pulls if cache is expired or empty
+  if (Date.now() - (cacheTimestamps.mc52W || 0) >= 60 * 1000) {
+    scrapeMoneycontrol52W();
+  } else {
+    console.log(`[NSE Scraper] ⏳ Reusing valid 1-minute Moneycontrol cache (${Math.round((Date.now() - cacheTimestamps.mc52W)/1000)}s old).`);
+  }
+
+  if (Date.now() - (cacheTimestamps.mcGainersLosers || 0) >= 60 * 1000) {
+    scrapeMoneycontrolGainersLosers();
+  }
+
+  if (Date.now() - (cacheTimestamps.nseMostActive || 0) >= 5 * 60 * 1000) {
+    scrapeNSE();
+  } else {
+    console.log(`[NSE Scraper] ⏳ Reusing valid 5-minute official NSE cache (${Math.round((Date.now() - cacheTimestamps.nseMostActive)/1000)}s old).`);
+  }
 
   // Background recurrence schedules
   setInterval(scrapeMoneycontrol52W, 60 * 1000);            // Moneycontrol HTML every 1 minute
