@@ -113,28 +113,145 @@ async function loadNSEMaster() {
   }
 }
 
+// Explicit company name -> official NSE EQ symbol overrides
+const COMPANY_SYMBOL_OVERRIDES = new Map([
+  ['PROVENTUS', 'PROV'],
+  ['PROVENTUS LIFE', 'PROV'],
+  ['PROVENTUS LIFE SCIENCES', 'PROV'],
+  ['PROVENTUS LIFE SCIENCES LIMITED', 'PROV'],
+  ['IND-SWIFT LABS', 'INDSWIFTLAB'],
+  ['IND SWIFT LABS', 'INDSWIFTLAB'],
+  ['IND-SWIFT LABORATORIES', 'INDSWIFTLAB'],
+  ['AARTI SURFACTAN', 'AARTISURF'],
+  ['AARTI SURFACTANTS', 'AARTISURF'],
+  ['AKUMS DRUGS P', 'AKUMS'],
+  ['AKUMS DRUGS', 'AKUMS'],
+  ['AKUMS DRUGS & PHARMACEUTICALS', 'AKUMS'],
+  ['RELIANCE HOME F', 'RHFL'],
+  ['RELIANCE HOME FINANCE', 'RHFL'],
+  ['LAXMI GOLDORNA', 'LGHL'],
+  ['LAXMI GOLDORNA HOUSE', 'LGHL'],
+  ['ISHAN INTL', 'ISHAN'],
+  ['ISHAN INTL.', 'ISHAN'],
+  ['ISHAN INTERNATIONAL', 'ISHAN'],
+  ['LUMAX AUTO TECH', 'LUMAXTECH'],
+  ['CHENNAI PETRO', 'CHENNPETRO'],
+  ['FINOLEX CABLES', 'FINCABLES'],
+  ['KOLTE-PATIL', 'KOLTEPATIL'],
+  ['RIR POWER ELECT', 'RIR'],
+  ['TCPL PACKAGING', 'TCPLPACK'],
+  ['STANDARD IND', 'SIL'],
+  ['ORIENT BELL', 'ORIENTBELL'],
+  ['SUNDRAM', 'SUNDRMFAST'],
+  ['SEDEMAC MECHATR', 'SEDEMAC'],
+  ['ZYDUS LIFE', 'ZYDUSLIFE'],
+  ['KWALITY PHARMAC', 'KPL'],
+  ['SPECIALITY REST', 'SPECIALITY'],
+  ['SAKAR HEALTHCAR', 'SAKAR'],
+  ['SUDEEP PHARMA', 'SUDEEPPHRM'],
+  ['XTRANET TECHNOL', 'XTRANET'],
+  ['ANAWIL WIRE', 'ANAWILWIRE'],
+  ['BIRLA CABLE', 'BIRLACABLE'],
+  ['HOAC FOODS', 'HOACFOODS'],
+  ['USHANTI COLOUR', 'USHANTICOLOUR'],
+  ['AVATAR IND', 'AVATAR'],
+  ['BIKEWO GREEN', 'BIKEWOGREEN'],
+  ['VIVO COLLABORAT', 'VIVOCOLLABORAT'],
+  ['DS KULKARNI', 'DSKULKARNI'],
+  ['GP PETROLEUMS', 'GULFPETRO'],
+  ['ANTHEM BIOSCIEN', 'ANTHEM'],
+  ['PANACHE DIGILIF', 'PANACHE'],
+  ['THYROCARE TECHN', 'THYROCARE'],
+  ['POLYPLEX CORP', 'POLYPLEX'],
+  ['E2E NETWORKS', 'E2E'],
+  ['GOLDIAM INTER', 'GOLDIAM'],
+  ['BOSCH', 'BOSCHLTD'],
+  ['PROPSHOP EVENTS', 'PROPSHOPEVENTS'],
+  ['RUBICON RES', 'RUBICON'],
+  ['ORBIT EXPORTS', 'ORBTEXP'],
+  ['ACCRETION PHARM', 'ACCRETION'],
+  ['DEEP IND', 'DEEPINDS'],
+  ['FERMENTA BIO', 'FERMENTA'],
+  ['GTPL H', 'GTPL'],
+  ['PRAMARA', 'PRAMARA'],
+  ['KORE DIGITAL', 'KOREDIGITAL'],
+  ['BEW ENG', 'BEWENG'],
+  ['WS INDUSTRIES', 'WS'],
+  ['CEINSYS TECH', 'CEINSYS'],
+  ['TRUST FINTECH', 'TRUSTFINTECH'],
+  ['KEC INTL', 'KEC'],
+  ['INDO THAI SECU', 'INDOTHAI'],
+  ['SUMEET IND', 'SUMEETINDS'],
+  ['KPIGREEN', 'KPIGREEN'],
+  ['GSM FOILS', 'GSMFOILS'],
+  ['FLEXITUFF VENTU', 'FLEXITUFF'],
+  ['AVRO INDIA', 'AVROIND'],
+  ['SURYALATA SPG', 'SURYALATASPG'],
+  ['CHEMPLAST SANMA', 'CHEMPLASTS'],
+  ['PHANTOM DIGITAL', 'PHANTOMDIGITAL'],
+  ['KITEX GARMENTS', 'KITEX'],
+  ['STUDDS ACCESS', 'STUDDS'],
+  ['UMA CONVERTER', 'UMACONVERTER'],
+  ['ALPINE TEXWORLD', 'ALPINETEX'],
+  ['LCC INFOTECH', 'LCCINFOTEC'],
+  ['OSIA HYPER RETA', 'OSIAHYPER'],
+  ['PARSVN', 'PARSVNATH'],
+  ['GENSOL ENG', 'GENSOL'],
+  ['JK LAKSHMI CEM', 'JKLAKSHMI'],
+  ['OWAIS METAL', 'OWAISMETAL'],
+  ['STAR CEMENT', 'STARCEMENT'],
+  ['HDFC BANK', 'HDFCBANK'],
+  ['SITI NETWORKS', 'SITINET'],
+  ['SHRENIK', 'SHRENIK'],
+  ['NEELAM LINENS', 'NEELAMLINENS'],
+  ['SANWARIA CONSUM', 'SANWARIA'],
+  ['AFCONS INFRA', 'AFCONS'],
+  ['DUGLOBAL', 'DUGLOBAL'],
+  ['INDIA SHELTER', 'INDIASHLTR'],
+  ['ARSHIYA', 'ARSHIYA'],
+  ['INOX WIND', 'INOXWIND'],
+  ['NILE', 'NILE'],
+  ['MONO PHARMACARE', 'MONOPHARMACARE'],
+  ['VIVIMED LABS', 'VIVIMEDLAB'],
+  ['OSEL DEVICES', 'OSELDEVICES'],
+  ['PCBL', 'PCBL'],
+  ['BEML', 'BEML'],
+  ['ABFRL', 'ABFRL']
+]);
+
 function resolveNSESymbol(companyName) {
   if (!companyName) return null;
   const input = String(companyName).trim();
   const inputUpper = input.toUpperCase();
 
-  // 1. Direct exact symbol match
+  // 1. Explicit override map check
+  if (COMPANY_SYMBOL_OVERRIDES.has(inputUpper)) {
+    return COMPANY_SYMBOL_OVERRIDES.get(inputUpper);
+  }
+
+  // 2. Direct exact symbol match against official EQUITY_L master
   if (symbolMap.has(inputUpper)) {
     return inputUpper;
   }
 
-  // 2. Direct normalized company name match
+  // 3. Direct normalized company name match
   const normInput = normalizeString(input);
+  if (COMPANY_SYMBOL_OVERRIDES.has(normInput)) {
+    return COMPANY_SYMBOL_OVERRIDES.get(normInput);
+  }
   if (normalizedCompanyMap.has(normInput)) {
     return normalizedCompanyMap.get(normInput);
   }
 
   const rawInput = rawNormalize(input);
+  if (COMPANY_SYMBOL_OVERRIDES.has(rawInput)) {
+    return COMPANY_SYMBOL_OVERRIDES.get(rawInput);
+  }
   if (normalizedCompanyMap.has(rawInput)) {
     return normalizedCompanyMap.get(rawInput);
   }
 
-  // 3. Fuzzy prefix / substring match against registered companies
+  // 4. Fuzzy prefix / substring match against registered companies
   if (isLoaded && normInput.length > 2) {
     for (const [normCompany, symbol] of normalizedCompanyMap.entries()) {
       if (normCompany === normInput || normCompany.startsWith(normInput) || normInput.startsWith(normCompany)) {
@@ -143,7 +260,7 @@ function resolveNSESymbol(companyName) {
     }
   }
 
-  // 4. Fallback: clean up common text suffixes from Moneycontrol title string
+  // 5. Fallback: clean up common text suffixes from Moneycontrol title string
   const cleanedSymbol = inputUpper
     .replace(/(?:LIMITED|LTD|INDUSTRIES|IND|INDIA|CORP|ENTERPRISES|HOLDINGS|SERVICES|BANK).*$/i, '')
     .replace(/[^A-Z0-9]/g, '')
