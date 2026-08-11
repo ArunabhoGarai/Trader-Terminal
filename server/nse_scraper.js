@@ -266,23 +266,57 @@ async function scrapeNSE(manual = false) {
   lastScrapeTime = Date.now();
   console.log('[NSE Scraper] Waking up to fetch full NSE analysis data...');
   let browser;
+  let page;
   try {
+    const lowMemFlags = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-breakpad',
+      '--disable-client-side-phishing-detection',
+      '--disable-component-update',
+      '--disable-default-apps',
+      '--disable-domain-reliability',
+      '--disable-hang-monitor',
+      '--disable-ipc-flooding-protection',
+      '--disable-notifications',
+      '--disable-offer-store-unmasked-wallet-cards',
+      '--disable-popup-blocking',
+      '--disable-print-preview',
+      '--disable-prompt-on-repost',
+      '--disable-speech-api',
+      '--disable-sync',
+      '--hide-scrollbars',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-default-browser-check',
+      '--no-pings',
+      '--password-store=basic',
+      '--use-mock-keychain'
+    ];
+
     browser = await puppeteer.launch({ 
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+      args: lowMemFlags
     });
     
-    const page = await browser.newPage();
-    
-    // Set a solid User-Agent and viewport
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
+    page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1280, height: 800 });
 
-    // Block unnecessary resources (images, fonts) to speed up loading
+    // Block unnecessary resources (images, fonts, stylesheets) to minimize RAM & CPU
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
-      if (['image', 'font', 'stylesheet', 'media'].includes(type)) {
+      if (['image', 'font', 'stylesheet', 'media', 'other'].includes(type)) {
         req.abort();
       } else {
         req.continue();
@@ -423,7 +457,16 @@ async function scrapeNSE(manual = false) {
     globalValue = [...global52WHighs];
   } finally {
     isScraping = false;
-    if (browser) await browser.close();
+    if (page) {
+      page.removeAllListeners();
+      await page.close().catch(() => {});
+    }
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+    if (global.gc) {
+      try { global.gc(); } catch (_) {}
+    }
   }
   
   cacheTimestamps.nseMostActive = Date.now();
