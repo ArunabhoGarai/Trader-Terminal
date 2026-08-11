@@ -531,10 +531,29 @@ async function refreshLiveQuotes(session) {
   const requestInstruments = new Map();
   session.watchlist.forEach((inst) => requestInstruments.set(instrumentKey(inst), { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: true }));
   
-  // Add 52W High scrips from Moneycontrol to batch request
+  // Add 52W High scrips from Moneycontrol & official NSE to batch request
   const realNseData = nseScraper.getNSEMarketWideData();
   const highsMcList = realNseData.highs_mc || [];
+  const highsNseList = realNseData.highs || [];
+
+  // Deduplicate and merge Moneycontrol & official NSE 52W High scrips
+  const mergedMap = new Map();
   highsMcList.forEach((item) => {
+    const symKey = String(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+    if (symKey && !mergedMap.has(symKey)) {
+      mergedMap.set(symKey, { ...item, symbol: `${symKey}-EQ` });
+    }
+  });
+  highsNseList.forEach((item) => {
+    const symKey = String(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+    if (symKey && !mergedMap.has(symKey)) {
+      mergedMap.set(symKey, { ...item, symbol: `${symKey}-EQ` });
+    }
+  });
+
+  const mergedHighsList = Array.from(mergedMap.values());
+
+  mergedHighsList.forEach((item) => {
     const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol);
     if (inst) {
       const k = instrumentKey(inst);
@@ -572,8 +591,8 @@ async function refreshLiveQuotes(session) {
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
     
-    // Enrich 52W High items with live IIFL quote data and volume
-    const enrichedHighsMc = highsMcList.map((item) => {
+    // Enrich merged 52W High items with live IIFL quote data and volume
+    const enrichedHighs = mergedHighsList.map((item) => {
       const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol);
       if (inst) {
         const raw = resultsByKey.get(String(inst.instrumentId).trim());
@@ -589,6 +608,7 @@ async function refreshLiveQuotes(session) {
           return {
             ...item,
             symbol: `${inst.symbol.replace(/-EQ$/i, '')}-EQ`,
+            companyName: item.companyName || inst.symbol.replace(/-EQ$/i, ''),
             instrumentId: inst.instrumentId,
             lastPrice: ltp,
             prevClose: close,
@@ -602,16 +622,20 @@ async function refreshLiveQuotes(session) {
           };
         }
       }
-      return item;
+      return {
+        ...item,
+        symbol: `${(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '')}-EQ`,
+        companyName: item.companyName || item.symbol
+      };
     });
 
-    // Sort by real-time volume in descending order
-    enrichedHighsMc.sort((a, b) => Number(b.tradedVolume || b.volume || 0) - Number(a.tradedVolume || a.volume || 0));
+    // Sort merged list by real-time volume in descending order
+    enrichedHighs.sort((a, b) => Number(b.tradedVolume || b.volume || 0) - Number(a.tradedVolume || a.volume || 0));
 
     // Compute top market-wide analytics
-    session.marketAnalysis.highs = realNseData.highs;
+    session.marketAnalysis.highs = enrichedHighs;
     session.marketAnalysis.lows = realNseData.lows;
-    session.marketAnalysis.highs_mc = enrichedHighsMc;
+    session.marketAnalysis.highs_mc = enrichedHighs;
     session.marketAnalysis.lows_mc = realNseData.lows_mc;
     session.marketAnalysis.gainers = realNseData.gainers;
     session.marketAnalysis.losers = realNseData.losers;
@@ -637,11 +661,29 @@ function advanceSimulation(session) {
   // We only sync the background scraped market data (Moneycontrol/NSE) into the session.
   const nseScraper = require('./nse_scraper');
   const realNseData = nseScraper.getNSEMarketWideData();
-  let highsMcList = [...(realNseData.highs_mc || [])];
-  highsMcList.sort((a, b) => Number(b.tradedVolume || b.volume || 0) - Number(a.tradedVolume || a.volume || 0));
-  session.marketAnalysis.highs = realNseData.highs;
+  const highsMcList = realNseData.highs_mc || [];
+  const highsNseList = realNseData.highs || [];
+
+  const mergedMap = new Map();
+  highsMcList.forEach((item) => {
+    const symKey = String(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+    if (symKey && !mergedMap.has(symKey)) {
+      mergedMap.set(symKey, { ...item, symbol: `${symKey}-EQ` });
+    }
+  });
+  highsNseList.forEach((item) => {
+    const symKey = String(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+    if (symKey && !mergedMap.has(symKey)) {
+      mergedMap.set(symKey, { ...item, symbol: `${symKey}-EQ` });
+    }
+  });
+
+  const mergedHighs = Array.from(mergedMap.values());
+  mergedHighs.sort((a, b) => Number(b.tradedVolume || b.volume || 0) - Number(a.tradedVolume || a.volume || 0));
+
+  session.marketAnalysis.highs = mergedHighs;
   session.marketAnalysis.lows = realNseData.lows;
-  session.marketAnalysis.highs_mc = highsMcList;
+  session.marketAnalysis.highs_mc = mergedHighs;
   session.marketAnalysis.lows_mc = realNseData.lows_mc;
   session.marketAnalysis.gainers = realNseData.gainers;
   session.marketAnalysis.losers = realNseData.losers;
