@@ -397,7 +397,6 @@ async function scrapeNSE(manual = false) {
       }
     } catch (e) { console.warn('[NSE Scraper] ⚠️ Webpage table pagination warning:', e.message); }
 
-    // Fallback API if DOM pagination returned 0
     if (global52WHighs.length === 0 || global52WHighs[0]?.symbol?.startsWith('FETCHING')) {
       try {
         const highResponse = await page.goto('https://www.nseindia.com/api/live-analysis-52Week?index=high', { waitUntil: 'domcontentloaded', timeout: 15000 });
@@ -414,6 +413,89 @@ async function scrapeNSE(manual = false) {
           }
         }
       } catch (e) { console.warn('[NSE Scraper] ⚠️ API fallback warning:', e.message); }
+    }
+
+    console.log('[NSE Scraper] Navigating to official 52-week Low page: https://www.nseindia.com/market-data/52-week-low-equity-market');
+    try {
+      await page.goto('https://www.nseindia.com/market-data/52-week-low-equity-market', { waitUntil: 'networkidle2', timeout: 30000 });
+      await page.waitForSelector('table', { timeout: 15000 }).catch(() => {});
+
+      const nseLowsCollected = [];
+      let pageNumLow = 1;
+      const maxPagesLow = 6;
+
+      while (pageNumLow <= maxPagesLow) {
+        const pageRows = await page.evaluate(() => {
+          const rows = Array.from(document.querySelectorAll('table tbody tr'));
+          return rows.map(r => {
+            const cols = Array.from(r.querySelectorAll('td')).map(c => c.innerText.trim());
+            if (cols.length >= 4) {
+              const symbol = cols[0];
+              const series = cols[1] || 'EQ';
+              const ltp = parseFloat(cols[2].replace(/,/g, '')) || 0;
+              const pChange = parseFloat(cols[3].replace(/,/g, '')) || 0;
+              const high = parseFloat(cols[4]?.replace(/,/g, '')) || 0;
+              const low = parseFloat(cols[5]?.replace(/,/g, '')) || 0;
+              return { symbol, series, ltp, pChange, high, low };
+            }
+            return null;
+          }).filter(Boolean);
+        });
+
+        if (pageRows.length > 0) {
+          pageRows.forEach(s => nseLowsCollected.push({
+            symbol: s.symbol,
+            exchange: 'NSEEQ',
+            series: s.series,
+            instrumentId: `NSE_${s.symbol}`,
+            companyName: s.symbol,
+            lastPrice: s.ltp,
+            pctChange: s.pChange,
+            week52High: s.high,
+            week52Low: s.low,
+            updatedAt: Date.now(),
+            isRealNSEData: true
+          }));
+        }
+
+        const clickedNext = await page.evaluate(() => {
+          const btns = Array.from(document.querySelectorAll('button, a'));
+          const nextBtn = btns.find(b => b.id === 'next1' || b.id === 'next' || (b.innerText && b.innerText.trim().toLowerCase() === 'next'));
+          if (nextBtn && !nextBtn.disabled && !nextBtn.classList.contains('disabled')) {
+            nextBtn.click();
+            return true;
+          }
+          return false;
+        });
+
+        if (!clickedNext) break;
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        pageNumLow++;
+      }
+
+      if (nseLowsCollected.length > 0) {
+        global52WLows = nseLowsCollected;
+        console.log(`[NSE Scraper] ✅ Collected ${global52WLows.length} 52-week Lows across ${pageNumLow} pages from official NSE page.`);
+      }
+    } catch (e) { console.warn('[NSE Scraper] ⚠️ Webpage low table pagination warning:', e.message); }
+
+    // Fallback API if DOM pagination returned 0
+    if (global52WLows.length === 0 || global52WLows[0]?.symbol?.startsWith('FETCHING')) {
+      try {
+        const lowResponse = await page.goto('https://www.nseindia.com/api/live-analysis-52Week?index=low', { waitUntil: 'domcontentloaded', timeout: 15000 });
+        const lowJson = await lowResponse.json();
+        if (lowJson) {
+          const combined = [
+            ...(lowJson.dataLtpGreater20 || []),
+            ...(lowJson.dataLtpLess20 || []),
+            ...(lowJson.data || [])
+          ];
+          if (combined.length > 0) {
+            global52WLows = combined.map(item => mapNSEToQuote(item, false));
+            console.log(`[NSE Scraper] ✅ Fallback: Fetched ${global52WLows.length} 52-week Lows from NSE API.`);
+          }
+        }
+      } catch (e) { console.warn('[NSE Scraper] ⚠️ API low fallback warning:', e.message); }
     }
 
     console.log('[NSE Scraper] Fetching Volume Active...');
