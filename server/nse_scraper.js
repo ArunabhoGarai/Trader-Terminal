@@ -155,13 +155,84 @@ async function scrapeMoneycontrolGainersLosers() {
 async function scrapeMoneycontrol52W() {
   if (Date.now() - cacheTimestamps.mc52W < 60 * 1000) return { success: true, message: 'Cached' };
 
-  const options = {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-    }
+  const apiHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Origin': 'https://www.moneycontrol.com',
+    'Referer': 'https://www.moneycontrol.com/stocks/market-stats/52-week-high-nse/'
   };
 
+  const mapApiItems = (items, isHigh) => {
+    return items.map(item => {
+      const companyName = String(item.companyName || item.stockName || item.symbol || '').trim();
+      if (!companyName) return null;
+      const nseSymbol = nseMaster.resolveNSESymbol(companyName) || companyName.replace(/\s+/g, '').toUpperCase();
+      const scripSymbol = `${nseSymbol}-EQ`;
+      const lastPrice = parseFloat(item.lastPrice || item.currentPrice || 0);
+      const pctChange = parseFloat(item.percentChange || item.pctChange || 0);
+      const prevClose = parseFloat(item.previousClose || item.prevClose || 0) || (lastPrice / (1 + (pctChange / 100)));
+      const open = parseFloat(item.open || 0);
+      const high = parseFloat(item.high || 0);
+      const low = parseFloat(item.low || 0);
+      const week52Val = parseFloat(isHigh ? (item.week52High || item.wk52High || high) : (item.week52Low || item.wk52Low || low));
+      const vol = parseFloat(item.volume || item.tradedVolume || 0);
+
+      return {
+        symbol: scripSymbol,
+        nseSymbol,
+        companyName,
+        exchange: 'NSEEQ',
+        segment: 'Equity',
+        series: 'EQ',
+        instrumentId: `NSE_${nseSymbol}`,
+        lastPrice,
+        pctChange,
+        prevClose,
+        open,
+        high,
+        low,
+        week52High: isHigh ? week52Val : 0,
+        week52Low: isHigh ? 0 : week52Val,
+        volume: vol,
+        tradedVolume: vol,
+        prev52WHL: 0,
+        prevHLDate: '-',
+        updatedAt: Date.now(),
+        isRealNSEData: true
+      };
+    }).filter(Boolean);
+  };
+
+  // Try Moneycontrol JSON API first (returns 100+ stocks)
   try {
+    const [highApiRes, lowApiRes] = await Promise.all([
+      axios.get('https://priceapi.moneycontrol.com/technicalData/v1/marketStats/52-week-high?exchange=NSE&limit=200', { headers: apiHeaders, timeout: 8000 }),
+      axios.get('https://priceapi.moneycontrol.com/technicalData/v1/marketStats/52-week-low?exchange=NSE&limit=200', { headers: apiHeaders, timeout: 8000 })
+    ]);
+
+    const highData = Array.isArray(highApiRes.data?.data) ? highApiRes.data.data : [];
+    const lowData = Array.isArray(lowApiRes.data?.data) ? lowApiRes.data.data : [];
+
+    if (highData.length > 0) {
+      mc52WHighs = mapApiItems(highData, true);
+      console.log(`[NSE Scraper] ✅ Fetched ${mc52WHighs.length} 52-week Highs from Moneycontrol API.`);
+    }
+
+    if (lowData.length > 0) {
+      mc52WLows = mapApiItems(lowData, false);
+      console.log(`[NSE Scraper] ✅ Fetched ${mc52WLows.length} 52-week Lows from Moneycontrol API.`);
+    }
+
+    if (highData.length > 0 || lowData.length > 0) {
+      cacheTimestamps.mc52W = Date.now();
+      return { success: true };
+    }
+  } catch (apiErr) {
+    console.warn('[NSE Scraper] API endpoint fallback to HTML scraper:', apiErr.message);
+  }
+
+  // HTML Scraper Fallback
+  try {
+    const options = { headers: apiHeaders };
     const [highsRes, lowsRes] = await Promise.all([
       axios.get('https://www.moneycontrol.com/stocks/market-stats/52-week-high-nse/?indexName=All%20NSE&id=-2', options),
       axios.get('https://www.moneycontrol.com/stocks/market-stats/52-week-low-nse/?indexName=All%20NSE&id=-2', options)
@@ -170,7 +241,6 @@ async function scrapeMoneycontrol52W() {
     const parse52WTable = (html, isHigh) => {
       const $ = cheerio.load(html);
       const rows = $('table').eq(1).find('tbody tr').toArray();
-      // Parse ALL rows returned by Moneycontrol (100+ stocks)
       return rows.map(row => {
         const cols = $(row).find('td');
         if (cols.length < 7) return null;
@@ -222,10 +292,10 @@ async function scrapeMoneycontrol52W() {
     };
 
     mc52WHighs = parse52WTable(highsRes.data, true);
-    console.log(`[NSE Scraper] ✅ Fetched ${mc52WHighs.length} 52-week Highs from Moneycontrol.`);
+    console.log(`[NSE Scraper] ✅ Fetched ${mc52WHighs.length} 52-week Highs from Moneycontrol HTML.`);
 
     mc52WLows = parse52WTable(lowsRes.data, false);
-    console.log(`[NSE Scraper] ✅ Fetched ${mc52WLows.length} 52-week Lows from Moneycontrol.`);
+    console.log(`[NSE Scraper] ✅ Fetched ${mc52WLows.length} 52-week Lows from Moneycontrol HTML.`);
     
     cacheTimestamps.mc52W = Date.now();
   } catch (err) {
