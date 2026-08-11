@@ -869,13 +869,12 @@ const indexSimState = Object.fromEntries(
   Object.entries(TERMINAL_INDEX_MAP).map(([key, data]) => [key, { ltp: data.simBase, close: data.simClose }])
 );
 
-// Unified JIT endpoint for frontend to pull latest market-wide data
 app.get('/api/analysis/refresh', async (req, res) => {
+  const session = browserSession(req, res);
   const tab = String(req.query.tab || 'high');
   
   if (tab === 'high' || tab === 'low') {
     await nseScraper.scrapeMoneycontrol52W();
-    // Fetch NSE as well in case the user toggles the source
     await nseScraper.scrapeNSE();
   } else if (tab === 'gainers' || tab === 'losers') {
     await nseScraper.scrapeMoneycontrolGainersLosers();
@@ -883,8 +882,13 @@ app.get('/api/analysis/refresh', async (req, res) => {
     await nseScraper.scrapeNSE();
   }
   
-  const data = nseScraper.getNSEMarketWideData();
-  res.json(data);
+  if (session.mode === 'LIVE') {
+    await refreshLiveQuotes(session);
+  } else {
+    advanceSimulation(session);
+  }
+
+  res.json(session.marketAnalysis);
 });
 
 // Utility: Fetch IIFL INDICES.json to dynamically resolve SENSEX token
