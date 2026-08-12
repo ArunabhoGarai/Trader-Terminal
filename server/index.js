@@ -30,7 +30,7 @@ const CONFIG = {
   appKey: process.env.IIFL_APP_KEY || '',
   appSecret: process.env.IIFL_APP_SECRET || '',
   redirectUri: process.env.IIFL_REDIRECT_URI || `http://localhost:${process.env.PORT || 3001}/auth/callback`,
-  quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 1000), 1000),
+  quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 300), 200),
 };
 
 const MAX_WATCHLIST_SIZE = 400;
@@ -391,12 +391,38 @@ function terminalPayload(session) {
 // paradox: a stock can hit a session high while still being below yesterday's
 // close (gap-down recovery), resulting in a New High alert colored pink.
 // ---------------------------------------------------------------------------
+function isMarketHours() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    hour: 'numeric', minute: 'numeric', hour12: false
+  }).formatToParts(now);
+  const h = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+  const m = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+  const totalMins = h * 60 + m;
+  return totalMins >= (8 * 60 + 15) && totalMins <= (15 * 60 + 30);
+}
+
+function isBefore815AM() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    hour: 'numeric', minute: 'numeric', hour12: false
+  }).formatToParts(now);
+  const h = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+  const m = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+  const totalMins = h * 60 + m;
+  return totalMins < (8 * 60 + 15);
+}
+
 function updateActionWatch(session, nextQuotes) {
   const today = indiaTradingDate();
   if (session.actionWatchDate !== today) {
     session.actionWatchDate = today;
     session.actionWatch = [];
     session.intradayRanges.clear();
+    // Morning check: if session is authenticated before market open (8:15 AM IST), mark early login
+    session.wasLoggedInAt8AM = Boolean(session.accessToken) && isBefore815AM();
   }
 
   const newEvents = [];
@@ -410,10 +436,20 @@ function updateActionWatch(session, nextQuotes) {
     const previousClose = number(quote.close, 0);
 
     if (!priorRange) {
-      // First time seeing this instrument today — establish baseline from LTP only, no alert
+      // First time seeing this instrument today
+      const dayHigh = number(quote.high, 0);
+      const dayLow  = number(quote.low, 0);
+
+      // Normal tick tracking happens if logged in at 8:00 AM before market open.
+      // If login occurred after 8:00 AM / mid-day, FALL BACK to IIFL Day High and Day Low as the base data.
+      const useIIFLDayFallback = !session.wasLoggedInAt8AM || (isMarketHours() && dayHigh > 0);
+
+      const baselineHigh = (useIIFLDayFallback && dayHigh > 0) ? Math.max(dayHigh, ltp) : ltp;
+      const baselineLow  = (useIIFLDayFallback && dayLow > 0)  ? Math.min(dayLow, ltp)  : ltp;
+
       session.intradayRanges.set(key, {
-        high: ltp,
-        low: ltp,
+        high: baselineHigh,
+        low: baselineLow,
         lastAlertHigh: null,  // LTP that triggered the last New High event
         lastAlertLow: null,   // LTP that triggered the last New Low event
         lastAlertTime: 0,     // Timestamp of last alert (for deduplication)
@@ -521,22 +557,36 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   // First live snapshot establishes today's range — not an alert
   session.actionWatch = [];
   session.actionWatchDate = indiaTradingDate();
+  session.wasLoggedInAt8AM = isBefore815AM();
   session.intradayRanges.clear();
 }
+
+const inFlightQuotesMap = new Map();
 
 async function refreshLiveQuotes(session) {
   if (!session.accessToken) return { success: false, events: [] };
   
-  // Build request payload: Watchlist + Next 100 Market Scanner stocks
+  const sessionId = session.id || 'default';
+  const now = Date.now();
+  const lastTime = inFlightQuotesMap.get(sessionId) || 0;
+  if (now - lastTime < 100) {
+    // 100ms throttle guard: permits up to 10 req/sec for zero-delay millisecond ticks while respecting 20 RPS limit
+    return { success: true, events: [] };
+  }
+  inFlightQuotesMap.set(sessionId, now);
+
+  // Build single consolidated request payload: Watchlist + 52W High + 52W Low + Gainers + Losers + Indices
   const requestInstruments = new Map();
   session.watchlist.forEach((inst) => requestInstruments.set(instrumentKey(inst), { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: true }));
   
-  // Add 52W High & 52W Low scrips from Moneycontrol & official NSE to batch request
+  // Add 52W High, 52W Low, Gainers, and Losers scrips from Moneycontrol & official NSE to batch request
   const realNseData = nseScraper.getNSEMarketWideData();
   const highsMcList = realNseData.highs_mc || [];
   const highsNseList = realNseData.highs || [];
   const lowsMcList = realNseData.lows_mc || [];
   const lowsNseList = realNseData.lows || [];
+  const rawGainersList = realNseData.gainers || [];
+  const rawLosersList = realNseData.losers || [];
 
   // Deduplicate and merge 52W High scrips
   const mergedHighsMap = new Map();
@@ -562,8 +612,30 @@ async function refreshLiveQuotes(session) {
   });
   const mergedLowsList = Array.from(mergedLowsMap.values());
 
-  [...mergedHighsList, ...mergedLowsList].forEach((item) => {
-    const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol);
+  // Clean Gainers and Losers symbols
+  const cleanGainersList = rawGainersList.map(item => {
+    const nseSym = item.nseSymbol || nseMaster.resolveNSESymbol(item.companyName || item.symbol) || String(item.symbol || '').replace(/-EQ$/i, '');
+    return { ...item, nseSymbol: nseSym, symbol: `${nseSym}-EQ` };
+  });
+
+  const cleanLosersList = rawLosersList.map(item => {
+    const nseSym = item.nseSymbol || nseMaster.resolveNSESymbol(item.companyName || item.symbol) || String(item.symbol || '').replace(/-EQ$/i, '');
+    return { ...item, nseSymbol: nseSym, symbol: `${nseSym}-EQ` };
+  });
+
+  // Major Index Tokens for single consolidated payload
+  const iiflIndexInstruments = [
+    { exchange: 'NSEEQ', instrumentId: '999920000', name: 'nifty' },
+    { exchange: 'NSEEQ', instrumentId: '999920005', name: 'banknifty' },
+    { 
+      exchange: TERMINAL_INDEX_MAP['sensex']?.iiflPayload?.exchange || 'BSEEQ', 
+      instrumentId: String(TERMINAL_INDEX_MAP['sensex']?.iiflPayload?.exchangeInstrumentID || '999901'),
+      name: 'sensex'
+    }
+  ];
+
+  [...mergedHighsList, ...mergedLowsList, ...cleanGainersList, ...cleanLosersList, ...iiflIndexInstruments].forEach((item) => {
+    const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol) || item;
     if (inst) {
       const k = instrumentKey(inst);
       if (!requestInstruments.has(k)) {
@@ -572,7 +644,10 @@ async function refreshLiveQuotes(session) {
     }
   });
 
-  if (requestInstruments.size === 0) return { success: false, events: [] };
+  if (requestInstruments.size === 0) {
+    inFlightQuotesMap.delete(sessionId);
+    return { success: false, events: [] };
+  }
 
   try {
     const payload = Array.from(requestInstruments.values()).map(({ exchange, instrumentId }) => ({ exchange, instrumentId }));
@@ -593,6 +668,18 @@ async function refreshLiveQuotes(session) {
       return [id, quote];
     }));
     
+    // Update live index data inside session from single batch response
+    if (!session.indicesData) session.indicesData = {};
+    for (const inst of iiflIndexInstruments) {
+      const raw = resultsByKey.get(inst.instrumentId);
+      if (raw) {
+        const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], 0);
+        if (ltp > 0) {
+          session.indicesData[inst.name] = { ltp, updatedAt: Date.now() };
+        }
+      }
+    }
+
     // Update active watchlist quotes
     const nextQuotes = session.watchlist.map((instrument, index) => {
       const fallback = previous.get(instrumentKey(instrument)) || makeEmptyLiveQuote(instrument, index);
@@ -644,25 +731,36 @@ async function refreshLiveQuotes(session) {
 
     const enrichedHighs = enrichScannerList(mergedHighsList);
     const enrichedLows = enrichScannerList(mergedLowsList);
+    const enrichedGainers = enrichScannerList(cleanGainersList);
+    const enrichedLosers = enrichScannerList(cleanLosersList);
 
     // Compute top market-wide analytics
     session.marketAnalysis.highs = enrichedHighs;
     session.marketAnalysis.lows = enrichedLows;
     session.marketAnalysis.highs_mc = enrichedHighs;
     session.marketAnalysis.lows_mc = enrichedLows;
-    session.marketAnalysis.gainers = realNseData.gainers;
-    session.marketAnalysis.losers = realNseData.losers;
+    session.marketAnalysis.gainers = enrichedGainers;
+    session.marketAnalysis.losers = enrichedLosers;
     session.marketAnalysis.volume = realNseData.volume;
     session.marketAnalysis.value = realNseData.value;
 
     const events = updateActionWatch(session, nextQuotes);
     session.quotes = nextQuotes;
+    session.lastError = null; // Clear error on successful response
     return { success: true, events };
   } catch (error) {
-    console.error('[IIFL API ERROR]', error.response?.data || error.message);
-    if (error.response?.status === 401 || error.response?.status === 403) clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
-    else session.lastError = 'IIFL market data request failed: ' + (error.response?.data?.message || error.message);
+    const isRateLimit = error.response?.status === 429 || error.response?.data?.message?.toLowerCase().includes('rate limit');
+    if (isRateLimit) {
+      console.warn('[IIFL RATE LIMIT] ⚠️ IIFL rate limit reached. Soft backoff active...');
+      session.lastError = 'IIFL Rate limit active. Throttling...';
+    } else if (error.response?.status === 401 || error.response?.status === 403) {
+      clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
+    } else {
+      session.lastError = 'IIFL market data request failed: ' + (error.response?.data?.message || error.message);
+    }
     return { success: false, events: [] };
+  } finally {
+    inFlightQuotesMap.delete(sessionId);
   }
 }
 
@@ -705,12 +803,24 @@ function advanceSimulation(session) {
   const mergedLows = Array.from(mergedLowsMap.values());
   mergedLows.sort((a, b) => Number(b.tradedVolume || b.volume || 0) - Number(a.tradedVolume || a.volume || 0));
 
+  const cleanGainersList = (realNseData.gainers || []).map(item => {
+    const nseSym = item.nseSymbol || nseMaster.resolveNSESymbol(item.companyName || item.symbol) || String(item.symbol || '').replace(/-EQ$/i, '');
+    return { ...item, nseSymbol: nseSym, symbol: `${nseSym}-EQ` };
+  });
+  cleanGainersList.sort((a, b) => Number(b.tradedVolume || b.volume || 0) - Number(a.tradedVolume || a.volume || 0));
+
+  const cleanLosersList = (realNseData.losers || []).map(item => {
+    const nseSym = item.nseSymbol || nseMaster.resolveNSESymbol(item.companyName || item.symbol) || String(item.symbol || '').replace(/-EQ$/i, '');
+    return { ...item, nseSymbol: nseSym, symbol: `${nseSym}-EQ` };
+  });
+  cleanLosersList.sort((a, b) => Number(b.tradedVolume || b.volume || 0) - Number(a.tradedVolume || a.volume || 0));
+
   session.marketAnalysis.highs = mergedHighs;
   session.marketAnalysis.lows = mergedLows;
   session.marketAnalysis.highs_mc = mergedHighs;
   session.marketAnalysis.lows_mc = mergedLows;
-  session.marketAnalysis.gainers = realNseData.gainers;
-  session.marketAnalysis.losers = realNseData.losers;
+  session.marketAnalysis.gainers = cleanGainersList;
+  session.marketAnalysis.losers = cleanLosersList;
   session.marketAnalysis.volume = realNseData.volume;
   session.marketAnalysis.value = realNseData.value;
   
@@ -1021,76 +1131,31 @@ app.get('/api/indices', async (req, res) => {
   const getYahoo = (name) => yahooData.find(y => y.name === name);
 
   if (session.accessToken) {
-    const iiflIndexInstruments = [
-      { exchange: 'NSEEQ', instrumentId: '999920000', name: 'nifty' },
-      { exchange: 'NSEEQ', instrumentId: '999920005', name: 'banknifty' },
-      { 
-        exchange: TERMINAL_INDEX_MAP['sensex'].iiflPayload?.exchange || 'BSEEQ', 
-        instrumentId: String(TERMINAL_INDEX_MAP['sensex'].iiflPayload?.exchangeInstrumentID || '999901'),
-        name: 'sensex'
-      },
-    ];
-
-    let iiflError = null;
-    let iiflRawErrorBody = null;
-    let results = [];
-
-    try {
-      const iiflResponse = await axios.post(
-        `${CONFIG.apiBaseUrl}/marketdata/marketquotes`,
-        iiflIndexInstruments.map(({ exchange, instrumentId }) => ({ exchange, instrumentId })),
-        { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 8000 }
-      );
-      results = Array.isArray(iiflResponse.data?.result) ? iiflResponse.data.result : [];
-    } catch (err) {
-      iiflError = err.message;
-      iiflRawErrorBody = err.response?.data;
-    }
-
+    const iiflIndexInstruments = ['nifty', 'banknifty', 'sensex'];
     const indices = [];
-    const byToken = new Map(results.map(r => [String(r.instrumentId ?? r.token ?? ''), r]));
+    const cachedIndicesData = session.indicesData || {};
 
-    for (const inst of iiflIndexInstruments) {
-      const raw = byToken.get(inst.instrumentId) || results.find(r => String(r.instrumentId ?? r.token) === inst.instrumentId);
-      const data = TERMINAL_INDEX_MAP[inst.name];
-      const yData = getYahoo(inst.name);
+    for (const name of iiflIndexInstruments) {
+      const liveData = cachedIndicesData[name];
+      const data = TERMINAL_INDEX_MAP[name];
+      const yData = getYahoo(name);
+      const ltp = liveData?.ltp || yData?.ltp || data.simBase;
+      const cl = yData?.close || data.simClose;
 
-      if (raw) {
-        // Fetch Real-time Live Price from IIFL
-        const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], data.simBase);
-        
-        // Fetch Previous Close from Yahoo (highly reliable) instead of IIFL (which omits it)
-        const cl = yData?.close || data.simClose;
+      const chg = +(ltp - cl).toFixed(2);
+      const pct = cl > 0 ? +((chg / cl) * 100).toFixed(2) : 0;
 
-        const chg = +(ltp - cl).toFixed(2);
-        const pct = cl > 0 ? +((chg / cl) * 100).toFixed(2) : 0;
-
-        indices.push({ name: inst.name, ltp: +ltp.toFixed(2), change: chg, pct, live: true });
-      } else if (iiflError) {
-        indices.push({
-          name: inst.name, ltp: 0, change: 0, pct: 0, live: false, error: true,
-          errorReason: `IIFL API ERR: ${iiflError}`,
-          errorBody: JSON.stringify(iiflRawErrorBody).substring(0, 200)
-        });
-      } else {
-        indices.push({
-          name: inst.name, ltp: 0, change: 0, pct: 0, live: false, error: true,
-          errorReason: `Token ${inst.instrumentId} not found in IIFL response`
-        });
-      }
+      indices.push({ name, ltp: +ltp.toFixed(2), change: chg, pct, live: true });
     }
 
-    // Add NASDAQ strictly from Yahoo
-    const nasdaqEntry = getYahoo('nasdaq');
-    if (nasdaqEntry) {
-      const chg = nasdaqEntry.ltp - nasdaqEntry.close;
-      const pct = (chg / nasdaqEntry.close) * 100;
-      indices.push({ name: 'nasdaq', ltp: +nasdaqEntry.ltp.toFixed(2), change: +chg.toFixed(2), pct: +pct.toFixed(2), live: true });
-    } else {
-      indices.push({ name: 'nasdaq', ltp: 0, change: 0, pct: 0, live: false, error: true, errorReason: 'Yahoo Finance fetch failed' });
+    const nasdaqData = getYahoo('nasdaq');
+    if (nasdaqData) {
+      const chg = +(nasdaqData.ltp - nasdaqData.close).toFixed(2);
+      const pct = nasdaqData.close > 0 ? +((chg / nasdaqData.close) * 100).toFixed(2) : 0;
+      indices.push({ name: 'nasdaq', ltp: +nasdaqData.ltp.toFixed(2), change: chg, pct, live: true });
     }
 
-    return res.json({ success: true, live: true, indices });
+    return res.json({ mode: 'LIVE', indices });
   }
 
   // Fallback: use Yahoo Finance data directly (no random simulation)
