@@ -635,16 +635,20 @@ async function refreshLiveQuotes(session) {
   ];
 
   [...mergedHighsList, ...mergedLowsList, ...cleanGainersList, ...cleanLosersList, ...iiflIndexInstruments].forEach((item) => {
-    const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol) || item;
-    if (inst) {
+    const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol) || (item.instrumentId && /^\d+$/.test(String(item.instrumentId)) ? item : null);
+    if (inst && inst.instrumentId && /^\d+$/.test(String(inst.instrumentId).trim())) {
       const k = instrumentKey(inst);
       if (!requestInstruments.has(k)) {
-        requestInstruments.set(k, { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.symbol, isWatchlist: false });
+        requestInstruments.set(k, { exchange: inst.exchange || 'NSEEQ', instrumentId: String(inst.instrumentId).trim(), symbol: inst.symbol, isWatchlist: false });
       }
     }
   });
 
-  if (requestInstruments.size === 0) {
+  const payload = Array.from(requestInstruments.values())
+    .filter(({ instrumentId }) => /^\d+$/.test(String(instrumentId).trim()))
+    .map(({ exchange, instrumentId }) => ({ exchange: exchange || 'NSEEQ', instrumentId: String(instrumentId).trim() }));
+
+  if (payload.length === 0) {
     inFlightQuotesMap.delete(sessionId);
     return { success: false, events: [] };
   }
