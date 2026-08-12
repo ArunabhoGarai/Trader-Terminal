@@ -654,7 +654,6 @@ async function refreshLiveQuotes(session) {
   }
 
   try {
-    const payload = Array.from(requestInstruments.values()).map(({ exchange, instrumentId }) => ({ exchange, instrumentId }));
     const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, payload, {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 15000,
     });
@@ -1159,7 +1158,7 @@ app.get('/api/indices', async (req, res) => {
       indices.push({ name: 'nasdaq', ltp: +nasdaqData.ltp.toFixed(2), change: chg, pct, live: true });
     }
 
-    return res.json({ mode: 'LIVE', indices });
+    return res.json({ success: true, mode: 'LIVE', indices });
   }
 
   // Fallback: use Yahoo Finance data directly (no random simulation)
