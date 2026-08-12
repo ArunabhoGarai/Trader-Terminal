@@ -818,7 +818,7 @@ async function updateIndices() {
     const res = await fetch('/api/indices');
     if (!res.ok) return;
     const data = await res.json();
-    if (!data.success || !Array.isArray(data.indices)) return;
+    if (!data || !Array.isArray(data.indices)) return;
     for (const idx of data.indices) {
       const v = el(`${idx.name}-value`);
       const c = el(`${idx.name}-change`);
