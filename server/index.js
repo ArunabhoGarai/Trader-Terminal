@@ -635,7 +635,7 @@ async function refreshLiveQuotes(session) {
   ];
 
   [...mergedHighsList, ...mergedLowsList, ...cleanGainersList, ...cleanLosersList, ...iiflIndexInstruments].forEach((item) => {
-    const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol, item.companyName) || (item.instrumentId && /^\d+$/.test(String(item.instrumentId)) ? item : null);
+    const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol) || (item.instrumentId && /^\d+$/.test(String(item.instrumentId)) ? item : null);
     if (inst && inst.instrumentId && /^\d+$/.test(String(inst.instrumentId).trim())) {
       const k = instrumentKey(inst);
       if (!requestInstruments.has(k)) {
@@ -893,52 +893,18 @@ function knownInstrument(exchange, instrumentId) {
   return knownInstruments.get(instrumentKey({ exchange, instrumentId }));
 }
 
-const symbolResolveCache = new Map();
+function findInstrumentBySymbol(symbol) {
+  if (!symbol) return null;
+  const cleanSym = String(symbol).toUpperCase().replace(/-EQ$/, '').trim();
+  const resolvedSym = nseMaster.resolveNSESymbol(cleanSym);
+  const candidates = new Set([cleanSym, resolvedSym ? resolvedSym.toUpperCase().replace(/-EQ$/, '') : null].filter(Boolean));
 
-function findInstrumentBySymbol(symbol, companyName) {
-  if (!symbol && !companyName) return null;
-
-  const cacheKey = `${symbol || ''}:${companyName || ''}`;
-  if (symbolResolveCache.has(cacheKey)) return symbolResolveCache.get(cacheKey);
-
-  const cleanSym = String(symbol || '').toUpperCase().replace(/-(EQ|BE|BZ|SM|ST|E1)$/i, '').trim();
-  const rawSym = cleanSym.replace(/[^A-Z0-9]/g, '');
-  const resolvedNSESym = nseMaster.resolveNSESymbol(cleanSym || companyName);
-  const cleanResolved = resolvedNSESym ? String(resolvedNSESym).toUpperCase().replace(/-(EQ|BE|BZ|SM|ST|E1)$/i, '').trim() : null;
-
-  const candidateSyms = new Set([cleanSym, rawSym, cleanResolved, cleanResolved ? cleanResolved.replace(/[^A-Z0-9]/g, '') : null].filter(Boolean));
-
-  // Tier 1: Exact symbol or base symbol match
-  for (const target of candidateSyms) {
+  for (const target of candidates) {
     for (const inst of knownInstruments.values()) {
-      if (!inst.instrumentId || !/^\d+$/.test(String(inst.instrumentId).trim())) continue;
-      const instSym = String(inst.symbol || '').toUpperCase();
-      const instBase = instSym.replace(/-(EQ|BE|BZ|SM|ST|E1)$/i, '').trim();
-      const instRaw = instBase.replace(/[^A-Z0-9]/g, '');
-      if (instSym === target || instBase === target || instRaw === target) {
-        symbolResolveCache.set(cacheKey, inst);
-        return inst;
-      }
+      const instSym = String(inst.symbol || '').toUpperCase().replace(/-EQ$/, '').trim();
+      if (instSym === target) return inst;
     }
   }
-
-  // Tier 2: Company Name / Display Name match
-  const searchName = companyName || symbol;
-  if (searchName) {
-    const rawSearchName = String(searchName).toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (rawSearchName.length >= 4) {
-      for (const inst of knownInstruments.values()) {
-        if (!inst.instrumentId || !/^\d+$/.test(String(inst.instrumentId).trim())) continue;
-        const instDisp = String(inst.displayName || inst.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-        if (instDisp && (instDisp.includes(rawSearchName) || rawSearchName.includes(instDisp))) {
-          symbolResolveCache.set(cacheKey, inst);
-          return inst;
-        }
-      }
-    }
-  }
-
-  symbolResolveCache.set(cacheKey, null);
   return null;
 }
 
