@@ -187,23 +187,37 @@ function analysisRows() {
     return exchangeAllowed && (isFutureOption ? options.fo : options.cash);
   });
 
+  let list = [];
   if (state.analysisTab === 'high') {
     if (!options.high) return [];
-    return filterRows(state.marketAnalysis?.highs || []);
+    list = filterRows(state.marketAnalysis?.highs || []);
   } else if (state.analysisTab === 'low') {
     if (!options.low) return [];
-    return filterRows(state.marketAnalysis?.lows || []);
+    list = filterRows(state.marketAnalysis?.lows || []);
   } else if (state.analysisTab === 'gainers') {
-    return filterRows(state.marketAnalysis?.gainers || []).slice(0, 50);
+    list = filterRows(state.marketAnalysis?.gainers || []);
   } else if (state.analysisTab === 'losers') {
-    return filterRows(state.marketAnalysis?.losers || []).slice(0, 50);
+    list = filterRows(state.marketAnalysis?.losers || []);
   } else if (state.analysisTab === 'quantity') {
-    return filterRows(state.marketAnalysis?.volume || []).slice(0, 50);
+    list = filterRows(state.marketAnalysis?.volume || []);
   } else if (state.analysisTab === 'traded') {
-    return filterRows(state.marketAnalysis?.value || []).slice(0, 50);
+    list = filterRows(state.marketAnalysis?.value || []);
   } else {
     return filterRows(state.quotes).filter((quote) => (options.high && highDistance(quote) <= 5) || (options.low && lowDistance(quote) <= 5) || Math.abs(quote.pctChange) >= 1).sort((a, b) => Math.abs(b.pctChange) - Math.abs(a.pctChange)).slice(0, 12);
   }
+
+  // Column sorting for 52W High, 52W Low, Top Gainers, Top Losers
+  if (state.analysisSortBy === 'pct') {
+    list.sort((a, b) => (Number(b.pctChange) || 0) - (Number(a.pctChange) || 0));
+  } else if (state.analysisSortBy === 'pct_asc') {
+    list.sort((a, b) => (Number(a.pctChange) || 0) - (Number(b.pctChange) || 0));
+  } else if (state.analysisSortBy === 'vol_asc') {
+    list.sort((a, b) => (Number(a.tradedVolume || a.volume || 0)) - (Number(b.tradedVolume || b.volume || 0)));
+  } else if (state.analysisSortBy === 'vol') {
+    list.sort((a, b) => (Number(b.tradedVolume || b.volume || 0)) - (Number(a.tradedVolume || a.volume || 0)));
+  }
+
+  return list;
 }
 
 function analysisStatus(quote) {
@@ -237,14 +251,17 @@ function renderAnalysis() {
   
   const thead = el('analysis-head');
   if (thead) {
+    const chgIcon = state.analysisSortBy === 'pct' ? ' ▼' : state.analysisSortBy === 'pct_asc' ? ' ▲' : '';
+    const volIcon = state.analysisSortBy === 'vol' ? ' ▼' : state.analysisSortBy === 'vol_asc' ? ' ▲' : '';
+
     if (isActionTab) {
       thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr>`;
     } else if (state.analysisTab === 'high') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th>Chg%</th><th>Prev Close</th><th>Realtime Volume</th><th>52 Wk High</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg%${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk High</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
     } else if (state.analysisTab === 'low') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th>Chg%</th><th>Prev Close</th><th>Realtime Volume</th><th>52 Wk Low</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg%${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk Low</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Price</th><th>Chng%</th><th>Change in Value</th><th>Day's High</th><th>Day's Low</th><th>Open Price</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg%${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
     } else if (state.analysisTab === 'quantity') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
     } else if (state.analysisTab === 'traded') {
@@ -296,12 +313,15 @@ function renderAnalysis() {
         <td class="analysis-rate">${fmt(quote.open || 0)}</td>
       </tr>`;
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
-      const netChange = quote.lastPrice - (quote.prevClose || quote.lastPrice);
+      const vol = quote.tradedVolume || quote.volume || 0;
+      const volFormatted = vol ? Number(vol).toLocaleString('en-IN') : '-';
       return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
-        <td style="font-weight:bold">${escapeHtml(quote.symbol)}</td>
+        <td style="font-weight:bold; color:#1a73e8">${escapeHtml(quote.symbol || quote.companyName)}</td>
+        <td style="font-size:10px; color:#5b6567">${escapeHtml(quote.companyName || quote.symbol)}</td>
         <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
         <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
-        <td class="${netChange >= 0 ? 'positive' : 'negative'}">${fmt(netChange)}</td>
+        <td class="analysis-rate">${fmt(quote.prevClose || quote.lastPrice)}</td>
+        <td class="analysis-rate" style="font-weight:bold; color:#107c41">${volFormatted}</td>
         <td class="analysis-rate">${fmt(quote.high || 0)}</td>
         <td class="analysis-rate">${fmt(quote.low || 0)}</td>
         <td class="analysis-rate">${fmt(quote.open || 0)}</td>
@@ -948,6 +968,24 @@ function bindEvents() {
   }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
   
+  const analysisHead = el('analysis-head');
+  if (analysisHead) {
+    analysisHead.addEventListener('click', (event) => {
+      const chgHeader = event.target.closest('#analysis-sort-chg');
+      if (chgHeader) {
+        state.analysisSortBy = state.analysisSortBy === 'pct' ? 'pct_asc' : 'pct';
+        renderAnalysis();
+        return;
+      }
+      const volHeader = event.target.closest('#analysis-sort-vol');
+      if (volHeader) {
+        state.analysisSortBy = state.analysisSortBy === 'vol' ? 'vol_asc' : 'vol';
+        renderAnalysis();
+        return;
+      }
+    });
+  }
+
   // Toggle sort by pct change
   const sortPctBtn = el('sort-pct-change');
   if (sortPctBtn) {
