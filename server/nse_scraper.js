@@ -151,8 +151,10 @@ async function scrapeMoneycontrolGainersLosers() {
         if (cols.length < 5) return null;
         
         let companyName = $(cols[0]).find('a').first().text().trim() || $(cols[0]).text().trim();
-        companyName = companyName.replace(/Vol Shocker.*$/i, '').trim();
-        const symbol = companyName;
+        companyName = companyName.replace(/(?:Vol Shocker|ATH|ATL|Only Buyers|Only Sellers).*$/i, '').trim();
+        
+        const nseSymbol = nseMaster.resolveNSESymbol(companyName) || companyName.replace(/\s+/g, '').toUpperCase();
+        const scripSymbol = `${nseSymbol}-EQ`;
 
         const priceP = $(cols[2]).find('p');
         const lastPriceStr = priceP.clone().children().remove().end().text().trim().replace(/,/g, '');
@@ -168,11 +170,13 @@ async function scrapeMoneycontrolGainersLosers() {
         const open = parseFloat($(cols[5]).text().replace(/,/g, '')) || 0;
         
         return {
-          symbol: symbol.substring(0, 20),
+          symbol: scripSymbol,
+          nseSymbol: nseSymbol,
+          companyName: companyName,
           exchange: 'NSEEQ',
           segment: 'Equity',
           series: 'EQ',
-          instrumentId: `NSE_${symbol.replace(/\s+/g, '')}`,
+          instrumentId: `NSE_${nseSymbol}`,
           open: open,
           high: high,
           low: low,
@@ -180,6 +184,7 @@ async function scrapeMoneycontrolGainersLosers() {
           lastPrice: lastPrice,
           pctChange: pctChange,
           volume: 0,
+          tradedVolume: 0,
           turnover: 0,
           ca: '-',
           updatedAt: Date.now(),
