@@ -240,6 +240,26 @@ button { cursor: pointer; }
   border-radius: 2px;
   font-size: 10px;
 }
+
+/* Full horizontal row green highlight when surpassing Day High */
+.analysis-table tr.row-surpass-high td {
+  background-color: #d1fae5 !important;
+  color: #065f46 !important;
+  font-weight: 700;
+}
+.analysis-table tr.row-surpass-high td:first-child {
+  border-left: 4px solid #107c41;
+}
+
+/* Full horizontal row red highlight when surpassing Day Low */
+.analysis-table tr.row-surpass-low td {
+  background-color: #fee2e2 !important;
+  color: #991b1b !important;
+  font-weight: 700;
+}
+.analysis-table tr.row-surpass-low td:first-child {
+  border-left: 4px solid #d81e05;
+}
 .analysis-table .new-high { color: #149339; font-weight: 700; }
 .analysis-table .new-low { color: #bf1019; font-weight: 700; }
 .analysis-table .analysis-neutral { color: #4b5b60; font-weight: 700; }
