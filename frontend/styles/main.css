@@ -186,16 +186,60 @@ button { cursor: pointer; }
 .analysis-filters input { margin: 0; accent-color: #6f8589; }
 .analysis-filters span { flex: 1; }
 .analysis-table-wrap { overflow: auto; background: white; }
-.analysis-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-.analysis-table th { position: sticky; top: 0; padding: 3px 5px; text-align: left; background: #b4010b; color: #fff; border-right: 1px solid #e3a1a4; font-size: 10px; }
-.analysis-table td { height: 20px; padding: 2px 5px; border-right: 1px solid #d2d5d5; border-bottom: 1px solid #d5d9da; white-space: nowrap; }
-.analysis-table td:nth-child(1) { width: 28px; }
-.analysis-table td:nth-child(2) { width: 60px; }
-.analysis-table td:nth-child(3) { width: 65px; }
-.analysis-table td:nth-child(4) { min-width: 110px; font-weight: 700; }
-.analysis-table td:nth-child(5) { min-width: 70px; }
-.analysis-table .analysis-rate { text-align: right; min-width: 80px; }
-.analysis-table .analysis-time { min-width: 75px; font-family: var(--mono); font-size: 10px; }
+.analysis-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: auto; }
+.analysis-table th { position: sticky; top: 0; padding: 4px 6px; text-align: left; background: #b4010b; color: #fff; border-right: 1px solid #e3a1a4; font-size: 10px; white-space: nowrap; }
+.analysis-table td { height: 20px; padding: 3px 6px; border-right: 1px solid #d2d5d5; border-bottom: 1px solid #d5d9da; white-space: nowrap; font-size: 11px; }
+.analysis-table td:nth-child(1) { width: auto; font-weight: 700; }
+.analysis-table td:nth-child(2) { width: auto; max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+.analysis-table td:nth-child(3) { width: auto; text-align: right; }
+.analysis-table td:nth-child(4) { width: auto; text-align: right; }
+.analysis-table td:nth-child(5) { width: auto; text-align: right; }
+.analysis-table .analysis-rate { text-align: right; width: auto; min-width: 0; }
+.analysis-table .analysis-time { width: auto; font-family: var(--mono); font-size: 10px; }
+
+/* Full Cell Fill Color-Coding for Chg Column */
+.chg-fill-pos {
+  background-color: #107c41 !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  text-align: right !important;
+  border-radius: 2px;
+  padding: 3px 6px !important;
+}
+.chg-fill-neg {
+  background-color: #d81e05 !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  text-align: right !important;
+  border-radius: 2px;
+  padding: 3px 6px !important;
+}
+.chg-fill-flat {
+  background-color: #6b7280 !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  text-align: right !important;
+  border-radius: 2px;
+  padding: 3px 6px !important;
+}
+
+/* Intraday High/Low Badges */
+.hit-high-badge {
+  background-color: #107c41;
+  color: #ffffff;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-size: 10px;
+}
+.hit-low-badge {
+  background-color: #d81e05;
+  color: #ffffff;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-size: 10px;
+}
 .analysis-table .new-high { color: #149339; font-weight: 700; }
 .analysis-table .new-low { color: #bf1019; font-weight: 700; }
 .analysis-table .analysis-neutral { color: #4b5b60; font-weight: 700; }
