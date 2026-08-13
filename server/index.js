@@ -78,7 +78,20 @@ const browserSessions = new Map();
 const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '32kb' }));
-app.use(express.static(path.join(__dirname, '..', 'frontend'), { index: 'index.html' }));
+app.use(express.static(path.join(__dirname, '..', 'frontend'), { 
+  index: 'index.html',
+  etag: true,
+  maxAge: '1d',
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    } else if (filePath.includes('vendor')) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else {
+      res.setHeader('Cache-Control', 'public, max-age=86400, must-revalidate');
+    }
+  }
+}));
 
 // ---------------------------------------------------------------------------
 // Utility helpers
