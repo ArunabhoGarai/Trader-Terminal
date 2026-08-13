@@ -39,6 +39,21 @@ let cacheTimestamps = {
   nseMostActive: 0
 };
 
+let scraperQueuePromise = Promise.resolve();
+
+function runScraperTask(taskName, taskFn) {
+  scraperQueuePromise = scraperQueuePromise.then(async () => {
+    console.log(`[NSE Scraper] 🔒 Starting sequential task: ${taskName}`);
+    try {
+      await taskFn();
+    } catch (err) {
+      console.warn(`[NSE Scraper] ⚠️ Sequential task warning (${taskName}):`, err.message);
+    }
+    console.log(`[NSE Scraper] 🔓 Completed sequential task: ${taskName}`);
+  });
+  return scraperQueuePromise;
+}
+
 function saveScraperCache() {
   try {
     const dataToSave = {
