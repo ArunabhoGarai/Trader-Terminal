@@ -908,16 +908,38 @@ function knownInstrument(exchange, instrumentId) {
 
 function findInstrumentBySymbol(symbol) {
   if (!symbol) return null;
-  const cleanSym = String(symbol).toUpperCase().replace(/-EQ$/, '').trim();
-  const resolvedSym = nseMaster.resolveNSESymbol(cleanSym);
-  const candidates = new Set([cleanSym, resolvedSym ? resolvedSym.toUpperCase().replace(/-EQ$/, '') : null].filter(Boolean));
+  const rawSym = String(symbol).toUpperCase().trim();
+  const cleanSym = rawSym.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
+  const resolvedSym = nseMaster.resolveNSESymbol(cleanSym) || nseMaster.resolveNSESymbol(rawSym);
+  
+  const targetBases = new Set([
+    cleanSym,
+    rawSym,
+    resolvedSym ? resolvedSym.toUpperCase().replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim() : null
+  ].filter(Boolean));
 
-  for (const target of candidates) {
-    for (const inst of knownInstruments.values()) {
-      const instSym = String(inst.symbol || '').toUpperCase().replace(/-EQ$/, '').trim();
-      if (instSym === target) return inst;
+  // Priority series/suffixes to try: -EQ first, then -BE, -SM, -ST, -BZ, -E1, -E2, or raw symbol
+  const suffixes = ['-EQ', '-BE', '-SM', '-ST', '-BZ', '-E1', '-E2', ''];
+
+  // 1. Pass 1: Try finding candidate with suffix priority (-EQ first, then -BE, -SM...)
+  for (const base of targetBases) {
+    for (const suf of suffixes) {
+      const candidateSym = base + suf;
+      for (const inst of knownInstruments.values()) {
+        const instSym = String(inst.symbol || '').toUpperCase().trim();
+        if (instSym === candidateSym) return inst;
+      }
     }
   }
+
+  // 2. Pass 2: Fallback matching stripping all suffixes
+  for (const base of targetBases) {
+    for (const inst of knownInstruments.values()) {
+      const instSym = String(inst.symbol || '').toUpperCase().replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
+      if (instSym === base) return inst;
+    }
+  }
+
   return null;
 }
 
