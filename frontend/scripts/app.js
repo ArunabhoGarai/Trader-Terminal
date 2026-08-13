@@ -215,6 +215,14 @@ function analysisRows() {
     list.sort((a, b) => (Number(a.tradedVolume || a.volume || 0)) - (Number(b.tradedVolume || b.volume || 0)));
   } else if (state.analysisSortBy === 'vol') {
     list.sort((a, b) => (Number(b.tradedVolume || b.volume || 0)) - (Number(a.tradedVolume || a.volume || 0)));
+  } else if (state.analysisSortBy === 'high') {
+    list.sort((a, b) => (Number(b.high) || 0) - (Number(a.high) || 0));
+  } else if (state.analysisSortBy === 'high_asc') {
+    list.sort((a, b) => (Number(a.high) || 0) - (Number(b.high) || 0));
+  } else if (state.analysisSortBy === 'low') {
+    list.sort((a, b) => (Number(b.low) || 0) - (Number(a.low) || 0));
+  } else if (state.analysisSortBy === 'low_asc') {
+    list.sort((a, b) => (Number(a.low) || 0) - (Number(b.low) || 0));
   }
 
   return list;
@@ -253,15 +261,20 @@ function renderAnalysis() {
   if (thead) {
     const chgIcon = state.analysisSortBy === 'pct' ? ' ▼' : state.analysisSortBy === 'pct_asc' ? ' ▲' : '';
     const volIcon = state.analysisSortBy === 'vol' ? ' ▼' : state.analysisSortBy === 'vol_asc' ? ' ▲' : '';
+    const highIcon = state.analysisSortBy === 'high' ? ' ▼' : state.analysisSortBy === 'high_asc' ? ' ▲' : '';
+    const lowIcon = state.analysisSortBy === 'low' ? ' ▼' : state.analysisSortBy === 'low_asc' ? ' ▲' : '';
+
+    const highHeader = `<th id="analysis-sort-high" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('high') ? '#1a73e8' : 'inherit'}">Day High${highIcon}</th>`;
+    const lowHeader = `<th id="analysis-sort-low" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('low') ? '#1a73e8' : 'inherit'}">Day Low${lowIcon}</th>`;
 
     if (isActionTab) {
       thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr>`;
     } else if (state.analysisTab === 'high') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk High</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk High</th>${highHeader}${lowHeader}<th>Open</th></tr>`;
     } else if (state.analysisTab === 'low') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk Low</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk Low</th>${highHeader}${lowHeader}<th>Open</th></tr>`;
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th>${highHeader}${lowHeader}<th>Open</th></tr>`;
     } else if (state.analysisTab === 'quantity') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>Chg (%Chg)</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
     } else if (state.analysisTab === 'traded') {
@@ -319,6 +332,7 @@ function renderAnalysis() {
 
     const isAtDayHigh = ltp > 0 && dayHigh > 0 && ltp >= dayHigh;
     const isAtDayLow = ltp > 0 && dayLow > 0 && ltp <= dayLow;
+    const rowClass = isAtDayHigh ? 'row-surpass-high' : isAtDayLow ? 'row-surpass-low' : '';
 
     const dayHighContent = isAtDayHigh ? `<span class="hit-high-badge">${fmt(dayHigh)} 🔥</span>` : fmt(dayHigh || 0);
     const dayLowContent = isAtDayLow ? `<span class="hit-low-badge">${fmt(dayLow)} 📉</span>` : fmt(dayLow || 0);
@@ -332,7 +346,7 @@ function renderAnalysis() {
 
       const vol = quote.tradedVolume || quote.volume || 0;
       const volFormatted = vol ? Number(vol).toLocaleString('en-IN') : '-';
-      return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
+      return `<tr data-key="${escapeHtml(qKey)}" class="${rowClass}" style="cursor:pointer">
         <td style="font-weight:bold; color:#1a73e8">${escapeHtml(quote.symbol || quote.companyName)}</td>
         <td style="font-size:10px; color:#5b6567">${escapeHtml(quote.companyName || quote.symbol)}</td>
         <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
@@ -347,7 +361,7 @@ function renderAnalysis() {
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
       const vol = quote.tradedVolume || quote.volume || 0;
       const volFormatted = vol ? Number(vol).toLocaleString('en-IN') : '-';
-      return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
+      return `<tr data-key="${escapeHtml(qKey)}" class="${rowClass}" style="cursor:pointer">
         <td style="font-weight:bold; color:#1a73e8">${escapeHtml(quote.symbol || quote.companyName)}</td>
         <td style="font-size:10px; color:#5b6567">${escapeHtml(quote.companyName || quote.symbol)}</td>
         <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
@@ -1057,6 +1071,18 @@ function bindEvents() {
       const volHeader = event.target.closest('#analysis-sort-vol');
       if (volHeader) {
         state.analysisSortBy = state.analysisSortBy === 'vol' ? 'vol_asc' : 'vol';
+        renderAnalysis();
+        return;
+      }
+      const highHeaderEl = event.target.closest('#analysis-sort-high');
+      if (highHeaderEl) {
+        state.analysisSortBy = state.analysisSortBy === 'high' ? 'high_asc' : 'high';
+        renderAnalysis();
+        return;
+      }
+      const lowHeaderEl = event.target.closest('#analysis-sort-low');
+      if (lowHeaderEl) {
+        state.analysisSortBy = state.analysisSortBy === 'low' ? 'low_asc' : 'low';
         renderAnalysis();
         return;
       }
