@@ -257,15 +257,15 @@ function renderAnalysis() {
     if (isActionTab) {
       thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr>`;
     } else if (state.analysisTab === 'high') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg%${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk High</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk High</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
     } else if (state.analysisTab === 'low') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg%${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk Low</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk Low</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg%${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>Day High</th><th>Day Low</th><th>Open</th></tr>`;
     } else if (state.analysisTab === 'quantity') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>Chg (%Chg)</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
     } else if (state.analysisTab === 'traded') {
-      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>%chng</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
+      thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>Chg (%Chg)</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
     } else {
       thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W High</th><th>52W Low</th><th>Time</th></tr>`;
     }
@@ -291,25 +291,57 @@ function renderAnalysis() {
     return;
   }
 
+  const fmtChgFull = (quote) => {
+    const ltp = Number(quote.lastPrice) || 0;
+    const close = Number(quote.prevClose || quote.lastPrice) || ltp;
+    const diff = ltp - close;
+    const pct = close > 0 ? (diff / close) * 100 : (Number(quote.pctChange) || 0);
+    const sign = diff > 0 ? '+' : '';
+    const formattedDiff = `${sign}${diff.toFixed(2)}`;
+    const formattedPct = `${sign}${pct.toFixed(2)}%`;
+    return `${formattedDiff} (${formattedPct})`;
+  };
+
   el('analysis-body').innerHTML = rows.map((quote) => {
     const status = analysisStatus(quote);
     const qKey = `${quote.exchange || 'NSEEQ'}:${quote.instrumentId}`;
     
+    const ltp = Number(quote.lastPrice) || 0;
+    const close = Number(quote.prevClose || quote.lastPrice) || ltp;
+    const diff = ltp - close;
+    const chgClass = diff > 0 ? 'chg-fill-pos' : diff < 0 ? 'chg-fill-neg' : 'chg-fill-flat';
+    const chgText = fmtChgFull(quote);
+
+    const dayHigh = Number(quote.high) || 0;
+    const dayLow = Number(quote.low) || 0;
+    const w52High = Number(quote.week52High || quote.new52WHL) || 0;
+    const w52Low = Number(quote.week52Low || quote.new52WHL) || 0;
+
+    const isAtDayHigh = ltp > 0 && dayHigh > 0 && ltp >= dayHigh;
+    const isAtDayLow = ltp > 0 && dayLow > 0 && ltp <= dayLow;
+
+    const dayHighContent = isAtDayHigh ? `<span class="hit-high-badge">${fmt(dayHigh)} 🔥</span>` : fmt(dayHigh || 0);
+    const dayLowContent = isAtDayLow ? `<span class="hit-low-badge">${fmt(dayLow)} 📉</span>` : fmt(dayLow || 0);
+
     if (state.analysisTab === 'high' || state.analysisTab === 'low') {
       const isHigh = state.analysisTab === 'high';
-      const newPriceColor = isHigh ? '#149339' : '#bf1019';
+      const w52Val = isHigh ? w52High : w52Low;
+      const isAt52W = isHigh ? (ltp > 0 && w52High > 0 && ltp >= w52High) : (ltp > 0 && w52Low > 0 && ltp <= w52Low);
+      const w52BadgeClass = isHigh ? 'hit-high-badge' : 'hit-low-badge';
+      const w52Content = isAt52W ? `<span class="${w52BadgeClass}">${fmt(w52Val)} ⭐</span>` : fmt(w52Val || 0);
+
       const vol = quote.tradedVolume || quote.volume || 0;
       const volFormatted = vol ? Number(vol).toLocaleString('en-IN') : '-';
       return `<tr data-key="${escapeHtml(qKey)}" style="cursor:pointer">
         <td style="font-weight:bold; color:#1a73e8">${escapeHtml(quote.symbol || quote.companyName)}</td>
         <td style="font-size:10px; color:#5b6567">${escapeHtml(quote.companyName || quote.symbol)}</td>
         <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
-        <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
-        <td class="analysis-rate">${fmt(quote.prevClose || quote.lastPrice)}</td>
+        <td class="${chgClass}">${escapeHtml(chgText)}</td>
+        <td class="analysis-rate">${fmt(close)}</td>
         <td class="analysis-rate" style="font-weight:bold; color:#107c41">${volFormatted}</td>
-        <td class="analysis-rate" style="color: ${newPriceColor}; font-weight:bold">${fmt(isHigh ? (quote.week52High || quote.new52WHL) : (quote.week52Low || quote.new52WHL))}</td>
-        <td class="analysis-rate">${fmt(quote.high || 0)}</td>
-        <td class="analysis-rate">${fmt(quote.low || 0)}</td>
+        <td class="analysis-rate">${w52Content}</td>
+        <td class="analysis-rate">${dayHighContent}</td>
+        <td class="analysis-rate">${dayLowContent}</td>
         <td class="analysis-rate">${fmt(quote.open || 0)}</td>
       </tr>`;
     } else if (state.analysisTab === 'gainers' || state.analysisTab === 'losers') {
@@ -319,11 +351,11 @@ function renderAnalysis() {
         <td style="font-weight:bold; color:#1a73e8">${escapeHtml(quote.symbol || quote.companyName)}</td>
         <td style="font-size:10px; color:#5b6567">${escapeHtml(quote.companyName || quote.symbol)}</td>
         <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
-        <td class="${quote.pctChange >= 0 ? 'positive' : 'negative'}">${fmt(quote.pctChange)}%</td>
-        <td class="analysis-rate">${fmt(quote.prevClose || quote.lastPrice)}</td>
+        <td class="${chgClass}">${escapeHtml(chgText)}</td>
+        <td class="analysis-rate">${fmt(close)}</td>
         <td class="analysis-rate" style="font-weight:bold; color:#107c41">${volFormatted}</td>
-        <td class="analysis-rate">${fmt(quote.high || 0)}</td>
-        <td class="analysis-rate">${fmt(quote.low || 0)}</td>
+        <td class="analysis-rate">${dayHighContent}</td>
+        <td class="analysis-rate">${dayLowContent}</td>
         <td class="analysis-rate">${fmt(quote.open || 0)}</td>
       </tr>`;
     } else if (state.analysisTab === 'quantity' || state.analysisTab === 'traded') {
@@ -396,6 +428,49 @@ function setSession(session) {
   }
 }
 
+const CACHE_KEY = 'TT_TERMINAL_STATE_CACHE';
+let lastCacheSave = 0;
+
+function saveStateToCache() {
+  const now = Date.now();
+  if (now - lastCacheSave < 1000) return; // Throttle disk saves to max 1 per sec
+  lastCacheSave = now;
+
+  try {
+    const payload = {
+      quotes: state.quotes,
+      watchlist: state.watchlist,
+      marketAnalysis: state.marketAnalysis,
+      timestamp: now
+    };
+    localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
+  } catch (_) { /* ignore quota errors */ }
+}
+
+function loadStateFromCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return false;
+    const cache = JSON.parse(raw);
+    let loaded = false;
+    if (Array.isArray(cache.quotes) && cache.quotes.length > 0) {
+      state.quotes = cache.quotes.map(quoteFromPrice);
+      loaded = true;
+    }
+    if (cache.watchlist && cache.watchlist.items) {
+      state.watchlist = cache.watchlist;
+      loaded = true;
+    }
+    if (cache.marketAnalysis) {
+      state.marketAnalysis = cache.marketAnalysis;
+      loaded = true;
+    }
+    return loaded;
+  } catch (_) {
+    return false;
+  }
+}
+
 function applyTerminalPayload(data) {
   if (Array.isArray(data.quotes)) state.quotes = data.quotes.map(quoteFromPrice);
   if (data.watchlist) state.watchlist = data.watchlist;
@@ -405,6 +480,7 @@ function applyTerminalPayload(data) {
   if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
   renderMarket();
   renderAnalysis();
+  saveStateToCache();
 }
 
 // ---------------------------------------------------------------------------
@@ -490,6 +566,7 @@ function handleWebSocketMessage(data) {
       if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
       renderMarket();
       renderAnalysis();
+      saveStateToCache();
       
       // Update real-time interactive chart
       if (data.quotes) updateLiveChartTick(state.quotes);
@@ -1179,7 +1256,21 @@ function bindEvents() {
 }
 
 async function initialize() {
-  renderMarket(); renderAnalysis(); bindEvents(); startClock(); startIndicesPoll(); 
+  const hasCache = loadStateFromCache();
+  renderMarket(); 
+  renderAnalysis(); 
+  bindEvents(); 
+  startClock(); 
+  startIndicesPoll(); 
+  if (hasCache) {
+    console.log('[CACHE] Loaded browser state cache instantly.');
+  }
+
+  // Register Service Worker for instant static asset caching
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
   await getSession();
   await loadWatchlist();
 
