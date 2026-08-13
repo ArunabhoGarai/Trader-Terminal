@@ -206,6 +206,29 @@ function analysisRows() {
     return filterRows(state.quotes).filter((quote) => (options.high && highDistance(quote) <= 5) || (options.low && lowDistance(quote) <= 5) || Math.abs(quote.pctChange) >= 1).sort((a, b) => Math.abs(b.pctChange) - Math.abs(a.pctChange)).slice(0, 12);
   }
 
+  const mergeLiveQuote = (item) => {
+    const cleanSym = String(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+    const live = state.quotes.find((q) => {
+      const qSym = String(q.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+      return qSym === cleanSym;
+    });
+    if (!live) return item;
+    return {
+      ...item,
+      lastPrice: live.lastPrice ?? item.lastPrice,
+      pctChange: live.pctChange ?? item.pctChange,
+      prevClose: live.prevClose ?? item.prevClose,
+      high: (live.high && live.high > 0) ? live.high : item.high,
+      low: (live.low && live.low > 0) ? live.low : item.low,
+      open: (live.open && live.open > 0) ? live.open : item.open,
+      tradedVolume: live.tradedVolume || live.volume || item.tradedVolume || item.volume || 0,
+      week52High: live.week52High || item.week52High || item.new52WHL || 0,
+      week52Low: live.week52Low || item.week52Low || item.new52WHL || 0,
+    };
+  };
+
+  list = list.map(mergeLiveQuote);
+
   // Column sorting for 52W High, 52W Low, Top Gainers, Top Losers
   if (state.analysisSortBy === 'pct') {
     list.sort((a, b) => (Number(b.pctChange) || 0) - (Number(a.pctChange) || 0));
@@ -216,13 +239,13 @@ function analysisRows() {
   } else if (state.analysisSortBy === 'vol') {
     list.sort((a, b) => (Number(b.tradedVolume || b.volume || 0)) - (Number(a.tradedVolume || a.volume || 0)));
   } else if (state.analysisSortBy === 'high') {
-    list.sort((a, b) => (Number(b.high) || 0) - (Number(a.high) || 0));
+    list.sort((a, b) => (Number(b.high || b.week52High) || 0) - (Number(a.high || a.week52High) || 0));
   } else if (state.analysisSortBy === 'high_asc') {
-    list.sort((a, b) => (Number(a.high) || 0) - (Number(b.high) || 0));
+    list.sort((a, b) => (Number(a.high || a.week52High) || 0) - (Number(b.high || b.week52High) || 0));
   } else if (state.analysisSortBy === 'low') {
-    list.sort((a, b) => (Number(b.low) || 0) - (Number(a.low) || 0));
+    list.sort((a, b) => (Number(b.low || b.week52Low) || 0) - (Number(a.low || a.week52Low) || 0));
   } else if (state.analysisSortBy === 'low_asc') {
-    list.sort((a, b) => (Number(a.low) || 0) - (Number(b.low) || 0));
+    list.sort((a, b) => (Number(a.low || a.week52Low) || 0) - (Number(b.low || b.week52Low) || 0));
   }
 
   return list;
@@ -347,8 +370,8 @@ function renderAnalysis() {
       const vol = quote.tradedVolume || quote.volume || 0;
       const volFormatted = vol ? Number(vol).toLocaleString('en-IN') : '-';
       return `<tr data-key="${escapeHtml(qKey)}" class="${rowClass}" style="cursor:pointer">
-        <td style="font-weight:bold; color:#1a73e8">${escapeHtml(quote.symbol || quote.companyName)}</td>
-        <td style="font-size:10px; color:#5b6567">${escapeHtml(quote.companyName || quote.symbol)}</td>
+        <td class="scrip-sym">${escapeHtml(quote.symbol || quote.companyName)}</td>
+        <td class="scrip-name">${escapeHtml(quote.companyName || quote.symbol)}</td>
         <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
         <td class="${chgClass}">${escapeHtml(chgText)}</td>
         <td class="analysis-rate">${fmt(close)}</td>
@@ -362,8 +385,8 @@ function renderAnalysis() {
       const vol = quote.tradedVolume || quote.volume || 0;
       const volFormatted = vol ? Number(vol).toLocaleString('en-IN') : '-';
       return `<tr data-key="${escapeHtml(qKey)}" class="${rowClass}" style="cursor:pointer">
-        <td style="font-weight:bold; color:#1a73e8">${escapeHtml(quote.symbol || quote.companyName)}</td>
-        <td style="font-size:10px; color:#5b6567">${escapeHtml(quote.companyName || quote.symbol)}</td>
+        <td class="scrip-sym">${escapeHtml(quote.symbol || quote.companyName)}</td>
+        <td class="scrip-name">${escapeHtml(quote.companyName || quote.symbol)}</td>
         <td class="analysis-rate" style="font-weight:bold">${fmt(quote.lastPrice)}</td>
         <td class="${chgClass}">${escapeHtml(chgText)}</td>
         <td class="analysis-rate">${fmt(close)}</td>
