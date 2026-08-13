@@ -207,14 +207,15 @@ function analysisRows() {
   }
 
   const mergeLiveQuote = (item) => {
-    const cleanSym = String(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+    const cleanSym = String(item.nseSymbol || item.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
     const live = state.quotes.find((q) => {
-      const qSym = String(q.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+      const qSym = String(q.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
       return qSym === cleanSym;
     });
-    if (!live) return item;
+    if (!live) return { ...item, isIIFLRealtime: false };
     return {
       ...item,
+      isIIFLRealtime: true,
       lastPrice: live.lastPrice ?? item.lastPrice,
       pctChange: live.pctChange ?? item.pctChange,
       prevClose: live.prevClose ?? item.prevClose,
@@ -228,6 +229,11 @@ function analysisRows() {
   };
 
   list = list.map(mergeLiveQuote);
+
+  // Exclude scrips not receiving realtime IIFL data during any sort
+  if (state.analysisSortBy) {
+    list = list.filter((item) => item.isIIFLRealtime && Number(item.lastPrice) > 0);
+  }
 
   // Column sorting for 52W High, 52W Low, Top Gainers, Top Losers
   if (state.analysisSortBy === 'pct') {
