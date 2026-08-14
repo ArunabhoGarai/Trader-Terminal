@@ -237,6 +237,19 @@ button { cursor: pointer; }
   background-color: #38bdf8;
 }
 
+/* Selected Column for Arrow Key Resizing */
+.analysis-table th.col-selected-for-resize,
+.analysis-table td.col-selected-for-resize {
+  background-color: #2563eb !important;
+  color: #ffffff !important;
+  outline: 2px solid #38bdf8 !important;
+  outline-offset: -2px;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.8) !important;
+}
+.analysis-table th.col-selected-for-resize {
+  background-color: #1d4ed8 !important;
+}
+
 /* Full Cell Fill Color-Coding for Chg Column */
 .chg-fill-pos {
   background-color: #107c41 !important;
