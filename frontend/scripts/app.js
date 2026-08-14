@@ -100,12 +100,32 @@ function renderMarket() {
   }
   renderWatchlistMeta();
   el('market-body').innerHTML = quotes.map((quote) => {
-    const move = quote.pctChange >= 0 ? 'up' : 'down';
-    const rateClass = quote.pctChange > 0 ? 'rate-up' : (quote.pctChange < 0 ? 'rate-down' : 'plain-rate');
+    const ltp = Number(quote.lastPrice) || 0;
+    const close = Number(quote.pcClose || quote.prevClose || quote.lastPrice) || ltp;
+    const diff = ltp - close;
+    const pct = close > 0 ? (diff / close) * 100 : (Number(quote.pctChange) || 0);
+    
+    const sign = diff > 0 ? '+' : '';
+    const formattedDiff = `${sign}${diff.toFixed(2)}`;
+    const formattedPct = `${sign}${pct.toFixed(2)}%`;
+    const chgText = `${formattedDiff} (${formattedPct})`;
+
+    const move = diff >= 0 ? 'up' : 'down';
+    const rateClass = diff > 0 ? 'rate-up' : (diff < 0 ? 'rate-down' : 'plain-rate');
+    const chgFillClass = diff > 0 ? 'chg-fill-pos' : (diff < 0 ? 'chg-fill-neg' : 'chg-fill-flat');
+
+    const dayHigh = Number(quote.high) || 0;
+    const dayLow = Number(quote.low) || 0;
+    const isAtDayHigh = ltp > 0 && dayHigh > 0 && ltp >= dayHigh;
+    const isAtDayLow = ltp > 0 && dayLow > 0 && ltp <= dayLow;
+    
+    const surpassClass = isAtDayHigh ? 'row-surpass-high' : (isAtDayLow ? 'row-surpass-low' : '');
     const selected = keyFor(quote) === state.selectedKey ? ' selected' : '';
-    return `<tr class="${selected}" data-key="${escapeHtml(keyFor(quote))}">
-      <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${quote.pctChange >= 0 ? '▲' : '▼'}</td><td></td>
-      <td class="symbol">${escapeHtml(quote.symbol)}</td><td class="${rateClass}">${fmt(quote.lastPrice)}</td><td class="${move === 'up' ? 'positive-text' : 'negative-text'}">${quote.pctChange.toFixed(2)}</td>
+    const trClass = [surpassClass, selected].filter(Boolean).join(' ');
+
+    return `<tr class="${trClass}" data-key="${escapeHtml(keyFor(quote))}">
+      <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${diff >= 0 ? '▲' : '▼'}</td><td></td>
+      <td class="symbol">${escapeHtml(quote.symbol)}</td><td class="${rateClass}">${fmt(quote.lastPrice)}</td><td class="${chgFillClass}">${escapeHtml(chgText)}</td>
       <td>${qty(quote.bidQty)}</td><td>${fmt(quote.bidPrice)}</td><td>${qty(quote.offerQty)}</td><td>${fmt(quote.offerPrice)}</td>
       <td>${fmt(quote.open)}</td><td>${fmt(quote.high)}</td><td>${fmt(quote.low)}</td><td>${fmt(quote.pcClose)}</td><td>${qty(quote.totalQty)}</td>
       <td class="find-cell"><button class="remove-scrip" data-key="${escapeHtml(keyFor(quote))}" title="Remove ${escapeHtml(quote.symbol)}" aria-label="Remove ${escapeHtml(quote.symbol)}">×</button></td>
