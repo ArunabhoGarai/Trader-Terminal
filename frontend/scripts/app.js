@@ -1135,11 +1135,6 @@ function bindEvents() {
   el('open-action-watch').addEventListener('click', showAnalysis);
   el('close-analysis').addEventListener('click', closeAnalysis);
   el('refresh-quotes').addEventListener('click', () => refreshQuotes());
-  
-  const hardRef1 = el('hard-refresh-site');
-  if (hardRef1) hardRef1.addEventListener('click', hardRefreshSite);
-  const hardRef2 = el('analysis-hard-refresh');
-  if (hardRef2) hardRef2.addEventListener('click', hardRefreshSite);
 
   el('analysis-refresh').addEventListener('click', async () => {
     toast('Triggering NSE Market Data Refresh...');
@@ -1210,7 +1205,7 @@ function bindEvents() {
           });
 
           const headerName = targetTh.textContent.replace(/[▼▲⭐🔥📉]/g, '').trim();
-          toast(`↔ Selected "${headerName}" column. Press ◄ Left Arrow to shrink, Right Arrow ► to expand.`);
+          toast(`↔ Selected "${headerName}" column. Press ◄ Left / Right ► Arrow Keys. Press Enter to finish.`);
         }
       }
     });
@@ -1257,38 +1252,38 @@ function bindEvents() {
   }
 
   document.addEventListener('keydown', (event) => { 
-    // Intercept Ctrl+Shift+R, Cmd+Shift+R, Ctrl+F5 for guaranteed Hard Refresh
-    if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'R' || event.key === 'r')) {
-      event.preventDefault();
-      hardRefreshSite();
-      return;
-    }
-    if (event.ctrlKey && event.key === 'F5') {
-      event.preventDefault();
-      hardRefreshSite();
-      return;
-    }
-
-    // Column Resizing via Left / Right Arrow Keys
-    if (state.selectedAnalysisTh && (event.key === 'ArrowRight' || event.key === 'Right' || event.key === 'ArrowLeft' || event.key === 'Left')) {
-      event.preventDefault();
-      const th = state.selectedAnalysisTh;
-      const currentWidth = th.offsetWidth || parseInt(th.style.width, 10) || 80;
-      
-      let newWidth = currentWidth;
-      if (event.key === 'ArrowRight' || event.key === 'Right') {
-        newWidth = currentWidth + 10;
-      } else if (event.key === 'ArrowLeft' || event.key === 'Left') {
-        newWidth = Math.max(30, currentWidth - 10);
+    // Column Resizing via Left / Right Arrow Keys until Enter / Escape is pressed
+    if (state.selectedAnalysisTh) {
+      if (event.key === 'Enter' || event.key === 'Return') {
+        event.preventDefault();
+        const th = state.selectedAnalysisTh;
+        const headerName = th.textContent.replace(/[▼▲⭐🔥📉]/g, '').trim();
+        state.selectedAnalysisTh = null;
+        state.selectedAnalysisColIndex = null;
+        document.querySelectorAll('.col-selected-for-resize').forEach(el => el.classList.remove('col-selected-for-resize'));
+        toast(`✅ Locked width for "${headerName}" column (${th.offsetWidth}px).`);
+        return;
       }
 
-      th.style.width = `${newWidth}px`;
-      th.style.minWidth = `${newWidth}px`;
+      if (event.key === 'ArrowRight' || event.key === 'Right' || event.key === 'ArrowLeft' || event.key === 'Left') {
+        event.preventDefault();
+        const th = state.selectedAnalysisTh;
+        const currentWidth = th.offsetWidth || parseInt(th.style.width, 10) || 80;
+        
+        let newWidth = currentWidth;
+        if (event.key === 'ArrowRight' || event.key === 'Right') {
+          newWidth = currentWidth + 10;
+        } else if (event.key === 'ArrowLeft' || event.key === 'Left') {
+          newWidth = Math.max(30, currentWidth - 10);
+        }
 
-      const headerName = th.textContent.replace(/[▼▲⭐🔥📉]/g, '').trim();
-      const actionText = (event.key === 'ArrowRight' || event.key === 'Right') ? 'Expanded' : 'Shrunk';
-      toast(`↔ ${actionText} "${headerName}" column to ${newWidth}px`);
-      return;
+        th.style.width = `${newWidth}px`;
+        th.style.minWidth = `${newWidth}px`;
+
+        const headerName = th.textContent.replace(/[▼▲⭐🔥📉]/g, '').trim();
+        toast(`↔ Resizing "${headerName}" (${newWidth}px). Press Enter to finish.`);
+        return;
+      }
     }
 
     if (event.key === 'Escape') {
@@ -1480,32 +1475,6 @@ function bindEvents() {
       }).observe(chartWin);
     }
   }
-}
-
-async function hardRefreshSite() {
-  toast('⚡ Executing Ctrl+Shift+R Hard Refresh: Purging caches & reloading...');
-  try {
-    if ('serviceWorker' in navigator) {
-      const registrations = await navigator.serviceWorker.getRegistrations();
-      for (const reg of registrations) {
-        await reg.unregister();
-      }
-    }
-    if ('caches' in window) {
-      const keys = await caches.keys();
-      for (const key of keys) {
-        await caches.delete(key);
-      }
-    }
-    localStorage.removeItem('TT_TERMINAL_STATE_CACHE');
-    sessionStorage.clear();
-  } catch (err) {
-    console.warn('Cache clear warning:', err);
-  }
-
-  // Force cache-busting reload matching Ctrl+Shift+R behavior
-  const cleanUrl = window.location.origin + window.location.pathname + '?_hard_reload=' + Date.now();
-  window.location.replace(cleanUrl);
 }
 
 function makeColumnsResizable(tableEl) {
