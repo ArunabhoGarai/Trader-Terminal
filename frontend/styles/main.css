@@ -244,25 +244,34 @@ button { cursor: pointer; }
 .scrip-sym { font-weight: bold; color: #1a73e8; }
 .scrip-name { font-size: 10px; color: #5b6567; }
 
+.market-table th:nth-child(8),
+.market-table td:nth-child(8) { width: 125px; }
+
 /* Full horizontal row green highlight when surpassing Day High */
 .analysis-table tr.row-surpass-high td,
-.analysis-table tr.row-surpass-high td * {
+.analysis-table tr.row-surpass-high td *,
+.market-table tr.row-surpass-high td,
+.market-table tr.row-surpass-high td * {
   background-color: #d1fae5 !important;
   color: #065f46 !important;
   font-weight: 700 !important;
 }
-.analysis-table tr.row-surpass-high td:first-child {
+.analysis-table tr.row-surpass-high td:first-child,
+.market-table tr.row-surpass-high td:first-child {
   border-left: 4px solid #107c41;
 }
 
 /* Full horizontal row red highlight when surpassing Day Low */
 .analysis-table tr.row-surpass-low td,
-.analysis-table tr.row-surpass-low td * {
+.analysis-table tr.row-surpass-low td *,
+.market-table tr.row-surpass-low td,
+.market-table tr.row-surpass-low td * {
   background-color: #fee2e2 !important;
   color: #991b1b !important;
   font-weight: 700 !important;
 }
-.analysis-table tr.row-surpass-low td:first-child {
+.analysis-table tr.row-surpass-low td:first-child,
+.market-table tr.row-surpass-low td:first-child {
   border-left: 4px solid #d81e05;
 }
 .analysis-table .new-high { color: #149339; font-weight: 700; }
