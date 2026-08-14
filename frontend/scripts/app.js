@@ -120,12 +120,16 @@ function renderMarket() {
     const isAtDayLow = ltp > 0 && dayLow > 0 && ltp <= dayLow;
     
     const surpassClass = isAtDayHigh ? 'row-surpass-high' : (isAtDayLow ? 'row-surpass-low' : '');
+    const isMoveSource = state.moveSourceKey && keyFor(quote) === state.moveSourceKey;
+    const moveClass = isMoveSource ? 'scrip-selected-for-move' : '';
     const selected = keyFor(quote) === state.selectedKey ? ' selected' : '';
-    const trClass = [surpassClass, selected].filter(Boolean).join(' ');
+    const trClass = [surpassClass, selected, moveClass].filter(Boolean).join(' ');
+
+    const moveBadge = isMoveSource ? ' <span style="font-size:10px; color:#f59e0b; font-weight:bold;">📌 [Selected - Click destination]</span>' : '';
 
     return `<tr class="${trClass}" data-key="${escapeHtml(keyFor(quote))}">
       <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${diff >= 0 ? '▲' : '▼'}</td><td></td>
-      <td class="symbol">${escapeHtml(quote.symbol)}</td><td class="${rateClass}">${fmt(quote.lastPrice)}</td><td class="${chgFillClass}">${escapeHtml(chgText)}</td>
+      <td class="symbol">${escapeHtml(quote.symbol)}${moveBadge}</td><td class="${rateClass}">${fmt(quote.lastPrice)}</td><td class="${chgFillClass}">${escapeHtml(chgText)}</td>
       <td>${qty(quote.bidQty)}</td><td>${fmt(quote.bidPrice)}</td><td>${qty(quote.offerQty)}</td><td>${fmt(quote.offerPrice)}</td>
       <td>${fmt(quote.open)}</td><td>${fmt(quote.high)}</td><td>${fmt(quote.low)}</td><td>${fmt(quote.pcClose)}</td><td>${qty(quote.totalQty)}</td>
       <td class="find-cell"><button class="remove-scrip" data-key="${escapeHtml(keyFor(quote))}" title="Remove ${escapeHtml(quote.symbol)}" aria-label="Remove ${escapeHtml(quote.symbol)}">×</button></td>
@@ -359,6 +363,7 @@ function renderAnalysis() {
 
     // Update alert count badge
     updateAlertBadge(rows.length);
+    makeColumnsResizable(document.querySelector('.analysis-table'));
     return;
   }
 
@@ -453,6 +458,8 @@ function renderAnalysis() {
       <td class="analysis-time">${new Date(quote.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="9" class="analysis-empty">No scrips match the selected analysis filters.</td></tr>';
+
+  makeColumnsResizable(document.querySelector('.analysis-table'));
 }
 
 function updateAlertBadge(alertCount) {
@@ -1068,20 +1075,73 @@ function bindEvents() {
     const remove = event.target.closest('.remove-scrip');
     if (remove) { removeScrip(remove.dataset.key); return; }
     
+    const row = event.target.closest('tr[data-key]');
+    if (!row) return;
+
+    const clickedKey = row.dataset.key;
+    const clickedQuote = state.quotes.find(q => keyFor(q) === clickedKey);
+
+    // If Edit Mode is active or a scrip is currently selected for move:
+    if (state.isEditMode || state.moveSourceKey) {
+      if (!state.moveSourceKey) {
+        // Step 1: Click scrip to select for moving
+        const symbolCell = event.target.closest('.symbol');
+        if (symbolCell && !state.isEditMode) {
+          openChart(clickedKey);
+          return;
+        }
+        state.moveSourceKey = clickedKey;
+        toast(`📌 Selected ${clickedQuote?.symbol || 'scrip'}. Now click destination row to move.`);
+        renderMarket();
+        return;
+      } else if (state.moveSourceKey === clickedKey) {
+        // Step 2: Click same scrip -> cancel selection
+        state.moveSourceKey = null;
+        toast('Selection cancelled.');
+        renderMarket();
+        return;
+      } else {
+        // Step 3: Click destination row -> move selected scrip to target slot!
+        const sourceKey = state.moveSourceKey;
+        state.moveSourceKey = null;
+
+        const currentKeys = state.quotes.map(q => keyFor(q));
+        const fromIndex = currentKeys.indexOf(sourceKey);
+        const toIndex = currentKeys.indexOf(clickedKey);
+
+        if (fromIndex !== -1 && toIndex !== -1) {
+          const sourceQuote = state.quotes[fromIndex];
+          const targetQuote = state.quotes[toIndex];
+          
+          const [movedKey] = currentKeys.splice(fromIndex, 1);
+          currentKeys.splice(toIndex, 0, movedKey);
+
+          reorderWatchlist(currentKeys);
+          toast(`✅ Repositioned ${sourceQuote?.symbol || 'scrip'} to Position ${toIndex + 1} (${targetQuote?.symbol || ''})`);
+        }
+        return;
+      }
+    }
+
     const symbolCell = event.target.closest('.symbol');
     if (symbolCell) {
-      const row = event.target.closest('tr[data-key]');
-      if (row) openChart(row.dataset.key);
+      openChart(clickedKey);
       return;
     }
 
-    const row = event.target.closest('tr[data-key]');
-    if (row) { state.selectedKey = row.dataset.key; renderMarket(); }
+    state.selectedKey = clickedKey;
+    renderMarket();
   });
   el('remove-selected').addEventListener('click', () => removeScrip(state.selectedKey));
   el('open-action-watch').addEventListener('click', showAnalysis);
   el('close-analysis').addEventListener('click', closeAnalysis);
   el('refresh-quotes').addEventListener('click', () => refreshQuotes());
+  
+  const hardRef1 = el('hard-refresh-site');
+  if (hardRef1) hardRef1.addEventListener('click', hardRefreshSite);
+  const hardRef2 = el('analysis-hard-refresh');
+  if (hardRef2) hardRef2.addEventListener('click', hardRefreshSite);
+
   el('analysis-refresh').addEventListener('click', async () => {
     toast('Triggering NSE Market Data Refresh...');
     try {
@@ -1337,6 +1397,65 @@ function bindEvents() {
       }).observe(chartWin);
     }
   }
+}
+
+async function hardRefreshSite() {
+  toast('Clearing browser cache & reloading site...');
+  try {
+    if ('serviceWorker' in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      for (const reg of registrations) {
+        await reg.unregister();
+      }
+    }
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      for (const key of keys) {
+        await caches.delete(key);
+      }
+    }
+    localStorage.removeItem('TT_TERMINAL_STATE_CACHE');
+  } catch (err) {
+    console.warn('Cache clear warning:', err);
+  }
+  window.location.reload(true);
+}
+
+function makeColumnsResizable(tableEl) {
+  if (!tableEl) return;
+  const headers = tableEl.querySelectorAll('th');
+  headers.forEach((th) => {
+    if (th.querySelector('.resizer')) return;
+    const resizer = document.createElement('div');
+    resizer.className = 'resizer';
+    th.appendChild(resizer);
+
+    let startX = 0;
+    let startWidth = 0;
+
+    const onMouseMove = (e) => {
+      const dx = e.clientX - startX;
+      const newWidth = Math.max(30, startWidth + dx);
+      th.style.width = `${newWidth}px`;
+      th.style.minWidth = `${newWidth}px`;
+      resizer.classList.add('resizing');
+    };
+
+    const onMouseUp = () => {
+      resizer.classList.remove('resizing');
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    resizer.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      startX = e.clientX;
+      startWidth = th.offsetWidth;
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  });
 }
 
 async function initialize() {
