@@ -89,7 +89,6 @@ function renderWatchlistMeta() {
 }
 
 function renderMarket() {
-  if (state.isEditMode) return;
   const searchInput = el('local-search');
   if (searchInput && state.localSearch !== searchInput.value.toLowerCase()) {
     state.localSearch = searchInput.value.toLowerCase();
@@ -125,7 +124,7 @@ function renderMarket() {
     const selected = keyFor(quote) === state.selectedKey ? ' selected' : '';
     const trClass = [surpassClass, selected, moveClass].filter(Boolean).join(' ');
 
-    const moveBadge = isMoveSource ? ' <span style="font-size:10px; color:#f59e0b; font-weight:bold;">📌 [Selected - Click destination]</span>' : '';
+    const moveBadge = isMoveSource ? ' <span style="font-size:10px; color:#ffffff; background:#2563eb; padding:1px 4px; border-radius:2px; font-weight:bold; animation: blink-selected-scrip 0.5s infinite alternate;">⚡ [BLINKING - CLICK TARGET ROW]</span>' : '';
 
     return `<tr class="${trClass}" data-key="${escapeHtml(keyFor(quote))}">
       <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${diff >= 0 ? '▲' : '▼'}</td><td></td>
@@ -1218,6 +1217,18 @@ function bindEvents() {
   }
 
   document.addEventListener('keydown', (event) => { 
+    // Intercept Ctrl+Shift+R, Cmd+Shift+R, Ctrl+F5 for guaranteed Hard Refresh
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'R' || event.key === 'r')) {
+      event.preventDefault();
+      hardRefreshSite();
+      return;
+    }
+    if (event.ctrlKey && event.key === 'F5') {
+      event.preventDefault();
+      hardRefreshSite();
+      return;
+    }
+
     if (event.key === 'Escape') closeAnalysis(); 
     if (event.key === 'F7') { event.preventDefault(); showAnalysis(); } 
     
@@ -1244,6 +1255,7 @@ function bindEvents() {
   
   el('edit-watchlist')?.addEventListener('click', (e) => {
     state.isEditMode = !state.isEditMode;
+    if (!state.isEditMode) state.moveSourceKey = null;
     e.target.textContent = state.isEditMode ? 'Done' : 'Edit';
     e.target.style.background = state.isEditMode ? '#ffefc2' : '';
     if (sortableInstance) sortableInstance.option('disabled', !state.isEditMode);
@@ -1252,7 +1264,7 @@ function bindEvents() {
     if (tbody) {
       tbody.classList.toggle('reorder-mode', state.isEditMode);
     }
-    if (!state.isEditMode) renderMarket();
+    renderMarket();
   });
 
   // Smooth Drag-and-Drop Sorting via SortableJS
@@ -1400,7 +1412,7 @@ function bindEvents() {
 }
 
 async function hardRefreshSite() {
-  toast('Clearing browser cache & reloading site...');
+  toast('⚡ Executing Ctrl+Shift+R Hard Refresh: Purging caches & reloading...');
   try {
     if ('serviceWorker' in navigator) {
       const registrations = await navigator.serviceWorker.getRegistrations();
@@ -1415,10 +1427,14 @@ async function hardRefreshSite() {
       }
     }
     localStorage.removeItem('TT_TERMINAL_STATE_CACHE');
+    sessionStorage.clear();
   } catch (err) {
     console.warn('Cache clear warning:', err);
   }
-  window.location.reload(true);
+
+  // Force cache-busting reload matching Ctrl+Shift+R behavior
+  const cleanUrl = window.location.origin + window.location.pathname + '?_hard_reload=' + Date.now();
+  window.location.replace(cleanUrl);
 }
 
 function makeColumnsResizable(tableEl) {
