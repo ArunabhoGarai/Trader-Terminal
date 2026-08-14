@@ -363,6 +363,7 @@ function renderAnalysis() {
     // Update alert count badge
     updateAlertBadge(rows.length);
     makeColumnsResizable(document.querySelector('.analysis-table'));
+    restoreSelectedColumnHighlight();
     return;
   }
 
@@ -459,6 +460,7 @@ function renderAnalysis() {
   }).join('') || '<tr><td colspan="9" class="analysis-empty">No scrips match the selected analysis filters.</td></tr>';
 
   makeColumnsResizable(document.querySelector('.analysis-table'));
+  restoreSelectedColumnHighlight();
 }
 
 function updateAlertBadge(alertCount) {
@@ -1280,6 +1282,10 @@ function bindEvents() {
         th.style.width = `${newWidth}px`;
         th.style.minWidth = `${newWidth}px`;
 
+        if (!state.columnWidths) state.columnWidths = {};
+        if (!state.columnWidths[state.analysisTab]) state.columnWidths[state.analysisTab] = {};
+        state.columnWidths[state.analysisTab][state.selectedAnalysisColIndex] = newWidth;
+
         const headerName = th.textContent.replace(/[▼▲⭐🔥📉]/g, '').trim();
         toast(`↔ Resizing "${headerName}" (${newWidth}px). Press Enter to finish.`);
         return;
@@ -1473,6 +1479,39 @@ function bindEvents() {
           chartInstance.resize(chartContainer.clientWidth, chartContainer.clientHeight);
         }
       }).observe(chartWin);
+    }
+  }
+}
+
+function restoreSelectedColumnHighlight() {
+  const tableEl = document.querySelector('.analysis-table');
+  if (!tableEl) return;
+
+  // Restore saved column widths for active tab
+  if (state.columnWidths && state.columnWidths[state.analysisTab]) {
+    const widths = state.columnWidths[state.analysisTab];
+    const ths = tableEl.querySelectorAll('th');
+    Object.keys(widths).forEach(idx => {
+      if (ths[idx]) {
+        ths[idx].style.width = `${widths[idx]}px`;
+        ths[idx].style.minWidth = `${widths[idx]}px`;
+      }
+    });
+  }
+
+  // Restore active column selection highlight
+  if (state.selectedAnalysisColIndex !== null && state.selectedAnalysisColIndex !== undefined) {
+    const ths = tableEl.querySelectorAll('th');
+    const targetTh = ths[state.selectedAnalysisColIndex];
+    if (targetTh) {
+      state.selectedAnalysisTh = targetTh;
+      targetTh.classList.add('col-selected-for-resize');
+      const trs = tableEl.querySelectorAll('tbody tr');
+      trs.forEach(tr => {
+        if (tr.cells[state.selectedAnalysisColIndex]) {
+          tr.cells[state.selectedAnalysisColIndex].classList.add('col-selected-for-resize');
+        }
+      });
     }
   }
 }
