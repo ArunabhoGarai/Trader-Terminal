@@ -139,6 +139,19 @@ button { cursor: pointer; }
 .market-table tbody tr.selected td { box-shadow: inset 0 1px #7ec7d4, inset 0 -1px #7ec7d4; background-color: #203a3f; }
 .market-table tbody tr.dragging { opacity: 0.5; background-color: #3e4a4d !important; }
 
+/* Click-to-Move Selected Row Highlight */
+.market-table tbody tr.scrip-selected-for-move td {
+  background-color: #1e3a8a !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  animation: pulse-move-select 1.5s infinite alternate !important;
+}
+
+@keyframes pulse-move-select {
+  0% { box-shadow: inset 0 0 0 2px #38bdf8, 0 0 4px rgba(56, 189, 248, 0.5); }
+  100% { box-shadow: inset 0 0 0 2px #f59e0b, 0 0 10px rgba(245, 158, 11, 0.9); }
+}
+
 /* ── WATCH ACTIONS BAR ── */
 .watch-actions { display: flex; align-items: center; gap: 5px; padding: 4px 13px; background: linear-gradient(#f5f7f7,#dce4e5); border-top: 1px solid #a2aaac; }
 .watch-actions button { min-width: 22px; height: 24px; padding: 1px 4px; color: #52666a; border: 1px solid #bdc8c9; background: linear-gradient(#fff,#dce5e6); font-weight: 700; }
@@ -187,13 +200,29 @@ button { cursor: pointer; }
 .analysis-filters span { flex: 1; }
 .analysis-table-wrap { overflow: auto; background: white; }
 .analysis-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: auto; }
-.analysis-table th { position: sticky; top: 0; padding: 3px 5px; text-align: left; background: #b4010b; color: #fff; border-right: 1px solid #e3a1a4; font-size: 10px; white-space: nowrap; width: 1%; }
-.analysis-table td { height: 20px; padding: 2px 5px; border-right: 1px solid #d2d5d5; border-bottom: 1px solid #d5d9da; white-space: nowrap; font-size: 11px; width: 1%; }
-.analysis-table .scrip-sym { font-weight: bold; color: #1a73e8; width: auto; }
-.analysis-table .scrip-name { font-size: 10px; color: #5b6567; width: auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
-.analysis-table .analysis-rate { text-align: right; width: 1%; min-width: 0; white-space: nowrap; }
-.analysis-table .analysis-time { text-align: center; width: 1%; font-family: var(--mono); font-size: 10px; white-space: nowrap; }
-.analysis-table .analysis-status-cell { text-align: center; width: 1%; font-weight: 700; white-space: nowrap; }
+.analysis-table th { position: sticky; top: 0; padding: 3px 6px; text-align: left; background: #b4010b; color: #fff; border-right: 1px solid #e3a1a4; font-size: 10px; white-space: nowrap; position: relative; user-select: none; }
+.analysis-table td { height: 20px; padding: 2px 5px; border-right: 1px solid #d2d5d5; border-bottom: 1px solid #d5d9da; white-space: nowrap; font-size: 11px; }
+.analysis-table .scrip-sym { font-weight: bold; color: #1a73e8; }
+.analysis-table .scrip-name { font-size: 10px; color: #5b6567; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.analysis-table .analysis-rate { text-align: right; min-width: 0; white-space: nowrap; }
+.analysis-table .analysis-time { text-align: center; font-family: var(--mono); font-size: 10px; white-space: nowrap; }
+.analysis-table .analysis-status-cell { text-align: center; font-weight: 700; white-space: nowrap; }
+
+/* Column Resizer Handle */
+.analysis-table .resizer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  height: 100%;
+  width: 6px;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 10;
+}
+.analysis-table .resizer:hover,
+.analysis-table .resizer.resizing {
+  background-color: #38bdf8;
+}
 
 /* Full Cell Fill Color-Coding for Chg Column */
 .chg-fill-pos {
