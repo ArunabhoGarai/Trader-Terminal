@@ -602,38 +602,39 @@ async function refreshLiveQuotes(session) {
   const rawLosersList = realNseData.losers || [];
 
   // Deduplicate and merge 52W High scrips
+  const suffixRegex = /-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i;
   const mergedHighsMap = new Map();
   highsMcList.forEach((item) => {
-    const symKey = String(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
-    if (symKey && !mergedHighsMap.has(symKey)) mergedHighsMap.set(symKey, { ...item, symbol: `${symKey}-EQ` });
+    const symKey = String(item.nseSymbol || item.symbol || '').replace(suffixRegex, '').toUpperCase().trim();
+    if (symKey && !mergedHighsMap.has(symKey)) mergedHighsMap.set(symKey, { ...item, symbol: item.symbol || `${symKey}-EQ` });
   });
   highsNseList.forEach((item) => {
-    const symKey = String(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
-    if (symKey && !mergedHighsMap.has(symKey)) mergedHighsMap.set(symKey, { ...item, symbol: `${symKey}-EQ` });
+    const symKey = String(item.nseSymbol || item.symbol || '').replace(suffixRegex, '').toUpperCase().trim();
+    if (symKey && !mergedHighsMap.has(symKey)) mergedHighsMap.set(symKey, { ...item, symbol: item.symbol || `${symKey}-EQ` });
   });
   const mergedHighsList = Array.from(mergedHighsMap.values());
 
   // Deduplicate and merge 52W Low scrips
   const mergedLowsMap = new Map();
   lowsMcList.forEach((item) => {
-    const symKey = String(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
-    if (symKey && !mergedLowsMap.has(symKey)) mergedLowsMap.set(symKey, { ...item, symbol: `${symKey}-EQ` });
+    const symKey = String(item.nseSymbol || item.symbol || '').replace(suffixRegex, '').toUpperCase().trim();
+    if (symKey && !mergedLowsMap.has(symKey)) mergedLowsMap.set(symKey, { ...item, symbol: item.symbol || `${symKey}-EQ` });
   });
   lowsNseList.forEach((item) => {
-    const symKey = String(item.nseSymbol || item.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
-    if (symKey && !mergedLowsMap.has(symKey)) mergedLowsMap.set(symKey, { ...item, symbol: `${symKey}-EQ` });
+    const symKey = String(item.nseSymbol || item.symbol || '').replace(suffixRegex, '').toUpperCase().trim();
+    if (symKey && !mergedLowsMap.has(symKey)) mergedLowsMap.set(symKey, { ...item, symbol: item.symbol || `${symKey}-EQ` });
   });
   const mergedLowsList = Array.from(mergedLowsMap.values());
 
   // Clean Gainers and Losers symbols
   const cleanGainersList = rawGainersList.map(item => {
-    const nseSym = item.nseSymbol || nseMaster.resolveNSESymbol(item.companyName || item.symbol) || String(item.symbol || '').replace(/-EQ$/i, '');
-    return { ...item, nseSymbol: nseSym, symbol: `${nseSym}-EQ` };
+    const nseSym = item.nseSymbol || nseMaster.resolveNSESymbol(item.companyName || item.symbol) || String(item.symbol || '').replace(suffixRegex, '');
+    return { ...item, nseSymbol: nseSym, symbol: item.symbol || `${nseSym}-EQ` };
   });
 
   const cleanLosersList = rawLosersList.map(item => {
-    const nseSym = item.nseSymbol || nseMaster.resolveNSESymbol(item.companyName || item.symbol) || String(item.symbol || '').replace(/-EQ$/i, '');
-    return { ...item, nseSymbol: nseSym, symbol: `${nseSym}-EQ` };
+    const nseSym = item.nseSymbol || nseMaster.resolveNSESymbol(item.companyName || item.symbol) || String(item.symbol || '').replace(suffixRegex, '');
+    return { ...item, nseSymbol: nseSym, symbol: item.symbol || `${nseSym}-EQ` };
   });
 
   // Major Index Tokens for single consolidated payload
@@ -908,16 +909,38 @@ function knownInstrument(exchange, instrumentId) {
 
 function findInstrumentBySymbol(symbol) {
   if (!symbol) return null;
-  const cleanSym = String(symbol).toUpperCase().replace(/-EQ$/, '').trim();
-  const resolvedSym = nseMaster.resolveNSESymbol(cleanSym);
-  const candidates = new Set([cleanSym, resolvedSym ? resolvedSym.toUpperCase().replace(/-EQ$/, '') : null].filter(Boolean));
+  const rawSym = String(symbol).toUpperCase().trim();
+  const cleanSym = rawSym.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
+  const resolvedSym = nseMaster.resolveNSESymbol(cleanSym) || nseMaster.resolveNSESymbol(rawSym);
+  
+  const targetBases = new Set([
+    cleanSym,
+    rawSym,
+    resolvedSym ? resolvedSym.toUpperCase().replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim() : null
+  ].filter(Boolean));
 
-  for (const target of candidates) {
-    for (const inst of knownInstruments.values()) {
-      const instSym = String(inst.symbol || '').toUpperCase().replace(/-EQ$/, '').trim();
-      if (instSym === target) return inst;
+  // Priority series/suffixes to try: EQ first, then BE, SM, ST, BZ, E1, E2, or exact raw symbol
+  const suffixes = ['-EQ', '-BE', '-SM', '-ST', '-BZ', '-E1', '-E2', ''];
+
+  // Pass 1: try exact matches with priority suffixes (EQ first, then BE, SM, ST, BZ...)
+  for (const base of targetBases) {
+    for (const suf of suffixes) {
+      const candidateSym = base + suf;
+      for (const inst of knownInstruments.values()) {
+        const instSym = String(inst.symbol || '').toUpperCase().trim();
+        if (instSym === candidateSym) return inst;
+      }
     }
   }
+
+  // Pass 2: fallback matching ignoring suffix differences
+  for (const base of targetBases) {
+    for (const inst of knownInstruments.values()) {
+      const instSym = String(inst.symbol || '').toUpperCase().replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
+      if (instSym === base) return inst;
+    }
+  }
+
   return null;
 }
 
