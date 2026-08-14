@@ -1276,18 +1276,34 @@ function bindEvents() {
         if (event.key === 'ArrowRight' || event.key === 'Right') {
           newWidth = currentWidth + 10;
         } else if (event.key === 'ArrowLeft' || event.key === 'Left') {
-          newWidth = Math.max(30, currentWidth - 10);
+          newWidth = Math.max(10, currentWidth - 10);
         }
 
         th.style.width = `${newWidth}px`;
         th.style.minWidth = `${newWidth}px`;
+        th.style.maxWidth = `${newWidth}px`;
 
         if (!state.columnWidths) state.columnWidths = {};
         if (!state.columnWidths[state.analysisTab]) state.columnWidths[state.analysisTab] = {};
         state.columnWidths[state.analysisTab][state.selectedAnalysisColIndex] = newWidth;
 
         const headerName = th.textContent.replace(/[▼▲⭐🔥📉]/g, '').trim();
-        toast(`↔ Resizing "${headerName}" (${newWidth}px). Press Enter to finish.`);
+        toast(`↔ Resizing "${headerName}" column (${newWidth}px). Press Enter to finish.`);
+        return;
+      }
+
+      if (event.key === 'ArrowUp' || event.key === 'Up' || event.key === 'ArrowDown' || event.key === 'Down') {
+        event.preventDefault();
+        const currentH = state.analysisRowHeight || 20;
+        let newH = currentH;
+        if (event.key === 'ArrowUp' || event.key === 'Up') {
+          newH = Math.max(10, currentH - 2);
+        } else {
+          newH = currentH + 2;
+        }
+        state.analysisRowHeight = newH;
+        restoreSelectedColumnHighlight();
+        toast(`↕ Resized table row height to ${newH}px. Press Enter to finish.`);
         return;
       }
     }
@@ -1487,6 +1503,16 @@ function restoreSelectedColumnHighlight() {
   const tableEl = document.querySelector('.analysis-table');
   if (!tableEl) return;
 
+  // Apply custom row height
+  if (state.analysisRowHeight) {
+    const tds = tableEl.querySelectorAll('td');
+    tds.forEach(td => {
+      td.style.height = `${state.analysisRowHeight}px`;
+      td.style.lineHeight = `${state.analysisRowHeight}px`;
+      td.style.padding = '0 4px';
+    });
+  }
+
   // Restore saved column widths for active tab
   if (state.columnWidths && state.columnWidths[state.analysisTab]) {
     const widths = state.columnWidths[state.analysisTab];
@@ -1495,6 +1521,7 @@ function restoreSelectedColumnHighlight() {
       if (ths[idx]) {
         ths[idx].style.width = `${widths[idx]}px`;
         ths[idx].style.minWidth = `${widths[idx]}px`;
+        ths[idx].style.maxWidth = `${widths[idx]}px`;
       }
     });
   }
