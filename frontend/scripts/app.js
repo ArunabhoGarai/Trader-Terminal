@@ -1169,6 +1169,8 @@ function bindEvents() {
     });
   }
   document.querySelectorAll('[data-analysis-tab]').forEach((button) => button.addEventListener('click', () => { 
+    state.selectedAnalysisTh = null;
+    state.selectedAnalysisColIndex = null;
     state.analysisTab = button.dataset.analysisTab; 
     document.querySelectorAll('[data-analysis-tab]').forEach((tab) => tab.classList.toggle('active', tab === button)); 
     renderAnalysis(); 
@@ -1176,6 +1178,44 @@ function bindEvents() {
   }));
   document.querySelectorAll('[data-analysis-filter]').forEach((checkbox) => checkbox.addEventListener('change', renderAnalysis));
   
+  const analysisTable = document.querySelector('.analysis-table');
+  if (analysisTable) {
+    analysisTable.addEventListener('click', (event) => {
+      if (event.target.closest('.resizer')) return;
+
+      const cell = event.target.closest('th, td');
+      if (!cell) return;
+
+      const cellIndex = cell.cellIndex;
+      const ths = Array.from(analysisTable.querySelectorAll('th'));
+      const targetTh = ths[cellIndex];
+
+      if (targetTh) {
+        // Toggle selection
+        const isSame = state.selectedAnalysisTh === targetTh;
+        analysisTable.querySelectorAll('.col-selected-for-resize').forEach(el => el.classList.remove('col-selected-for-resize'));
+
+        if (isSame) {
+          state.selectedAnalysisTh = null;
+          state.selectedAnalysisColIndex = null;
+          toast('Column selection cleared.');
+        } else {
+          state.selectedAnalysisTh = targetTh;
+          state.selectedAnalysisColIndex = cellIndex;
+
+          targetTh.classList.add('col-selected-for-resize');
+          const trs = Array.from(analysisTable.querySelectorAll('tbody tr'));
+          trs.forEach(tr => {
+            if (tr.cells[cellIndex]) tr.cells[cellIndex].classList.add('col-selected-for-resize');
+          });
+
+          const headerName = targetTh.textContent.replace(/[▼▲⭐🔥📉]/g, '').trim();
+          toast(`↔ Selected "${headerName}" column. Press ◄ Left Arrow to shrink, Right Arrow ► to expand.`);
+        }
+      }
+    });
+  }
+
   const analysisHead = el('analysis-head');
   if (analysisHead) {
     analysisHead.addEventListener('click', (event) => {
@@ -1229,7 +1269,38 @@ function bindEvents() {
       return;
     }
 
-    if (event.key === 'Escape') closeAnalysis(); 
+    // Column Resizing via Left / Right Arrow Keys
+    if (state.selectedAnalysisTh && (event.key === 'ArrowRight' || event.key === 'Right' || event.key === 'ArrowLeft' || event.key === 'Left')) {
+      event.preventDefault();
+      const th = state.selectedAnalysisTh;
+      const currentWidth = th.offsetWidth || parseInt(th.style.width, 10) || 80;
+      
+      let newWidth = currentWidth;
+      if (event.key === 'ArrowRight' || event.key === 'Right') {
+        newWidth = currentWidth + 10;
+      } else if (event.key === 'ArrowLeft' || event.key === 'Left') {
+        newWidth = Math.max(30, currentWidth - 10);
+      }
+
+      th.style.width = `${newWidth}px`;
+      th.style.minWidth = `${newWidth}px`;
+
+      const headerName = th.textContent.replace(/[▼▲⭐🔥📉]/g, '').trim();
+      const actionText = (event.key === 'ArrowRight' || event.key === 'Right') ? 'Expanded' : 'Shrunk';
+      toast(`↔ ${actionText} "${headerName}" column to ${newWidth}px`);
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      if (state.selectedAnalysisTh) {
+        state.selectedAnalysisTh = null;
+        state.selectedAnalysisColIndex = null;
+        document.querySelectorAll('.col-selected-for-resize').forEach(el => el.classList.remove('col-selected-for-resize'));
+        toast('Column selection cleared.');
+        return;
+      }
+      closeAnalysis(); 
+    }
     if (event.key === 'F7') { event.preventDefault(); showAnalysis(); } 
     
     // Alphabetical filtering
