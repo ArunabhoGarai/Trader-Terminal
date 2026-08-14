@@ -212,14 +212,14 @@ button { cursor: pointer; }
 .analysis-filters input { margin: 0; accent-color: #6f8589; }
 .analysis-filters span { flex: 1; }
 .analysis-table-wrap { overflow: auto; background: white; }
-.analysis-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: auto; }
-.analysis-table th { position: sticky; top: 0; padding: 3px 6px; text-align: left; background: #b4010b; color: #fff; border-right: 1px solid #e3a1a4; font-size: 10px; white-space: nowrap; position: relative; user-select: none; }
-.analysis-table td { height: 20px; padding: 2px 5px; border-right: 1px solid #d2d5d5; border-bottom: 1px solid #d5d9da; white-space: nowrap; font-size: 11px; }
-.analysis-table .scrip-sym { font-weight: bold; color: #1a73e8; }
-.analysis-table .scrip-name { font-size: 10px; color: #5b6567; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
-.analysis-table .analysis-rate { text-align: right; min-width: 0; white-space: nowrap; }
-.analysis-table .analysis-time { text-align: center; font-family: var(--mono); font-size: 10px; white-space: nowrap; }
-.analysis-table .analysis-status-cell { text-align: center; font-weight: 700; white-space: nowrap; }
+.analysis-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
+.analysis-table th { position: sticky; top: 0; padding: 3px 4px; text-align: left; background: #b4010b; color: #fff; border-right: 1px solid #e3a1a4; font-size: 10px; white-space: nowrap; position: relative; user-select: none; overflow: hidden; text-overflow: ellipsis; }
+.analysis-table td { height: 20px; padding: 2px 4px; border-right: 1px solid #d2d5d5; border-bottom: 1px solid #d5d9da; white-space: nowrap; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.analysis-table .scrip-sym { font-weight: bold; color: #1a73e8; overflow: hidden; text-overflow: ellipsis; }
+.analysis-table .scrip-name { font-size: 10px; color: #5b6567; overflow: hidden; text-overflow: ellipsis; }
+.analysis-table .analysis-rate { text-align: right; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.analysis-table .analysis-time { text-align: center; font-family: var(--mono); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.analysis-table .analysis-status-cell { text-align: center; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Column Resizer Handle */
 .analysis-table .resizer {
