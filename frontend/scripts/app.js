@@ -311,7 +311,7 @@ function renderAnalysis() {
     const lowHeader = `<th id="analysis-sort-low" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('low') ? '#1a73e8' : 'inherit'}">Day Low${lowIcon}</th>`;
 
     if (isActionTab) {
-      thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr>`;
+      thead.innerHTML = `<tr><th>Ex</th><th>Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W High</th><th>52W Low</th><th>Time</th></tr>`;
     } else if (state.analysisTab === 'high') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk High</th>${highHeader}${lowHeader}<th>Open</th></tr>`;
     } else if (state.analysisTab === 'low') {
@@ -323,7 +323,7 @@ function renderAnalysis() {
     } else if (state.analysisTab === 'traded') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>Chg (%Chg)</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
     } else {
-      thead.innerHTML = `<tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W High</th><th>52W Low</th><th>Time</th></tr>`;
+      thead.innerHTML = `<tr><th>Ex</th><th>Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W High</th><th>52W Low</th><th>Time</th></tr>`;
     }
   }
 
@@ -331,16 +331,31 @@ function renderAnalysis() {
   if (isActionTab) {
     el('analysis-body').innerHTML = rows.map((event) => {
       const dirClass = event.direction === 'up' ? 'analysis-tick-up' : event.direction === 'down' ? 'analysis-tick-down' : 'analysis-tick-flat';
+      
+      const cleanSym = String(event.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+      const live = state.quotes.find((q) => {
+        const qSym = String(q.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+        return qSym === cleanSym || String(q.instrumentId) === String(event.instrumentId);
+      });
+      
+      const w52High = live ? Number(live.week52High || live.new52WHL || 0) : Number(event.week52High || 0);
+      const w52Low = live ? Number(live.week52Low || live.new52WHL || 0) : Number(event.week52Low || 0);
+      
+      const w52HighStr = w52High > 0 ? fmt(w52High) : '-';
+      const w52LowStr = w52Low > 0 ? fmt(w52Low) : '-';
+
       return `<tr class="${dirClass}">
-        <td>${escapeHtml((event.exchange || 'N').slice(0, 1))}</td>
-        <td>${escapeHtml(event.segment === 'F&O' ? 'F' : 'C')}</td>
-        <td>${escapeHtml(event.instrumentId)}</td>
-        <td>${escapeHtml(event.symbol)}</td>
-        <td class="analysis-status-cell">${escapeHtml(event.status)}</td>
-        <td class="analysis-rate">${fmt(event.lastPrice)}</td>
-        <td class="analysis-time">${formatEventTime(event)}</td>
+        <td style="text-align:center">${escapeHtml((event.exchange || 'N').slice(0, 1))}</td>
+        <td style="text-align:center">${escapeHtml(event.segment === 'F&O' ? 'F' : 'C')}</td>
+        <td style="text-align:center">${escapeHtml(event.instrumentId)}</td>
+        <td class="scrip-sym">${escapeHtml(event.symbol)}</td>
+        <td class="analysis-status-cell" style="text-align:center">${escapeHtml(event.status)}</td>
+        <td class="analysis-rate" style="font-weight:bold">${fmt(event.lastPrice)}</td>
+        <td class="analysis-rate" style="font-weight:bold; color:#107c41">${w52HighStr}</td>
+        <td class="analysis-rate" style="font-weight:bold; color:#d81e05">${w52LowStr}</td>
+        <td class="analysis-time" style="text-align:center">${formatEventTime(event)}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="7" class="analysis-empty">No new intraday highs or lows yet. Alerts appear when an active Market Watch scrip makes a new day high or low.</td></tr>';
+    }).join('') || '<tr><td colspan="9" class="analysis-empty">No new intraday highs or lows yet. Alerts appear when an active Market Watch scrip makes a new day high or low.</td></tr>';
 
     // Update alert count badge
     updateAlertBadge(rows.length);
