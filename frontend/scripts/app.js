@@ -486,25 +486,31 @@ function closeAnalysis() {
 function toast(message) { const target = el('toast'); target.textContent = message; target.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => target.classList.remove('show'), 2600); }
 
 function setSession(session) {
-  state.session = session || state.session;
-  const live = state.session.mode === 'LIVE';
+  if (session) {
+    state.session = { ...state.session, ...session };
+  }
+  const live = state.session.mode === 'LIVE' || Boolean(state.session.authenticated);
   const status = el('connection-status');
-  status.classList.toggle('live', live || state.wsConnected);
-  status.classList.toggle('error', state.session.mode === 'ERROR' || !!state.session.lastError);
-  status.querySelector('span').textContent = state.session.lastError ? state.session.lastError : (live ? 'IIFL Live' : state.session.mode === 'ERROR' ? 'Connection error' : state.wsConnected ? 'Real-time' : 'Simulation');
+  if (status) {
+    status.classList.toggle('live', live || state.wsConnected);
+    status.classList.toggle('error', state.session.mode === 'ERROR' || !!state.session.lastError);
+    status.querySelector('span').textContent = state.session.lastError ? state.session.lastError : (live ? 'IIFL Live' : state.session.mode === 'ERROR' ? 'Connection error' : state.wsConnected ? 'Real-time' : 'Simulation');
+  }
   const connect = el('connect-iifl');
   const logout = el('logout-iifl');
   
-  if (live) {
-    connect.textContent = 'IIFL Connected';
-    connect.classList.add('connected');
-    connect.style.display = 'inline-block';
-    if (logout) logout.style.display = 'inline-block';
-  } else {
-    connect.textContent = 'Connect IIFL';
-    connect.classList.remove('connected');
-    connect.style.display = 'inline-block';
-    if (logout) logout.style.display = 'none';
+  if (connect) {
+    if (live) {
+      connect.textContent = 'IIFL Connected';
+      connect.classList.add('connected');
+      connect.style.display = 'inline-block';
+      if (logout) logout.style.display = 'inline-block';
+    } else {
+      connect.textContent = 'Connect IIFL';
+      connect.classList.remove('connected');
+      connect.style.display = 'inline-block';
+      if (logout) logout.style.display = 'none';
+    }
   }
 }
 
