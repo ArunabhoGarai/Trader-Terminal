@@ -478,20 +478,11 @@ function updateActionWatch(session, nextQuotes) {
       continue;
     }
 
-    // Continuously ensure priorRange.high is at least official dayHigh, and priorRange.low is at most dayLow
-    if (dayHigh > priorRange.high) {
-      priorRange.high = dayHigh;
-    }
-    if (dayLow > 0 && (priorRange.low <= 0 || dayLow < priorRange.low)) {
-      priorRange.low = dayLow;
-    }
-
     // -----------------------------------------------------------------------
     // STRICT MONOTONIC BREAKOUT CHECK
-    // A "New High" fires ONLY when the current LTP is strictly greater than
-    // the highest LTP/DayHigh seen so far (priorRange.high).
-    // A "New Low" fires ONLY when the current LTP is strictly less than the
-    // lowest LTP/DayLow seen so far (priorRange.low).
+    // Baseline high/low are anchored ONCE on first tick/login from official Day High/Low.
+    // A "New High" fires when current LTP surpasses the established high (priorRange.high).
+    // A "New Low" fires when current LTP drops below the established low (priorRange.low).
     // -----------------------------------------------------------------------
     const isNewHigh = ltp > priorRange.high;
     const isNewLow  = ltp < priorRange.low;
