@@ -460,17 +460,13 @@ function updateActionWatch(session, nextQuotes) {
     const priorRange = session.intradayRanges.get(key);
     const previousClose = number(quote.close, 0);
 
+    const dayHigh = number(quote.high, 0);
+    const dayLow  = number(quote.low, 0);
+
     if (!priorRange) {
-      // First time seeing this instrument today
-      const dayHigh = number(quote.high, 0);
-      const dayLow  = number(quote.low, 0);
-
-      // Normal tick tracking happens if logged in at 8:00 AM before market open.
-      // If login occurred after 8:00 AM / mid-day, FALL BACK to IIFL Day High and Day Low as the base data.
-      const useIIFLDayFallback = !session.wasLoggedInAt8AM || (isMarketHours() && dayHigh > 0);
-
-      const baselineHigh = (useIIFLDayFallback && dayHigh > 0) ? Math.max(dayHigh, ltp) : ltp;
-      const baselineLow  = (useIIFLDayFallback && dayLow > 0)  ? Math.min(dayLow, ltp)  : ltp;
+      // First time seeing this instrument today: anchor baseline to official exchange Day High / Day Low
+      const baselineHigh = dayHigh > 0 ? Math.max(dayHigh, ltp) : ltp;
+      const baselineLow  = dayLow > 0  ? Math.min(dayLow, ltp)  : ltp;
 
       session.intradayRanges.set(key, {
         high: baselineHigh,
@@ -482,15 +478,20 @@ function updateActionWatch(session, nextQuotes) {
       continue;
     }
 
+    // Continuously ensure priorRange.high is at least official dayHigh, and priorRange.low is at most dayLow
+    if (dayHigh > priorRange.high) {
+      priorRange.high = dayHigh;
+    }
+    if (dayLow > 0 && (priorRange.low <= 0 || dayLow < priorRange.low)) {
+      priorRange.low = dayLow;
+    }
+
     // -----------------------------------------------------------------------
     // STRICT MONOTONIC BREAKOUT CHECK
     // A "New High" fires ONLY when the current LTP is strictly greater than
-    // the highest LTP seen so far this session (priorRange.high).
+    // the highest LTP/DayHigh seen so far (priorRange.high).
     // A "New Low" fires ONLY when the current LTP is strictly less than the
-    // lowest LTP seen so far this session (priorRange.low).
-    // We deliberately do NOT use quote.high / quote.low (the exchange's OHLC
-    // fields) because those can lag, spike transiently, or be stale — causing
-    // false breakout alerts as seen in the ICICIBANK 1439.50 → 1439.30 bug.
+    // lowest LTP/DayLow seen so far (priorRange.low).
     // -----------------------------------------------------------------------
     const isNewHigh = ltp > priorRange.high;
     const isNewLow  = ltp < priorRange.low;
