@@ -175,14 +175,16 @@ button { cursor: pointer; }
 .watch-actions-spacer { flex: 1; }
 
 /* ── SYMBOL SEARCH ── */
-.symbol-search-wrap { position: relative; z-index: 3; }
-.symbol-search-wrap input { width: 190px; }
-.symbol-results { position: absolute; top: 28px; left: 0; width: 310px; max-height: 278px; overflow: auto; border: 1px solid #68787b; background: #fff; box-shadow: 2px 3px 8px rgba(0,0,0,.32); }
+.symbol-search-wrap { position: relative; z-index: 100; }
+.symbol-search-wrap input { width: 220px; font-weight: 600; }
+.symbol-results { position: absolute; top: 28px; left: 0; width: 380px; max-height: 340px; overflow-y: auto; border: 1px solid #68787b; background: #ffffff; box-shadow: 0 8px 24px rgba(0,0,0,0.35); border-radius: 3px; }
 .symbol-results.hidden { display: none; }
-.symbol-result { display: block; width: 100%; padding: 5px 7px; border: 0; border-bottom: 1px solid #e0e5e5; background: #fff; color: #1b2426; text-align: left; }
-.symbol-result:hover, .symbol-result.active { background: #dceff2; }
-.symbol-result strong { display: block; font-size: 11px; }
-.symbol-result span { color: #617073; font-size: 10px; }
+.symbol-result { display: block; width: 100%; padding: 6px 10px; border: 0; border-bottom: 1px solid #edf2f2; background: #ffffff; color: #111827; text-align: left; cursor: pointer; transition: background 0.1s ease; }
+.symbol-result:hover, .symbol-result.active { background: #e0f2fe !important; }
+.symbol-result-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.symbol-result strong { font-size: 12px; font-weight: 700; color: #0f172a; }
+.symbol-tag { color: #475569; font-size: 10px; font-weight: 600; background: #f1f5f9; padding: 1px 5px; border-radius: 3px; border: 1px solid #cbd5e1; white-space: nowrap; }
+.symbol-company-name { color: #334155; font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 .watchlist-capacity { padding: 3px 5px; border: 1px solid #9ca8aa; background: #e9eeee; color: #4a5c60; font-family: var(--mono); font-size: 10px; white-space: nowrap; }
 .watchlist-capacity.full { border-color: #b5701c; background: #fff1cb; color: #814400; font-weight: 700; }
 .remove-scrip { width: 17px; height: 16px; padding: 0; border: 1px solid #81383d; background: #551d21; color: #ffdbdc; font-weight: 700; line-height: 12px; }
