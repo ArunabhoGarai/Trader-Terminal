@@ -269,8 +269,21 @@ function resolveNSESymbol(companyName) {
   return cleanedSymbol || inputUpper;
 }
 
+function getCompanyName(symbol) {
+  if (!symbol) return '';
+  const clean = String(symbol).toUpperCase().replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').trim();
+  const entry = symbolMap.get(clean) || symbolMap.get(String(symbol).toUpperCase().trim());
+  return entry ? entry.companyName : '';
+}
+
+function getAllSymbols() {
+  return Array.from(symbolMap.values());
+}
+
 module.exports = {
   loadNSEMaster,
   resolveNSESymbol,
+  getCompanyName,
+  getAllSymbols,
   isLoaded: () => isLoaded
 };
