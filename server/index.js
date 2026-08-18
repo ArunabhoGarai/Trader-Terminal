@@ -136,7 +136,10 @@ function segmentLabel(code) {
 }
 
 function publicInstrument(instrument) {
-  return { instrumentId: String(instrument.instrumentId), symbol: instrument.symbol, exchange: instrument.exchange, segment: instrument.segment || segmentLabel(instrument.exchange), displayName: instrument.displayName || instrument.symbol };
+  const cleanSym = String(instrument.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').trim();
+  const companyName = nseMaster.getCompanyName(cleanSym) || nseMaster.getCompanyName(instrument.symbol);
+  const displayName = companyName || instrument.displayName || instrument.symbol;
+  return { instrumentId: String(instrument.instrumentId), symbol: instrument.symbol, exchange: instrument.exchange, segment: instrument.segment || segmentLabel(instrument.exchange), displayName };
 }
 
 function indiaTradingDate() {
@@ -254,6 +257,12 @@ function quoteFromPayload(raw, fallback, position) {
     week52Low = fallback.week52Low > 0 && Math.abs(fallback.week52Low - ltp) / ltp < 0.5 
       ? fallback.week52Low 
       : +(ltp * 0.85).toFixed(2);
+  }
+
+  // REALTIME 52W CALCULATION: Dynamically update 52W High and Low if LTP breaks previous 52W bounds
+  if (ltp > 0) {
+    if (week52High > 0 && ltp > week52High) week52High = ltp;
+    if (week52Low > 0 && ltp < week52Low) week52Low = ltp;
   }
 
   let tickTime = extract(raw, ['TickTime', 'tickTime', 'tickTimestamp', 'timestamp', 'Time', 'time'], null);
@@ -511,6 +520,8 @@ function updateActionWatch(session, nextQuotes) {
           status,
           lastPrice: ltp,
           close: previousClose,
+          week52High: quote.week52High > 0 ? Math.max(quote.week52High, ltp) : ltp,
+          week52Low: quote.week52Low > 0 ? Math.min(quote.week52Low, ltp) : ltp,
           direction,
           timestamp: quote.updatedAt || new Date().toISOString(),
           time: indiaTimeString(),
@@ -865,7 +876,9 @@ function normaliseContract(row, code, index) {
   if (!instrumentId || !rawSymbol) return null;
   
   const symbol = String(rawSymbol).trim().toUpperCase();
-  const displayName = String(row.displayName ?? row.name ?? row.scripName ?? row.companyName ?? row.CompanyName ?? symbol).trim();
+  const cleanSym = symbol.replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').trim();
+  const companyName = nseMaster.getCompanyName(cleanSym) || nseMaster.getCompanyName(symbol);
+  const displayName = companyName || String(row.displayName ?? row.name ?? row.scripName ?? row.companyName ?? row.CompanyName ?? symbol).trim();
 
   const instrument = {
     instrumentId: String(instrumentId),
@@ -1089,6 +1102,11 @@ app.get('/api/instruments', async (req, res) => {
   const query = String(req.query.q || '').slice(0, 48);
   const instruments = await searchInstruments(exchange, segment, query);
   res.json({ exchange, segment, instruments: instruments.map(publicInstrument) });
+});
+
+app.get('/api/instruments/catalog', (req, res) => {
+  const instruments = Array.from(knownInstruments.values()).map(publicInstrument);
+  res.json({ count: instruments.length, instruments });
 });
 
 // ---------------------------------------------------------------------------
