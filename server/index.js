@@ -30,7 +30,7 @@ const CONFIG = {
   appKey: process.env.IIFL_APP_KEY || '',
   appSecret: process.env.IIFL_APP_SECRET || '',
   redirectUri: process.env.IIFL_REDIRECT_URI || `http://localhost:${process.env.PORT || 3001}/auth/callback`,
-  quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 300), 200),
+  quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 100), 50),
 };
 
 const MAX_WATCHLIST_SIZE = 400;
@@ -597,8 +597,8 @@ async function refreshLiveQuotes(session) {
   const sessionId = session.id || 'default';
   const now = Date.now();
   const lastTime = inFlightQuotesMap.get(sessionId) || 0;
-  if (now - lastTime < 100) {
-    // 100ms throttle guard: permits up to 10 req/sec for zero-delay millisecond ticks while respecting 20 RPS limit
+  if (now - lastTime < 50) {
+    // 50ms throttle guard: permits up to 20 req/sec for zero-delay millisecond ticks while respecting 20 RPS limit
     return { success: true, events: [] };
   }
   inFlightQuotesMap.set(sessionId, now);
@@ -684,7 +684,7 @@ async function refreshLiveQuotes(session) {
 
   try {
     const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, payload, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 15000,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 5000,
     });
     
     const results = Array.isArray(response.data?.result) ? response.data.result : [];
@@ -892,16 +892,51 @@ function normaliseContract(row, code, index) {
   return instrument;
 }
 
+const CONTRACTS_DISK_CACHE = path.join(__dirname, 'contracts_cache.json');
+
+function loadContractsFromDisk() {
+  try {
+    if (fs.existsSync(CONTRACTS_DISK_CACHE)) {
+      const data = JSON.parse(fs.readFileSync(CONTRACTS_DISK_CACHE, 'utf8'));
+      for (const [code, list] of Object.entries(data)) {
+        if (Array.isArray(list)) {
+          list.forEach(inst => knownInstruments.set(instrumentKey(inst), inst));
+          contractCache.set(code, { at: Date.now(), instruments: list });
+        }
+      }
+      console.log(`[IIFL Catalog] ✅ Loaded ${knownInstruments.size} instruments from local disk cache.`);
+    }
+  } catch (e) {
+    console.warn('[IIFL Catalog] ⚠️ Could not load contracts from disk:', e.message);
+  }
+}
+
+loadContractsFromDisk();
+
 async function contractsFor(code) {
   const cached = contractCache.get(code);
-  if (cached && Date.now() - cached.at < CONTRACT_CACHE_MS) return cached.instruments;
+  if (cached && Date.now() - cached.at < CONTRACT_CACHE_MS && cached.instruments.length > 0) return cached.instruments;
   try {
-    const response = await axios.get(`${CONFIG.apiBaseUrl}/contractfiles/${code}.json`, { timeout: 20000 });
+    const response = await axios.get(`${CONFIG.apiBaseUrl}/contractfiles/${code}.json`, { 
+      timeout: 30000,
+      headers: {
+        'Accept': 'application/json, text/plain, */*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
     const instruments = contractRows(response.data).map((row, index) => normaliseContract(row, code, index)).filter(Boolean);
-    contractCache.set(code, { at: Date.now(), instruments });
+    if (instruments.length > 0) {
+      contractCache.set(code, { at: Date.now(), instruments });
+      try {
+        const toSave = {};
+        for (const [k, v] of contractCache.entries()) toSave[k] = v.instruments;
+        fs.writeFileSync(CONTRACTS_DISK_CACHE, JSON.stringify(toSave), 'utf8');
+      } catch (_) {}
+    }
     return instruments;
   } catch (error) {
-    return [];
+    console.warn(`[IIFL Catalog] ⚠️ Could not download ${code}.json (${error.message}). Using local cache.`);
+    return cached?.instruments || [];
   }
 }
 
@@ -918,7 +953,7 @@ async function searchInstruments(exchange, segment, query) {
   const matches = [];
   const seen = new Set();
 
-  // 1. Instant search over pre-loaded in-memory knownInstruments
+  // 1. Instant 0ms search over pre-loaded in-memory knownInstruments
   for (const inst of knownInstruments.values()) {
     if (!codes.includes(inst.exchange)) continue;
     const sym = String(inst.symbol || '').toUpperCase();
@@ -961,11 +996,6 @@ async function searchInstruments(exchange, segment, query) {
 
     return aSym.localeCompare(bSym);
   });
-
-  // Background non-blocking fetch if catalog missing
-  if (matches.length < 5 && needle.length >= 2) {
-    Promise.all(codes.map(contractsFor)).catch(() => {});
-  }
 
   return matches.slice(0, 15);
 }
@@ -1289,7 +1319,7 @@ app.get('/api/watchlist', (req, res) => {
   res.json(terminalPayload(session));
 });
 
-app.post('/api/watchlist', async (req, res) => {
+app.post('/api/watchlist', (req, res) => {
   const session = browserSession(req, res);
   const { exchange, instrumentId, symbol, basePrice } = req.body;
   if (!instrumentId || !exchange) return res.status(400).json({ message: 'Missing scrip identifiers.' });
@@ -1300,10 +1330,18 @@ app.post('/api/watchlist', async (req, res) => {
   const next = makeInstrument([symbol || 'UNKNOWN', instrumentId, basePrice || 100, exchange]);
   session.watchlist.push(next);
   session.quotes.push(session.mode === 'LIVE' ? makeEmptyLiveQuote(next, session.watchlist.length - 1) : makeSimulationQuote(next, session.watchlist.length - 1));
-  if (session.mode === 'LIVE') await refreshLiveQuotes(session);
-  // Notify WebSocket clients about the updated watchlist
-  broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
+  
+  // Instant 0ms response to client
   res.status(201).json(terminalPayload(session));
+
+  // Asynchronous background live quote fetch and WebSocket broadcast
+  if (session.mode === 'LIVE') {
+    refreshLiveQuotes(session).then(() => {
+      broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
+    }).catch(() => {});
+  } else {
+    broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
+  }
 });
 
 app.delete('/api/watchlist/:exchange/:instrumentId', (req, res) => {
@@ -1642,27 +1680,29 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-server.listen(CONFIG.port, CONFIG.host, () => {
+server.listen(CONFIG.port, CONFIG.host, async () => {
   console.log(`Trader Terminal running at http://${CONFIG.host}:${CONFIG.port}`);
   console.log(`WebSocket endpoint: ws://localhost:${CONFIG.port}/ws`);
   console.log(configured() ? 'IIFL credentials detected; awaiting daily browser login.' : 'Simulation mode; add server/.env to enable IIFL login.');
+
+  // STEP 1: Dedicated Pre-Load of Core Equity Series (NSEEQ) with zero interference
+  console.log('[IIFL Catalog] ⏳ Exclusively pre-loading NSE Equity contracts from IIFL...');
+  try {
+    const nseEqInstruments = await contractsFor('NSEEQ');
+    if (nseEqInstruments.length > 0) {
+      nseEqInstruments.forEach(inst => knownInstruments.set(instrumentKey(inst), inst));
+      console.log(`[IIFL Catalog] ✅ Successfully pre-loaded ${nseEqInstruments.length} NSEEQ equity instruments into memory.`);
+    } else {
+      console.log(`[IIFL Catalog] ℹ️ Loaded ${knownInstruments.size} instruments from local memory/disk cache.`);
+    }
+  } catch (err) {
+    console.warn('[IIFL Catalog] ⚠️ NSEEQ preload notice:', err.message);
+  }
+
+  // STEP 2: Safely launch background services only after Equity Catalog is ready
+  console.log('[Services] 🚀 Starting background services (Quote Polling, NSE Scraper, Sensex Resolver)...');
   startPolling();
   nseScraper.startNSEScraper(5 * 60 * 1000);
-  
-  // Pre-load all contract catalogs from IIFL (NSEEQ, BSEEQ, NSEFO, BSEFO) in background
-  const segmentsToPreload = ['NSEEQ', 'BSEEQ', 'NSEFO', 'BSEFO'];
-  segmentsToPreload.forEach((code) => {
-    contractsFor(code).then((instruments) => {
-      instruments.forEach((inst) => {
-        knownInstruments.set(instrumentKey(inst), inst);
-      });
-      console.log(`[IIFL Catalog] ✅ Pre-loaded ${instruments.length} ${code} instruments into memory.`);
-    }).catch((err) => {
-      console.warn(`[IIFL Catalog] ⚠️ Could not pre-load ${code} contracts:`, err.message);
-    });
-  });
-
-  // Initialize dynamic Sensex mapping and refresh it every 24 hours
   fetchSensexToken();
   setInterval(fetchSensexToken, 24 * 60 * 60 * 1000);
 });
