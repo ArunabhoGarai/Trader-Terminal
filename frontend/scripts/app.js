@@ -21,6 +21,7 @@ const state = {
   filters: { exchange: 'ALL', segment: 'ALL' },
   localSearch: '',
   sortByPctDesc: false,
+  catalog: [],
   suggestions: [],
   selectedSuggestion: null,
   searchTimer: null,
@@ -54,6 +55,16 @@ function quoteFromPrice(quote, index = 0) {
   const pctChange = Number(quote.pctChange ?? quote.changePercent ?? 0);
   const pcClose = Number((quote.close ?? quote.previousClose ?? (lastPrice / (1 + pctChange / 100))) || lastPrice);
   const spread = Math.max(lastPrice * .001, .05);
+
+  let week52High = Number(quote.week52High ?? lastPrice * (1.02 + (index % 3) * .025));
+  let week52Low = Number(quote.week52Low ?? lastPrice * (.72 - (index % 3) * .02));
+
+  // REALTIME 52W CALCULATION: Dynamically update 52W High and Low if lastPrice breaks previous 52W bounds
+  if (lastPrice > 0) {
+    if (week52High > 0 && lastPrice > week52High) week52High = lastPrice;
+    if (week52Low > 0 && lastPrice < week52Low) week52Low = lastPrice;
+  }
+
   return {
     id: quote.id || quote.instrumentId || String(index), instrumentId: String(quote.instrumentId || quote.id || index),
     symbol: quote.symbol || quote.tradingSymbol || `SCRIP${index + 1}`,
@@ -65,8 +76,8 @@ function quoteFromPrice(quote, index = 0) {
     offerQty: Number(quote.bestAskQty ?? quote.bestAskQuantity ?? 120 + index * 19),
     open: Number(quote.open ?? pcClose * .996), high: Number(quote.high ?? lastPrice * 1.013), low: Number(quote.low ?? lastPrice * .988),
     totalQty: Number(quote.tradedVolume ?? quote.totalQty ?? 80000 + index * 11457),
-    week52High: Number(quote.week52High ?? lastPrice * (1.02 + (index % 3) * .025)),
-    week52Low: Number(quote.week52Low ?? lastPrice * (.72 - (index % 3) * .02)),
+    week52High,
+    week52Low,
     updatedAt: quote.updatedAt || new Date().toISOString(),
   };
 }
@@ -143,9 +154,14 @@ function renderSearchResults() {
   el('symbol-search').setAttribute('aria-expanded', String(Boolean(items.length)));
   results.innerHTML = items.map((item, index) => {
     const sym = item.symbol || 'UNKNOWN';
-    const name = item.displayName && item.displayName !== sym ? ` · ${item.displayName}` : '';
+    const displayName = item.displayName && item.displayName !== sym ? item.displayName : '';
+    const nameHtml = displayName ? `<div class="symbol-company-name">${escapeHtml(displayName)}</div>` : '';
     return `<button class="symbol-result${state.selectedSuggestion === item ? ' active' : ''}" type="button" data-result-index="${index}" role="option" aria-selected="${state.selectedSuggestion === item}">
-      <strong>${escapeHtml(sym)}</strong><span>${escapeHtml(item.exchange)} · ${escapeHtml(item.segment || 'Equity')}${escapeHtml(name)} · Token ${escapeHtml(item.instrumentId)}</span>
+      <div class="symbol-result-row">
+        <strong>${escapeHtml(sym)}</strong>
+        <span class="symbol-tag">${escapeHtml(item.exchange)} · ${escapeHtml(item.segment || 'Equity')} · Token ${escapeHtml(item.instrumentId)}</span>
+      </div>
+      ${nameHtml}
     </button>`;
   }).join('');
 }
@@ -157,24 +173,75 @@ function chooseSuggestion(item) {
   renderSearchResults();
 }
 
-async function searchInstruments() {
-  const query = el('symbol-search').value.trim();
-  state.selectedSuggestion = null;
-  if (query.length < 2) { state.suggestions = []; renderSearchResults(); return; }
-  const request = ++state.searchRequest;
+async function loadCatalog() {
   try {
-    const params = new URLSearchParams({ q: query, exchange: state.filters.exchange, segment: state.filters.segment });
-    const response = await fetch(`/api/instruments?${params}`);
-    if (!response.ok) throw new Error('Search unavailable');
-    const data = await response.json();
-    if (request !== state.searchRequest) return;
-    state.suggestions = Array.isArray(data.instruments) ? data.instruments.slice(0, 12) : [];
-    renderSearchResults();
-  } catch (_) {
-    if (request !== state.searchRequest) return;
+    const res = await fetch('/api/instruments/catalog');
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.instruments)) {
+        state.catalog = data.instruments;
+        console.log(`[CATALOG] Preloaded ${state.catalog.length} instruments for instant 0ms search.`);
+      }
+    }
+  } catch (_) {}
+}
+
+function searchInstruments() {
+  const input = el('symbol-search');
+  if (!input) return;
+  const query = input.value.trim();
+  state.selectedSuggestion = null;
+  if (!query) {
     state.suggestions = [];
     renderSearchResults();
+    return;
   }
+
+  const needle = query.toUpperCase();
+  const exFilter = state.filters.exchange;
+  const segFilter = state.filters.segment;
+
+  // 1. INSTANT (0ms) Local Search over in-memory catalog
+  if (Array.isArray(state.catalog) && state.catalog.length > 0) {
+    const localMatches = state.catalog.filter(inst => {
+      if (exFilter !== 'ALL' && inst.exchange !== exFilter && !inst.exchange.startsWith(exFilter)) return false;
+      if (segFilter !== 'ALL' && inst.segment !== segFilter) return false;
+      const sym = String(inst.symbol || '').toUpperCase();
+      const name = String(inst.displayName || '').toUpperCase();
+      return sym.includes(needle) || name.includes(needle);
+    });
+
+    localMatches.sort((a, b) => {
+      const aSym = String(a.symbol).toUpperCase();
+      const bSym = String(b.symbol).toUpperCase();
+      const aExact = aSym === needle ? 0 : 1;
+      const bExact = bSym === needle ? 0 : 1;
+      if (aExact !== bExact) return aExact - bExact;
+
+      const aStarts = aSym.startsWith(needle) ? 0 : 1;
+      const bStarts = bSym.startsWith(needle) ? 0 : 1;
+      if (aStarts !== bStarts) return aStarts - bStarts;
+
+      return aSym.localeCompare(bSym);
+    });
+
+    state.suggestions = localMatches.slice(0, 15);
+    renderSearchResults();
+  }
+
+  // 2. Query backend asynchronously to guarantee full coverage
+  const request = ++state.searchRequest;
+  const params = new URLSearchParams({ q: query, exchange: state.filters.exchange, segment: state.filters.segment });
+  fetch(`/api/instruments?${params}`)
+    .then(res => res.ok ? res.json() : null)
+    .then(data => {
+      if (request !== state.searchRequest || !data || !Array.isArray(data.instruments)) return;
+      if (data.instruments.length > 0) {
+        state.suggestions = data.instruments.slice(0, 15);
+        renderSearchResults();
+      }
+    })
+    .catch(() => {});
 }
 
 function renderNews() {
@@ -345,8 +412,14 @@ function renderAnalysis() {
         return qSym === cleanSym || String(q.instrumentId) === String(event.instrumentId);
       });
       
-      const w52High = live ? Number(live.week52High || live.new52WHL || 0) : Number(event.week52High || 0);
-      const w52Low = live ? Number(live.week52Low || live.new52WHL || 0) : Number(event.week52Low || 0);
+      let w52High = live ? Number(live.week52High || live.new52WHL || 0) : Number(event.week52High || 0);
+      let w52Low = live ? Number(live.week52Low || live.new52WHL || 0) : Number(event.week52Low || 0);
+      
+      const ltp = Number(event.lastPrice || live?.lastPrice || 0);
+      if (ltp > 0) {
+        if (w52High > 0 && ltp > w52High) w52High = ltp;
+        if (w52Low > 0 && ltp < w52Low) w52Low = ltp;
+      }
       
       const w52HighStr = w52High > 0 ? fmt(w52High) : '-';
       const w52LowStr = w52Low > 0 ? fmt(w52Low) : '-';
@@ -1075,10 +1148,12 @@ function bindEvents() {
   });
   if (el('symbol-search')) {
     el('symbol-search').addEventListener('focus', () => {
-      if (el('symbol-search').value.trim().length >= 2) searchInstruments();
+      if (el('symbol-search').value.trim().length >= 1) searchInstruments();
+    });
+    el('symbol-search').addEventListener('input', () => {
+      searchInstruments();
     });
   }
-  el('symbol-search').addEventListener('input', () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(searchInstruments, 40); });
   el('symbol-search').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addScrip(); } if (event.key === 'Escape') { state.suggestions = []; renderSearchResults(); } });
   el('symbol-results').addEventListener('click', (event) => { const button = event.target.closest('[data-result-index]'); if (button) chooseSuggestion(state.suggestions[Number(button.dataset.resultIndex)]); });
   el('add-scrip').addEventListener('click', addScrip);
@@ -1608,6 +1683,7 @@ async function initialize() {
 
   await getSession();
   await loadWatchlist();
+  loadCatalog(); // Preload instrument catalog for instant 0ms symbol search
 
   // Connect WebSocket for real-time push
   connectWebSocket();
