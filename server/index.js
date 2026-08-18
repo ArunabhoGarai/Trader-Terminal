@@ -861,11 +861,18 @@ function contractRows(payload) {
 
 function normaliseContract(row, code, index) {
   const instrumentId = row.instrumentId ?? row.instrumentID ?? row.InstrumentId ?? row.InstrumentID ?? row.exchangeInstrumentId ?? row.exchangeInstrumentID ?? row.ExchangeInstrumentId ?? row.ExchangeInstrumentID ?? row.token ?? row.Token ?? row.securityId ?? row.securityID ?? row.SecurityId ?? row.SecurityID;
-  const symbol = row.symbol ?? row.Symbol ?? row.tradingSymbol ?? row.TradingSymbol ?? row.tradingSymbolName ?? row.TradingSymbolName ?? row.scripName ?? row.ScripName ?? row.name ?? row.Name ?? row.displayName ?? row.DisplayName;
-  if (!instrumentId || !symbol) return null;
+  const rawSymbol = row.symbol ?? row.Symbol ?? row.tradingSymbol ?? row.TradingSymbol ?? row.tradingSymbolName ?? row.TradingSymbolName ?? row.scripName ?? row.ScripName ?? row.name ?? row.Name ?? row.displayName ?? row.DisplayName;
+  if (!instrumentId || !rawSymbol) return null;
+  
+  const symbol = String(rawSymbol).trim().toUpperCase();
+  const displayName = String(row.displayName ?? row.name ?? row.scripName ?? row.companyName ?? row.CompanyName ?? symbol).trim();
+
   const instrument = {
-    instrumentId: String(instrumentId), symbol: String(symbol).trim().toUpperCase(), exchange: code,
-    segment: segmentLabel(code), displayName: String(row.displayName ?? row.name ?? row.scripName ?? symbol).trim(),
+    instrumentId: String(instrumentId),
+    symbol: symbol,
+    exchange: code,
+    segment: segmentLabel(code),
+    displayName: displayName || symbol,
     basePrice: number(row.lastPrice ?? row.close ?? row.strikePrice, 100 + ((index + 1) * 17)),
   };
   knownInstruments.set(instrumentKey(instrument), instrument);
@@ -887,24 +894,67 @@ async function contractsFor(code) {
 
 async function searchInstruments(exchange, segment, query) {
   const needle = String(query || '').trim().toUpperCase();
-  const matches = (instrument) => !needle || instrument.symbol.includes(needle) || String(instrument.displayName || '').toUpperCase().includes(needle);
+  if (!needle) return [];
+
   const requestedExchange = String(exchange || 'NSE').toUpperCase();
   const requestedSegment = String(segment || 'Equity').toUpperCase();
   const codes = requestedExchange === 'ALL'
     ? (requestedSegment === 'ALL' ? ['NSEEQ', 'BSEEQ', 'NSEFO', 'BSEFO'] : ['NSE', 'BSE'].map((value) => exchangeCode(value, segment)))
     : (requestedSegment === 'ALL' ? [exchangeCode(exchange, 'Equity'), exchangeCode(exchange, 'F&O')] : [exchangeCode(exchange, segment)]);
-  let instruments = STATIC_CATALOG.filter((instrument) => codes.includes(instrument.exchange) && matches(instrument));
-  if (needle.length >= 2) {
-    const catalogs = await Promise.all(codes.filter((code) => code !== 'NSEEQ' || instruments.length < 10).map(contractsFor));
-    instruments = [...instruments, ...catalogs.flat().filter(matches)];
-  }
-  const unique = new Map();
-  instruments.forEach((instrument) => {
-    if (!unique.has(instrument.symbol)) {
-      unique.set(instrument.symbol, instrument);
+
+  const matches = [];
+  const seen = new Set();
+
+  // 1. Instant search over pre-loaded in-memory knownInstruments
+  for (const inst of knownInstruments.values()) {
+    if (!codes.includes(inst.exchange)) continue;
+    const sym = String(inst.symbol || '').toUpperCase();
+    const name = String(inst.displayName || inst.symbol || '').toUpperCase();
+    if (sym.includes(needle) || name.includes(needle)) {
+      const key = `${inst.exchange}:${inst.instrumentId}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        matches.push(inst);
+      }
     }
+  }
+
+  // 2. Also check STATIC_CATALOG entries
+  for (const inst of STATIC_CATALOG) {
+    if (!codes.includes(inst.exchange)) continue;
+    const sym = String(inst.symbol || '').toUpperCase();
+    const name = String(inst.displayName || inst.symbol || '').toUpperCase();
+    if (sym.includes(needle) || name.includes(needle)) {
+      const key = `${inst.exchange}:${inst.instrumentId}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        matches.push(inst);
+      }
+    }
+  }
+
+  // 3. Relevance ranking: Exact match > StartsWith > Substring
+  matches.sort((a, b) => {
+    const aSym = String(a.symbol).toUpperCase();
+    const bSym = String(b.symbol).toUpperCase();
+    
+    const aExact = aSym === needle ? 0 : 1;
+    const bExact = bSym === needle ? 0 : 1;
+    if (aExact !== bExact) return aExact - bExact;
+
+    const aStarts = aSym.startsWith(needle) ? 0 : 1;
+    const bStarts = bSym.startsWith(needle) ? 0 : 1;
+    if (aStarts !== bStarts) return aStarts - bStarts;
+
+    return aSym.localeCompare(bSym);
   });
-  return [...unique.values()].sort((a, b) => a.symbol.localeCompare(b.symbol)).slice(0, 15);
+
+  // Background non-blocking fetch if catalog missing
+  if (matches.length < 5 && needle.length >= 2) {
+    Promise.all(codes.map(contractsFor)).catch(() => {});
+  }
+
+  return matches.slice(0, 15);
 }
 
 function knownInstrument(exchange, instrumentId) {
@@ -1581,14 +1631,17 @@ server.listen(CONFIG.port, CONFIG.host, () => {
   startPolling();
   nseScraper.startNSEScraper(5 * 60 * 1000);
   
-  // Pre-load full NSEEQ contract catalog from IIFL (2000+ stocks)
-  contractsFor('NSEEQ').then((instruments) => {
-    instruments.forEach((inst) => {
-      knownInstruments.set(instrumentKey(inst), inst);
+  // Pre-load all contract catalogs from IIFL (NSEEQ, BSEEQ, NSEFO, BSEFO) in background
+  const segmentsToPreload = ['NSEEQ', 'BSEEQ', 'NSEFO', 'BSEFO'];
+  segmentsToPreload.forEach((code) => {
+    contractsFor(code).then((instruments) => {
+      instruments.forEach((inst) => {
+        knownInstruments.set(instrumentKey(inst), inst);
+      });
+      console.log(`[IIFL Catalog] ✅ Pre-loaded ${instruments.length} ${code} instruments into memory.`);
+    }).catch((err) => {
+      console.warn(`[IIFL Catalog] ⚠️ Could not pre-load ${code} contracts:`, err.message);
     });
-    console.log(`[IIFL Catalog] ✅ Pre-loaded ${instruments.length} NSEEQ instruments into memory.`);
-  }).catch((err) => {
-    console.warn('[IIFL Catalog] ⚠️ Could not pre-load NSEEQ contracts:', err.message);
   });
 
   // Initialize dynamic Sensex mapping and refresh it every 24 hours
