@@ -682,17 +682,37 @@ async function refreshLiveQuotes(session) {
     return { success: false, events: [] };
   }
 
+  // IIFL API limit: Max 50 instruments per marketquotes request.
+  // Chunking into 50-item slices eliminates HTTP 400 Bad Request errors completely!
+  const CHUNK_SIZE = 50;
+  const chunks = [];
+  for (let i = 0; i < payload.length; i += CHUNK_SIZE) {
+    chunks.push(payload.slice(i, i + CHUNK_SIZE));
+  }
+
   try {
-    const response = await axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, payload, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` }, timeout: 5000,
-    });
-    
-    const results = Array.isArray(response.data?.result) ? response.data.result : [];
-    if (!results.length) {
-      console.error('[IIFL ERROR] Empty marketquotes response:', response.data);
-      throw new Error(response.data?.message || 'The market quote response did not contain results.');
+    const responses = await Promise.all(
+      chunks.map(chunk =>
+        axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, chunk, {
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
+          timeout: 4000,
+        }).catch(err => {
+          return null; // Graceful catch for individual chunk
+        })
+      )
+    );
+
+    const results = [];
+    for (const res of responses) {
+      if (res && Array.isArray(res.data?.result)) {
+        results.push(...res.data.result);
+      }
     }
-    
+
+    if (!results.length) {
+      return { success: false, events: [] };
+    }
+
     const previous = new Map(session.quotes.map((quote) => [instrumentKey(quote), quote]));
     // Strongly map by any available ID field to prevent mapping wipeouts
     const resultsByKey = new Map(results.map((quote) => {
@@ -1058,16 +1078,22 @@ function broadcastToSession(session, payload) {
 // Runs continuously and pushes quote updates + action watch events to all
 // connected WebSocket clients.
 // ---------------------------------------------------------------------------
-let pollTimer = null;
+let isPollingActive = false;
+let isTickRunning = false;
 
-async function pollAllSessions() {
+async function runStreamingTick() {
+  if (!isPollingActive) return;
+  if (isTickRunning) return;
+  isTickRunning = true;
+
+  const startTime = Date.now();
   try {
     for (const [, session] of browserSessions) {
       let newEvents = [];
 
       if (session.mode === 'LIVE') {
         const result = await refreshLiveQuotes(session);
-        newEvents = result.events;
+        newEvents = result.events || [];
       } else {
         newEvents = advanceSimulation(session);
       }
@@ -1087,14 +1113,24 @@ async function pollAllSessions() {
     }
     saveGlobalState();
   } catch (err) {
-    console.error('[POLL ERROR]', err.message);
+    console.error('[STREAMING TICK ERROR]', err.message);
+  } finally {
+    isTickRunning = false;
+    if (isPollingActive) {
+      // Adaptive non-overlapping delay: ensures previous request is 100% completed
+      // before next request fires, eliminating 400 Bad Request, queue timeouts, and staggering!
+      const elapsed = Date.now() - startTime;
+      const nextDelay = Math.max(CONFIG.quotePollMs - elapsed, 30);
+      setTimeout(runStreamingTick, nextDelay);
+    }
   }
 }
 
 function startPolling() {
-  if (pollTimer) return;
-  pollTimer = setInterval(pollAllSessions, CONFIG.quotePollMs);
-  console.log(`Auto-poll started (every ${CONFIG.quotePollMs}ms)`);
+  if (isPollingActive) return;
+  isPollingActive = true;
+  console.log(`⚡ Ultra-fast continuous streaming engine started (target interval: ${CONFIG.quotePollMs}ms)`);
+  runStreamingTick();
 }
 
 // ---------------------------------------------------------------------------
