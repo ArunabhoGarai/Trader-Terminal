@@ -7,9 +7,9 @@
     <title>IIFL Trader Terminal</title>
     <meta name="description" content="Desktop-style market watch powered by the IIFL Markets API." />
     <link rel="stylesheet" href="styles/main.css" />
-    <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+    <script defer src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script defer type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
   </head>
   <body>
     <main class="terminal-shell" aria-label="Trader terminal">
@@ -125,7 +125,7 @@
       </div>
       <div class="analysis-table-wrap">
         <table class="analysis-table">
-          <thead id="analysis-head"><tr><th>E...</th><th>Exch Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>Time</th></tr></thead>
+          <thead id="analysis-head"><tr><th>Ex</th><th>Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W Low</th><th>52W High</th><th>Time</th></tr></thead>
           <tbody id="analysis-body"></tbody>
         </table>
       </div>
@@ -151,6 +151,6 @@
 
 
     <div id="toast" class="toast" role="status"></div>
-    <script src="scripts/app.js"></script>
+    <script defer src="scripts/app.js"></script>
   </body>
 </html>
