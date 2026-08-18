@@ -450,4 +450,60 @@ button { cursor: pointer; }
   cursor: grabbing !important;
 }
 
+/* ── SCRIP BREAKOUT BADGES (1-Minute Flashing HIGH / LOW) ── */
+.scrip-breakout-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 800;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: 5px;
+  line-height: 12px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.breakout-badge-high {
+  background-color: #16a34a;
+  color: #ffffff;
+  box-shadow: 0 0 6px rgba(22, 163, 74, 0.8);
+  animation: flash-badge-high 0.8s infinite alternate ease-in-out;
+}
+
+.breakout-badge-low {
+  background-color: #dc2626;
+  color: #ffffff;
+  box-shadow: 0 0 6px rgba(220, 38, 38, 0.8);
+  animation: flash-badge-low 0.8s infinite alternate ease-in-out;
+}
+
+@keyframes flash-badge-high {
+  0% {
+    background-color: #16a34a;
+    box-shadow: 0 0 3px rgba(22, 163, 74, 0.6);
+    opacity: 0.85;
+  }
+  100% {
+    background-color: #22c55e;
+    box-shadow: 0 0 10px rgba(34, 197, 94, 1);
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes flash-badge-low {
+  0% {
+    background-color: #dc2626;
+    box-shadow: 0 0 3px rgba(220, 38, 38, 0.6);
+    opacity: 0.85;
+  }
+  100% {
+    background-color: #ef4444;
+    box-shadow: 0 0 10px rgba(239, 68, 68, 1);
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
 
