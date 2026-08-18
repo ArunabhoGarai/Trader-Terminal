@@ -34,6 +34,7 @@ const state = {
   // Action watch alert flash tracking
   lastAlertCount: 0,
   isEditMode: false,
+  breakoutBadges: new Map(),
 };
 
 let chartInstance = null;
@@ -137,9 +138,15 @@ function renderMarket() {
 
     const moveBadge = isMoveSource ? ' <span style="font-size:10px; color:#ffffff; background:#2563eb; padding:1px 4px; border-radius:2px; font-weight:bold; animation: blink-selected-scrip 0.5s infinite alternate;">⚡ [BLINKING - CLICK TARGET ROW]</span>' : '';
 
+    const qKey = keyFor(quote);
+    const cleanSym = String(quote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+    const badgeInfo = state.breakoutBadges?.get(qKey) || state.breakoutBadges?.get(`SYM:${cleanSym}`);
+    const hasActiveBadge = badgeInfo && badgeInfo.expiresAt > Date.now();
+    const breakoutBadge = hasActiveBadge ? ` <span class="scrip-breakout-badge ${badgeInfo.type === 'HIGH' ? 'breakout-badge-high' : 'breakout-badge-low'}">${badgeInfo.type}</span>` : '';
+
     return `<tr class="${trClass}" data-key="${escapeHtml(keyFor(quote))}">
       <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${diff >= 0 ? '▲' : '▼'}</td><td></td>
-      <td class="symbol">${escapeHtml(quote.symbol)}${moveBadge}</td><td class="${rateClass}">${fmt(quote.lastPrice)}</td><td class="${chgFillClass}">${escapeHtml(chgText)}</td>
+      <td class="symbol">${escapeHtml(quote.symbol)}${breakoutBadge}${moveBadge}</td><td class="${rateClass}">${fmt(quote.lastPrice)}</td><td class="${chgFillClass}">${escapeHtml(chgText)}</td>
       <td>${qty(quote.bidQty)}</td><td>${fmt(quote.bidPrice)}</td><td>${qty(quote.offerQty)}</td><td>${fmt(quote.offerPrice)}</td>
       <td>${fmt(quote.open)}</td><td>${fmt(quote.high)}</td><td>${fmt(quote.low)}</td><td>${fmt(quote.pcClose)}</td><td>${qty(quote.totalQty)}</td>
       <td class="find-cell"><button class="remove-scrip" data-key="${escapeHtml(keyFor(quote))}" title="Remove ${escapeHtml(quote.symbol)}" aria-label="Remove ${escapeHtml(quote.symbol)}">×</button></td>
@@ -385,7 +392,7 @@ function renderAnalysis() {
     const lowHeader = `<th id="analysis-sort-low" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('low') ? '#1a73e8' : 'inherit'}">Day Low${lowIcon}</th>`;
 
     if (isActionTab) {
-      thead.innerHTML = `<tr><th>Ex</th><th>Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W High</th><th>52W Low</th><th>Time</th></tr>`;
+      thead.innerHTML = `<tr><th>Ex</th><th>Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W Low</th><th>52W High</th><th>Time</th></tr>`;
     } else if (state.analysisTab === 'high') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Company Name</th><th>Price</th><th id="analysis-sort-chg" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('pct') ? '#1a73e8' : 'inherit'}">Chg (%Chg)${chgIcon}</th><th>Prev Close</th><th id="analysis-sort-vol" style="cursor:pointer; user-select:none; color:${state.analysisSortBy?.startsWith('vol') ? '#1a73e8' : 'inherit'}">Realtime Volume${volIcon}</th><th>52 Wk High</th>${highHeader}${lowHeader}<th>Open</th></tr>`;
     } else if (state.analysisTab === 'low') {
@@ -397,7 +404,7 @@ function renderAnalysis() {
     } else if (state.analysisTab === 'traded') {
       thead.innerHTML = `<tr><th>Symbol</th><th>Series</th><th>LTP</th><th>Chg (%Chg)</th><th>Total Traded Vol</th><th>Turnover (Cr)</th></tr>`;
     } else {
-      thead.innerHTML = `<tr><th>Ex</th><th>Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W High</th><th>52W Low</th><th>Time</th></tr>`;
+      thead.innerHTML = `<tr><th>Ex</th><th>Type</th><th>Token</th><th>Scrip Name</th><th>Status</th><th>Last Rate</th><th>52W Low</th><th>52W High</th><th>Time</th></tr>`;
     }
   }
 
@@ -431,8 +438,8 @@ function renderAnalysis() {
         <td class="scrip-sym">${escapeHtml(event.symbol)}</td>
         <td class="analysis-status-cell" style="text-align:center">${escapeHtml(event.status)}</td>
         <td class="analysis-rate" style="font-weight:bold">${fmt(event.lastPrice)}</td>
-        <td class="analysis-rate" style="font-weight:bold; color:#107c41">${w52HighStr}</td>
         <td class="analysis-rate" style="font-weight:bold; color:#d81e05">${w52LowStr}</td>
+        <td class="analysis-rate" style="font-weight:bold; color:#107c41">${w52HighStr}</td>
         <td class="analysis-time" style="text-align:center">${formatEventTime(event)}</td>
       </tr>`;
     }).join('') || '<tr><td colspan="9" class="analysis-empty">No new intraday highs or lows yet. Alerts appear when an active Market Watch scrip makes a new day high or low.</td></tr>';
@@ -530,8 +537,8 @@ function renderAnalysis() {
       <td>${escapeHtml(quote.symbol)}</td>
       <td class="${status[1]}">${status[0]}</td>
       <td class="analysis-rate">${fmt(quote.lastPrice)}</td>
-      <td class="analysis-rate" style="color: #149339">${fmt(quote.week52High)}</td>
       <td class="analysis-rate" style="color: #bf1019">${fmt(quote.week52Low)}</td>
+      <td class="analysis-rate" style="color: #149339">${fmt(quote.week52High)}</td>
       <td class="analysis-time">${new Date(quote.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="9" class="analysis-empty">No scrips match the selected analysis filters.</td></tr>';
@@ -721,9 +728,17 @@ function handleWebSocketMessage(data) {
       if (data.marketAnalysis) state.marketAnalysis = data.marketAnalysis;
       if (data.session) setSession(data.session);
 
-      // Check for new action watch events and flash
+      // Check for new action watch events and update 1-min flashing badges
       if (data.type === 'tick' && Array.isArray(data.newEvents) && data.newEvents.length > 0) {
+        processBreakoutEvents(data.newEvents);
         flashNewAlerts(data.newEvents);
+      } else if (data.type === 'init' && Array.isArray(data.actionWatch)) {
+        // Initialize recent action watch events (< 60s) on connection
+        const recent = data.actionWatch.filter(ev => {
+          const t = ev.timestamp ? new Date(ev.timestamp).getTime() : 0;
+          return t > 0 && (Date.now() - t) < 60000;
+        });
+        if (recent.length > 0) processBreakoutEvents(recent);
       }
 
       if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
@@ -743,6 +758,50 @@ function handleWebSocketMessage(data) {
     default:
       console.log('[WS] Unknown message type:', data.type);
   }
+}
+
+function processBreakoutEvents(events) {
+  if (!Array.isArray(events) || events.length === 0) return;
+  const now = Date.now();
+  const oneMinute = 60 * 1000;
+
+  for (const ev of events) {
+    const status = ev.status; // 'New High' or 'New Low'
+    if (!status) continue;
+
+    const badgeType = status === 'New High' ? 'HIGH' : (status === 'New Low' ? 'LOW' : null);
+    if (!badgeType) continue;
+
+    const badgeData = {
+      type: badgeType,
+      expiresAt: now + oneMinute,
+    };
+
+    // Set or reset the 1-minute expiration timer
+    const key = keyFor(ev);
+    state.breakoutBadges.set(key, badgeData);
+
+    // Also map by bare symbol for 100% resilient lookup
+    const cleanSym = String(ev.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+    state.breakoutBadges.set(`SYM:${cleanSym}`, badgeData);
+  }
+}
+
+function startBreakoutBadgeCleaner() {
+  setInterval(() => {
+    if (!state.breakoutBadges || state.breakoutBadges.size === 0) return;
+    const now = Date.now();
+    let changed = false;
+    for (const [k, v] of state.breakoutBadges.entries()) {
+      if (v.expiresAt <= now) {
+        state.breakoutBadges.delete(k);
+        changed = true;
+      }
+    }
+    if (changed) {
+      renderMarket();
+    }
+  }, 1000);
 }
 
 function flashNewAlerts(events) {
@@ -1672,6 +1731,7 @@ async function initialize() {
   bindEvents(); 
   startClock(); 
   startIndicesPoll(); 
+  startBreakoutBadgeCleaner(); 
   if (hasCache) {
     console.log('[CACHE] Loaded browser state cache instantly.');
   }
