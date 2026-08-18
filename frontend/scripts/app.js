@@ -141,9 +141,13 @@ function renderSearchResults() {
   const items = state.suggestions;
   results.classList.toggle('hidden', !items.length);
   el('symbol-search').setAttribute('aria-expanded', String(Boolean(items.length)));
-  results.innerHTML = items.map((item, index) => `<button class="symbol-result${state.selectedSuggestion === item ? ' active' : ''}" type="button" data-result-index="${index}" role="option" aria-selected="${state.selectedSuggestion === item}">
-    <strong>${escapeHtml(item.symbol)}</strong><span>${escapeHtml(item.exchange)} · ${escapeHtml(item.segment || 'Equity')} · Token ${escapeHtml(item.instrumentId)}</span>
-  </button>`).join('');
+  results.innerHTML = items.map((item, index) => {
+    const sym = item.symbol || 'UNKNOWN';
+    const name = item.displayName && item.displayName !== sym ? ` · ${item.displayName}` : '';
+    return `<button class="symbol-result${state.selectedSuggestion === item ? ' active' : ''}" type="button" data-result-index="${index}" role="option" aria-selected="${state.selectedSuggestion === item}">
+      <strong>${escapeHtml(sym)}</strong><span>${escapeHtml(item.exchange)} · ${escapeHtml(item.segment || 'Equity')}${escapeHtml(name)} · Token ${escapeHtml(item.instrumentId)}</span>
+    </button>`;
+  }).join('');
 }
 
 function chooseSuggestion(item) {
@@ -1074,7 +1078,7 @@ function bindEvents() {
       if (el('symbol-search').value.trim().length >= 2) searchInstruments();
     });
   }
-  el('symbol-search').addEventListener('input', () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(searchInstruments, 180); });
+  el('symbol-search').addEventListener('input', () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(searchInstruments, 40); });
   el('symbol-search').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addScrip(); } if (event.key === 'Escape') { state.suggestions = []; renderSearchResults(); } });
   el('symbol-results').addEventListener('click', (event) => { const button = event.target.closest('[data-result-index]'); if (button) chooseSuggestion(state.suggestions[Number(button.dataset.resultIndex)]); });
   el('add-scrip').addEventListener('click', addScrip);
