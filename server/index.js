@@ -1717,6 +1717,44 @@ app.get('/api/chart/:exchange/:instrumentId', async (req, res) => {
     }
 });
 
+app.get('/api/auth/diag', async (req, res) => {
+  const diag = {
+    configured: configured(),
+    appKey: CONFIG.appKey ? CONFIG.appKey.slice(0, 4) + '***' : 'MISSING',
+    appSecretSet: Boolean(CONFIG.appSecret),
+    redirectUri: CONFIG.redirectUri,
+    apiBaseUrl: CONFIG.apiBaseUrl,
+    marketsUrl: CONFIG.marketsUrl,
+  };
+
+  try {
+    const testResp = await axios.post(`${CONFIG.apiBaseUrl}/getusersession`, 
+      { clientId: 'DIAG_TEST', checkSum: 'DIAG_TEST' }, 
+      {
+        headers: {
+          ...IIFL_HEADERS,
+          'Content-Type': 'application/json',
+          'AppKey': CONFIG.appKey || 'TEST',
+        },
+        timeout: 10000,
+      }
+    );
+    diag.outboundTest = {
+      status: testResp.status,
+      data: testResp.data,
+      note: 'IIFL API is reachable and responding.'
+    };
+  } catch (err) {
+    diag.outboundTest = {
+      status: err.response?.status || 'NO_RESPONSE',
+      data: err.response?.data || err.message,
+      note: err.response?.status === 403 ? 'Akamai or IIFL is blocking requests from this server IP.' : 'Error contacting IIFL API.'
+    };
+  }
+
+  res.json(diag);
+});
+
 app.get('/auth/login', (req, res) => {
   browserSession(req, res);
   if (!configured()) return res.status(503).send('IIFL is not configured. Add IIFL_APP_KEY, IIFL_APP_SECRET, and IIFL_REDIRECT_URI to server/.env, then restart the server.');
