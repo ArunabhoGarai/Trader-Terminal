@@ -335,11 +335,13 @@ function loadGlobalState() {
   if (fs.existsSync(STATE_FILE)) {
     try {
       const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      if (data.accessToken) {
+      const isTokenExpired = data.expiresAt ? new Date(data.expiresAt).getTime() < Date.now() : false;
+      if (data.accessToken && !isTokenExpired) {
         session.accessToken = data.accessToken;
         session.mode = 'LIVE';
-      } else if (data.mode) {
-        session.mode = data.mode;
+      } else {
+        session.accessToken = null;
+        session.mode = 'SIMULATION';
       }
       if (data.expiresAt) session.expiresAt = data.expiresAt;
       if (data.authenticatedAt) session.authenticatedAt = data.authenticatedAt;
@@ -353,8 +355,8 @@ function loadGlobalState() {
           return { ...savedInst, basePrice: savedInst.basePrice || catalogInst?.basePrice || 100 };
         });
       }
-      // Rebuild initial quotes matching the loaded watchlist
-      session.quotes = session.watchlist.map((inst, idx) => session.mode === 'LIVE' ? makeEmptyLiveQuote(inst, idx) : makeSimulationQuote(inst, idx));
+      // Rebuild initial quotes matching the loaded watchlist - always start with valid simulation quotes so prices are NEVER 0/blank
+      session.quotes = session.watchlist.map((inst, idx) => makeSimulationQuote(inst, idx));
       if (data.intradayRanges) {
         // Restore saved ranges and normalise to include deduplication fields (added in newer builds)
         session.intradayRanges = new Map(data.intradayRanges.map(([key, range]) => [
@@ -711,26 +713,38 @@ async function refreshLiveQuotes(session) {
   }
 
   try {
+    let authFailed = false;
+    let authErrorMsg = '';
+
     const responses = await Promise.all(
       chunks.map(chunk =>
         axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, chunk, {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
           timeout: 4000,
         }).catch(err => {
-          return null; // Graceful catch for individual chunk
+          if (err.response?.status === 401 || err.response?.status === 403) {
+            authFailed = true;
+            authErrorMsg = err.response?.data?.message || 'IIFL session expired';
+          } else {
+            console.warn(`[IIFL QUOTE CHUNK ERROR]:`, err.response?.data?.message || err.message);
+          }
+          return null;
         })
       )
     );
+
+    if (authFailed) {
+      console.warn('[IIFL AUTH EXPIRED] ⚠️ Token is no longer valid. Switching session to SIMULATION mode.');
+      clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
+      advanceSimulation(session);
+      return { success: false, events: [] };
+    }
 
     const results = [];
     for (const res of responses) {
       if (res && Array.isArray(res.data?.result)) {
         results.push(...res.data.result);
       }
-    }
-
-    if (!results.length) {
-      return { success: false, events: [] };
     }
 
     const previous = new Map(session.quotes.map((quote) => [instrumentKey(quote), quote]));
@@ -752,9 +766,9 @@ async function refreshLiveQuotes(session) {
       }
     }
 
-    // Update active watchlist quotes
+    // Update active watchlist quotes (fallback to previous quote or valid simulation quote so NEVER 0/blank)
     const nextQuotes = session.watchlist.map((instrument, index) => {
-      const fallback = previous.get(instrumentKey(instrument)) || makeEmptyLiveQuote(instrument, index);
+      const fallback = previous.get(instrumentKey(instrument)) || makeSimulationQuote(instrument, index);
       const raw = resultsByKey.get(String(instrument.instrumentId).trim());
       return raw ? quoteFromPayload(raw, fallback, index) : fallback;
     });
@@ -806,17 +820,17 @@ async function refreshLiveQuotes(session) {
     const enrichedGainers = enrichScannerList(cleanGainersList);
     const enrichedLosers = enrichScannerList(cleanLosersList);
 
-    // Compute top market-wide analytics
+    // Compute top market-wide analytics ALWAYS
     session.marketAnalysis.highs = enrichedHighs;
     session.marketAnalysis.lows = enrichedLows;
     session.marketAnalysis.highs_mc = enrichedHighs;
     session.marketAnalysis.lows_mc = enrichedLows;
     session.marketAnalysis.gainers = enrichedGainers;
     session.marketAnalysis.losers = enrichedLosers;
-    session.marketAnalysis.volume = realNseData.volume;
-    session.marketAnalysis.value = realNseData.value;
+    session.marketAnalysis.volume = realNseData.volume || [];
+    session.marketAnalysis.value = realNseData.value || [];
 
-    const events = updateActionWatch(session, nextQuotes);
+    const events = results.length > 0 ? updateActionWatch(session, nextQuotes) : [];
     session.quotes = nextQuotes;
     session.lastError = null; // Clear error on successful response
     return { success: true, events };
@@ -827,6 +841,7 @@ async function refreshLiveQuotes(session) {
       session.lastError = 'IIFL Rate limit active. Throttling...';
     } else if (error.response?.status === 401 || error.response?.status === 403) {
       clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
+      advanceSimulation(session);
     } else {
       session.lastError = 'IIFL market data request failed: ' + (error.response?.data?.message || error.message);
     }
@@ -837,12 +852,9 @@ async function refreshLiveQuotes(session) {
 }
 
 // ---------------------------------------------------------------------------
-// Enhanced simulation — generates visible action watch events
+// Enhanced simulation — syncs scraped market data and active quotes
 // ---------------------------------------------------------------------------
 function advanceSimulation(session) {
-  // STRICTLY live data logic requested by user: no random simulation.
-  // We only sync the background scraped market data (Moneycontrol/NSE) into the session.
-  const nseScraper = require('./nse_scraper');
   const realNseData = nseScraper.getNSEMarketWideData();
   const highsMcList = realNseData.highs_mc || [];
   const highsNseList = realNseData.highs || [];
@@ -893,10 +905,36 @@ function advanceSimulation(session) {
   session.marketAnalysis.lows_mc = mergedLows;
   session.marketAnalysis.gainers = cleanGainersList;
   session.marketAnalysis.losers = cleanLosersList;
-  session.marketAnalysis.volume = realNseData.volume;
-  session.marketAnalysis.value = realNseData.value;
-  
-  return []; // no action watch events generated in static mode
+  session.marketAnalysis.volume = realNseData.volume || [];
+  session.marketAnalysis.value = realNseData.value || [];
+
+  // Sync any scraped live market data directly into session.quotes for watched scrips
+  const allScraped = [...mergedHighs, ...mergedLows, ...cleanGainersList, ...cleanLosersList];
+  const scrapedBySym = new Map(allScraped.map(s => [String(s.symbol || s.nseSymbol || '').replace(/-EQ$/i, '').toUpperCase().trim(), s]));
+
+  session.quotes = session.watchlist.map((inst, idx) => {
+    const existing = session.quotes?.[idx] || makeSimulationQuote(inst, idx);
+    const cleanSym = String(inst.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
+    const scraped = scrapedBySym.get(cleanSym);
+    if (scraped && scraped.lastPrice > 0) {
+      return {
+        ...existing,
+        lastPrice: scraped.lastPrice,
+        pctChange: scraped.pctChange ?? existing.pctChange,
+        close: scraped.prevClose || existing.close,
+        open: scraped.open || existing.open,
+        high: Math.max(existing.high || 0, scraped.high || scraped.lastPrice),
+        low: Math.min(existing.low || scraped.lastPrice, scraped.low || scraped.lastPrice),
+        tradedVolume: scraped.tradedVolume || existing.tradedVolume,
+        week52High: scraped.week52High || existing.week52High,
+        week52Low: scraped.week52Low || existing.week52Low,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    return existing;
+  });
+
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,10 +1748,7 @@ wss.on('connection', (ws, req) => {
   ws.send(JSON.stringify({
     type: 'init',
     sessionId: session.id,
-    quotes: session.quotes,
-    actionWatch: session.actionWatch,
-    session: publicSession(session),
-    watchlist: publicWatchlist(session),
+    ...terminalPayload(session),
     timestamp: new Date().toISOString(),
   }));
 
@@ -1757,6 +1792,8 @@ server.listen(CONFIG.port, CONFIG.host, async () => {
 
   // STEP 2: Safely launch background services only after Equity Catalog is ready
   console.log('[Services] 🚀 Starting background services (Quote Polling, NSE Scraper, Sensex Resolver)...');
+  const globalSession = browserSessions.get(GLOBAL_SESSION_ID);
+  if (globalSession) advanceSimulation(globalSession);
   startPolling();
   nseScraper.startNSEScraper(5 * 60 * 1000);
   fetchSensexToken();
