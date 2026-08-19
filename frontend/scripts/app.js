@@ -659,10 +659,11 @@ function applyTerminalPayload(data) {
 function connectWebSocket() {
   if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) return;
 
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  // If running on a dev server (e.g. Live Server on port 5500/5501), target Node backend port 3001
+  const isHttps = window.location.protocol === 'https:';
+  const protocol = isHttps ? 'wss:' : 'ws:';
   let host = window.location.host;
-  if (window.location.port && window.location.port !== '3001') {
+  // Only override host if developing on localhost with a secondary port like 5500/5501
+  if ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && window.location.port && window.location.port !== '3001') {
     host = `${window.location.hostname}:3001`;
   }
   const wsUrl = `${protocol}//${host}/ws`;
@@ -826,12 +827,15 @@ function startHeartbeat() {
 // REST API calls (fallback when WebSocket unavailable)
 // ---------------------------------------------------------------------------
 async function getSession() {
-  try { const response = await fetch('/api/session'); if (response.ok) setSession(await response.json()); } catch (_) { /* static UI remains available */ }
+  try { 
+    const response = await fetch(`/api/session?_t=${Date.now()}`, { cache: 'no-store' }); 
+    if (response.ok) setSession(await response.json()); 
+  } catch (_) { /* static UI remains available */ }
 }
 
 async function loadWatchlist() {
   try {
-    const response = await fetch('/api/watchlist');
+    const response = await fetch(`/api/watchlist?_t=${Date.now()}`, { cache: 'no-store' });
     if (!response.ok) throw new Error('Unable to load watchlist');
     applyTerminalPayload(await response.json());
   } catch (_) { renderMarket(); }
@@ -1066,7 +1070,10 @@ function updateLiveChartTick(quotes) {
 
 async function refreshQuotes(silent = false) {
   try {
-    const response = await fetch('/api/market-watch/refresh', { method: 'POST' });
+    const response = await fetch(`/api/market-watch/refresh?_t=${Date.now()}`, { 
+      method: 'POST',
+      cache: 'no-store'
+    });
     if (!response.ok) throw new Error('Unable to refresh quotes');
     const data = await response.json();
     applyTerminalPayload(data);
@@ -1080,7 +1087,12 @@ async function addScrip() {
   const instrument = state.selectedSuggestion || state.suggestions[0];
   if (!instrument) { toast('Choose a symbol from the search results first.'); return; }
   try {
-    const response = await fetch('/api/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(instrument) });
+    const response = await fetch('/api/watchlist', { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify(instrument),
+      cache: 'no-store'
+    });
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || data.error || 'Could not add scrip');
     state.selectedKey = `${instrument.exchange}:${instrument.instrumentId}`;
@@ -1096,7 +1108,10 @@ async function removeScrip(key) {
   const [exchange, instrumentId] = key.split(':');
   const quote = state.quotes.find((item) => keyFor(item) === key);
   try {
-    const response = await fetch(`/api/watchlist/${encodeURIComponent(exchange)}/${encodeURIComponent(instrumentId)}`, { method: 'DELETE' });
+    const response = await fetch(`/api/watchlist/${encodeURIComponent(exchange)}/${encodeURIComponent(instrumentId)}`, { 
+      method: 'DELETE',
+      cache: 'no-store'
+    });
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || data.error || 'Could not remove scrip');
     if (state.selectedKey === key) state.selectedKey = null;
@@ -1114,7 +1129,7 @@ function fmtIdx(value) {
 
 async function updateIndices() {
   try {
-    const res = await fetch('/api/indices');
+    const res = await fetch(`/api/indices?_t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
     if (!data || !Array.isArray(data.indices)) return;
