@@ -602,8 +602,8 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   const checksum = crypto.createHash('sha256').update(`${clientId}${code}${CONFIG.appSecret}`).digest('hex');
   const response = await axios.post(`${CONFIG.apiBaseUrl}/getusersession`, { clientId, checkSum: checksum }, {
     headers: { 
-      ...IIFL_HEADERS,
-      'Content-Type': 'application/json', 
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       'AppKey': CONFIG.appKey 
     }, 
     timeout: 15000,
@@ -623,6 +623,7 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   session.intradayRanges.clear();
 }
 
+let rateLimitBackoffMs = 0;
 const inFlightQuotesMap = new Map();
 
 async function refreshLiveQuotes(session) {
@@ -741,6 +742,10 @@ async function refreshLiveQuotes(session) {
           if (err.response?.status === 401 || err.response?.status === 403) {
             authFailed = true;
             authErrorMsg = err.response?.data?.message || 'IIFL session expired';
+          } else if (err.response?.status === 429 || err.response?.data?.message?.toLowerCase().includes('rate limit')) {
+            rateLimitBackoffMs = Math.min((rateLimitBackoffMs || 500) * 2, 5000);
+            console.warn(`[IIFL RATE LIMIT] ⚠️ HTTP 429 Rate limit reached on chunk. Backing off ${rateLimitBackoffMs}ms to protect server IP.`);
+            session.lastError = `IIFL Rate limit active (${rateLimitBackoffMs}ms backoff)`;
           } else {
             console.warn(`[IIFL QUOTE CHUNK ERROR]:`, err.response?.data?.message || err.message);
           }
@@ -848,13 +853,17 @@ async function refreshLiveQuotes(session) {
 
     const events = results.length > 0 ? updateActionWatch(session, nextQuotes) : [];
     session.quotes = nextQuotes;
+    if (rateLimitBackoffMs > 0) {
+      rateLimitBackoffMs = Math.max(0, rateLimitBackoffMs - 100); // Gently recover to normal speed
+    }
     session.lastError = null; // Clear error on successful response
     return { success: true, events };
   } catch (error) {
     const isRateLimit = error.response?.status === 429 || error.response?.data?.message?.toLowerCase().includes('rate limit');
     if (isRateLimit) {
-      console.warn('[IIFL RATE LIMIT] ⚠️ IIFL rate limit reached. Soft backoff active...');
-      session.lastError = 'IIFL Rate limit active. Throttling...';
+      rateLimitBackoffMs = Math.min((rateLimitBackoffMs || 500) * 2, 5000);
+      console.warn(`[IIFL RATE LIMIT] ⚠️ IIFL rate limit reached. Backing off ${rateLimitBackoffMs}ms to protect server IP.`);
+      session.lastError = `IIFL Rate limit active (${rateLimitBackoffMs}ms throttling)`;
     } else if (error.response?.status === 401 || error.response?.status === 403) {
       clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
       advanceSimulation(session);
@@ -1194,7 +1203,7 @@ async function runStreamingTick() {
       // Adaptive non-overlapping delay: ensures previous request is 100% completed
       // before next request fires, eliminating 400 Bad Request, queue timeouts, and staggering!
       const elapsed = Date.now() - startTime;
-      const nextDelay = Math.max(CONFIG.quotePollMs - elapsed, 30);
+      const nextDelay = Math.max(CONFIG.quotePollMs - elapsed + rateLimitBackoffMs, 30);
       setTimeout(runStreamingTick, nextDelay);
     }
   }
