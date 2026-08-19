@@ -77,18 +77,29 @@ const browserSessions = new Map();
 
 const app = express();
 app.disable('x-powered-by');
+app.set('etag', false); // Disable ETags to eliminate HTTP 304 Not Modified stalls
 app.use(express.json({ limit: '32kb' }));
+
+// Global anti-caching middleware for all dynamic API endpoints
+app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+  next();
+});
+
 app.use(express.static(path.join(__dirname, '..', 'frontend'), { 
   index: 'index.html',
-  etag: true,
-  maxAge: '1d',
+  etag: false,
+  maxAge: 0,
   setHeaders: (res, filePath) => {
-    if (filePath.endsWith('.html')) {
-      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
     } else if (filePath.includes('vendor')) {
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    } else {
-      res.setHeader('Cache-Control', 'public, max-age=86400, must-revalidate');
     }
   }
 }));
