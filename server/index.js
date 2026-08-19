@@ -216,49 +216,62 @@ function makeSimulationQuote(instrument, position = 0) {
   };
 }
 
-function extract(obj, keys, fallback) {
+function extract(obj, keys, fallback, allowZero = true) {
+  if (!obj) return fallback;
   for (const k of keys) {
-    if (obj[k] !== undefined && obj[k] !== null && obj[k] !== 0 && obj[k] !== '0' && obj[k] !== '') {
-      return Number(obj[k]);
+    const val = obj[k];
+    if (val !== undefined && val !== null && val !== '') {
+      if (!allowZero && (val === 0 || val === '0')) continue;
+      const num = Number(val);
+      if (!isNaN(num)) return num;
     }
   }
   return fallback;
 }
 
 function quoteFromPayload(raw, fallback, position) {
-  const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], fallback.lastPrice);
-  let close = extract(raw, ['PClose', 'pClose', 'close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], fallback.close);
-  let open = extract(raw, ['open', 'Open', 'OpenPrice', 'OpeningPrice', 'LastOpenPrice'], fallback.open); 
+  const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], fallback.lastPrice, false);
+  let close = extract(raw, ['PClose', 'pClose', 'close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], fallback.close, false);
+  let open = extract(raw, ['open', 'Open', 'OpenPrice', 'OpeningPrice', 'LastOpenPrice'], fallback.open, false); 
 
   // Direct percent change from IIFL OpenAPI (official broker calculation)
-  const officialPct = extract(raw, ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'priceChangePercent', 'NetChangePercentage', 'PcntChg'], null);
+  const officialPct = extract(raw, ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'priceChangePercent', 'NetChangePercentage', 'PcntChg'], null, true);
   
   let prevClose;
   let finalPctChange;
 
   if (officialPct !== null && !isNaN(officialPct)) {
     finalPctChange = Number(officialPct);
-    // If close is missing or absurdly divergent (> 30% on equity which violates circuit limits), recalculate from official % change
-    if (!close || close <= 0 || (ltp > 0 && Math.abs(ltp - close) / close > 0.3 && Math.abs(finalPctChange) <= 20)) {
-      prevClose = +(ltp / (1 + finalPctChange / 100)).toFixed(2);
+    // ALWAYS derive prevClose from official pctChange when close is missing or divergent (>30%)
+    // This prevents absurd 700%/800% display regardless of whether the stock is volatile or not
+    if (!close || close <= 0 || (ltp > 0 && close > 0 && Math.abs(ltp - close) / close > 0.30)) {
+      prevClose = finalPctChange !== 0 ? +(ltp / (1 + finalPctChange / 100)).toFixed(2) : ltp;
     } else {
       prevClose = close;
     }
   } else {
-    // If no direct % change from API, calculate strictly from valid close or open
-    prevClose = (close > 0 && Math.abs(ltp - close) / close <= 0.35) ? close : (fallback.close > 0 && Math.abs(ltp - fallback.close) / fallback.close <= 0.35 ? fallback.close : (open > 0 ? open : ltp));
-    finalPctChange = prevClose > 0 ? +(((ltp - prevClose) / prevClose) * 100).toFixed(2) : 0;
+    // No official % change from API — calculate from valid close or open, with strict sanity
+    prevClose = (close > 0 && ltp > 0 && Math.abs(ltp - close) / close <= 0.35) ? close 
+              : (fallback.close > 0 && ltp > 0 && Math.abs(ltp - fallback.close) / fallback.close <= 0.35) ? fallback.close 
+              : (open > 0 && ltp > 0 && Math.abs(ltp - open) / open <= 0.35) ? open 
+              : ltp;
+    finalPctChange = prevClose > 0 && prevClose !== ltp ? +(((ltp - prevClose) / prevClose) * 100).toFixed(2) : 0;
+    // Final safety net: if computed pctChange is impossibly large (>50%) with no broker confirmation, clamp to 0
+    if (Math.abs(finalPctChange) > 50) {
+      prevClose = ltp;
+      finalPctChange = 0;
+    }
   }
   
   // Extract Bid/Ask handling nested structures from IIFL OpenAPI
-  let bidPrice = extract(raw, ['bestBidPrice', 'BuyRate', 'buyRate', 'BuyRate1', 'buyRate1', 'buyPrice', 'buyPrice1', 'BuyPrice1', 'BidRate', 'bidRate', 'BuyPrice', 'BidPrice'], raw.Bids?.[0]?.Price ?? raw.bids?.[0]?.price ?? fallback.bestBidPrice);
-  let bidQty = extract(raw, ['bestBidQuantity', 'bestBidQty', 'BuyQty', 'buyQty', 'BuyQty1', 'buyQty1', 'BidQty', 'bidQty', 'TotalBuyQty'], raw.Bids?.[0]?.Size ?? raw.bids?.[0]?.quantity ?? raw.Bids?.[0]?.Quantity ?? fallback.bestBidQty);
+  let bidPrice = extract(raw, ['bestBidPrice', 'BuyRate', 'buyRate', 'BuyRate1', 'buyRate1', 'buyPrice', 'buyPrice1', 'BuyPrice1', 'BidRate', 'bidRate', 'BuyPrice', 'BidPrice'], raw.Bids?.[0]?.Price ?? raw.bids?.[0]?.price ?? fallback.bestBidPrice, true);
+  let bidQty = extract(raw, ['bestBidQuantity', 'bestBidQty', 'BuyQty', 'buyQty', 'BuyQty1', 'buyQty1', 'BidQty', 'bidQty', 'TotalBuyQty'], raw.Bids?.[0]?.Size ?? raw.bids?.[0]?.quantity ?? raw.Bids?.[0]?.Quantity ?? fallback.bestBidQty, true);
   
-  let askPrice = extract(raw, ['bestAskPrice', 'bestAskRate', 'SellRate', 'sellRate', 'SellRate1', 'sellRate1', 'sellPrice', 'sellPrice1', 'SellPrice1', 'AskRate', 'askRate', 'SellPrice', 'OfferRate', 'AskPrice'], raw.Asks?.[0]?.Price ?? raw.asks?.[0]?.price ?? fallback.bestAskPrice);
-  let askQty = extract(raw, ['bestAskQuantity', 'bestAskQty', 'SellQty', 'sellQty', 'SellQty1', 'sellQty1', 'AskQty', 'askQty', 'OfferQty', 'TotalSellQty'], raw.Asks?.[0]?.Size ?? raw.asks?.[0]?.quantity ?? raw.Asks?.[0]?.Quantity ?? fallback.bestAskQty);
+  let askPrice = extract(raw, ['bestAskPrice', 'bestAskRate', 'SellRate', 'sellRate', 'SellRate1', 'sellRate1', 'sellPrice', 'sellPrice1', 'SellPrice1', 'AskRate', 'askRate', 'SellPrice', 'OfferRate', 'AskPrice'], raw.Asks?.[0]?.Price ?? raw.asks?.[0]?.price ?? fallback.bestAskPrice, true);
+  let askQty = extract(raw, ['bestAskQuantity', 'bestAskQty', 'SellQty', 'sellQty', 'SellQty1', 'sellQty1', 'AskQty', 'askQty', 'OfferQty', 'TotalSellQty'], raw.Asks?.[0]?.Size ?? raw.asks?.[0]?.quantity ?? raw.Asks?.[0]?.Quantity ?? fallback.bestAskQty, true);
 
-  let high = extract(raw, ['high', 'High', 'HighPrice', 'DayHigh', 'DayHighPrice', 'SessionHigh'], fallback.high);
-  let low = extract(raw, ['low', 'Low', 'LowPrice', 'DayLow', 'DayLowPrice', 'SessionLow'], fallback.low);
+  let high = extract(raw, ['high', 'High', 'HighPrice', 'DayHigh', 'DayHighPrice', 'SessionHigh'], fallback.high, false);
+  let low = extract(raw, ['low', 'Low', 'LowPrice', 'DayLow', 'DayLowPrice', 'SessionLow'], fallback.low, false);
 
   // Enforce High/Low bounds based on LTP only if they are non-zero (so 0 remains 0 if missing)
   if (high > 0 && high < ltp) high = ltp;
@@ -277,12 +290,12 @@ function quoteFromPayload(raw, fallback, position) {
   const fetched52WHigh = extract(raw, [
     'FiftyTwoWeekHighPrice', 'FiftyTwoWeekHigh', 'High52Week', 'High52', 
     '52WHigh', '52WeekHigh', 'FiftyTwoWkHigh', 'High52WK', 'High52W', 'High52WeekPrice', 'FiftyTwoWeekHighRate', 'week52High'
-  ], fallback.week52High || catalogInst?.week52High || 0);
+  ], fallback.week52High || catalogInst?.week52High || 0, false);
 
   const fetched52WLow = extract(raw, [
     'FiftyTwoWeekLowPrice', 'FiftyTwoWeekLow', 'Low52Week', 'Low52', 
     '52WLow', '52WeekLow', 'FiftyTwoWkLow', 'Low52WK', 'Low52W', 'Low52WeekPrice', 'FiftyTwoWeekLowRate', 'week52Low'
-  ], fallback.week52Low || catalogInst?.week52Low || 0);
+  ], fallback.week52Low || catalogInst?.week52Low || 0, false);
 
   // Strict User Rule:
   // Display 52 weeks high from IIFL and compare with realtime high.
@@ -292,11 +305,11 @@ function quoteFromPayload(raw, fallback, position) {
 
   let week52High = fetched52WHigh > 0 
     ? (realtimeHigh > fetched52WHigh ? realtimeHigh : fetched52WHigh) 
-    : (realtimeHigh > 0 ? realtimeHigh : 0);
+    : 0;
 
   let week52Low = fetched52WLow > 0 
     ? (realtimeLow > 0 && realtimeLow < fetched52WLow ? realtimeLow : fetched52WLow) 
-    : (realtimeLow > 0 ? realtimeLow : 0);
+    : 0;
 
   let tickTime = extract(raw, ['TickTime', 'tickTime', 'tickTimestamp', 'timestamp', 'Time', 'time'], null);
   let parsedTime = new Date().toISOString();
@@ -564,8 +577,8 @@ function updateActionWatch(session, nextQuotes) {
           status,
           lastPrice: eventPrice,
           close: previousClose,
-          week52High: quote.week52High > 0 ? Math.max(quote.week52High, eventPrice) : eventPrice,
-          week52Low: quote.week52Low > 0 ? Math.min(quote.week52Low, eventPrice) : eventPrice,
+          week52High: quote.week52High > 0 ? (eventPrice > quote.week52High ? eventPrice : quote.week52High) : 0,
+          week52Low: quote.week52Low > 0 ? (eventPrice < quote.week52Low ? eventPrice : quote.week52Low) : 0,
           direction,
           timestamp: quote.updatedAt || new Date().toISOString(),
           time: indiaTimeString(),
@@ -705,12 +718,13 @@ async function refreshLiveQuotes(session) {
 
   // Major Index Tokens for single consolidated payload
   const iiflIndexInstruments = [
-    { exchange: 'NSEEQ', instrumentId: '999920000', name: 'nifty' },
-    { exchange: 'NSEEQ', instrumentId: '999920005', name: 'banknifty' },
+    { exchange: 'NSEEQ', instrumentId: '999920000', name: 'nifty', altIds: ['26000', 'NIFTY 50', 'NIFTY'] },
+    { exchange: 'NSEEQ', instrumentId: '999920005', name: 'banknifty', altIds: ['26009', 'NIFTY BANK', 'BANKNIFTY'] },
     { 
       exchange: TERMINAL_INDEX_MAP['sensex']?.iiflPayload?.exchange || 'BSEEQ', 
       instrumentId: String(TERMINAL_INDEX_MAP['sensex']?.iiflPayload?.exchangeInstrumentID || '999901'),
-      name: 'sensex'
+      name: 'sensex',
+      altIds: ['999901', '10001', 'SENSEX', 'BSE SENSEX']
     }
   ];
 
@@ -816,11 +830,36 @@ async function refreshLiveQuotes(session) {
     }
 
     const previous = new Map(session.quotes.map((quote) => [instrumentKey(quote), quote]));
-    // Strongly map by any available ID field to prevent mapping wipeouts
-    const resultsByKey = new Map(results.map((quote) => {
-      const id = String(quote.instrumentId ?? quote.InstrumentId ?? quote.token ?? quote.Token ?? quote.ScripCode ?? '').trim();
-      return [id, quote];
-    }));
+    
+    // Robust key mapping: map by ALL candidate ID fields, tokens, and symbols to ensure 100% lookup success
+    const resultsByKey = new Map();
+    for (const quote of results) {
+      if (!quote) continue;
+      const candidates = [
+        quote.instrumentId,
+        quote.InstrumentId,
+        quote.InstrumentID,
+        quote.token,
+        quote.Token,
+        quote.ScripCode,
+        quote.scripCode,
+        quote.Scripcode,
+        quote.ExchangeInstrumentID,
+        quote.exchangeInstrumentID,
+        quote.ExchangeInstrumentId,
+        quote.exchangeInstrumentId,
+      ];
+      for (const c of candidates) {
+        if (c !== undefined && c !== null && String(c).trim() !== '') {
+          resultsByKey.set(String(c).trim(), quote);
+        }
+      }
+      const sym = quote.symbol ?? quote.Symbol ?? quote.TradingSymbol ?? quote.tradingSymbol ?? quote.DisplayName;
+      if (sym) {
+        resultsByKey.set(String(sym).trim().toUpperCase(), quote);
+        resultsByKey.set(String(sym).replace(suffixRegex, '').trim().toUpperCase(), quote);
+      }
+    }
     
     // Persistent scanner quotes cache so all scanner tables stay enriched between rotation ticks
     if (!session.scannerQuotesCache) session.scannerQuotesCache = new Map();
@@ -831,18 +870,59 @@ async function refreshLiveQuotes(session) {
     // Update live index data inside session from single batch response
     if (!session.indicesData) session.indicesData = {};
     for (const inst of iiflIndexInstruments) {
-      const raw = resultsByKey.get(inst.instrumentId);
+      let raw = resultsByKey.get(inst.instrumentId);
+      if (!raw && inst.altIds) {
+        for (const alt of inst.altIds) {
+          raw = resultsByKey.get(alt);
+          if (raw) break;
+        }
+      }
       if (raw) {
-        const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], 0);
-        const close = extract(raw, ['PClose', 'pClose', 'close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], 0);
-        const pct = extract(raw, ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'PcntChg', 'NetChangePercentage'], null);
-        const change = extract(raw, ['change', 'Change', 'NetChange', 'PriceChange', 'NetChangePrice'], null);
+        const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], 0, false);
+        let close = extract(raw, ['PClose', 'pClose', 'close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], 0, false);
+        
+        const pctKeys = ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'PcntChg', 'NetChangePercentage'];
+        const chgKeys = ['change', 'Change', 'NetChange', 'PriceChange', 'NetChangePrice'];
+        let rawPct = null, rawChg = null;
+        for (const k of pctKeys) {
+          if (raw[k] !== undefined && raw[k] !== null && raw[k] !== '') {
+            const n = Number(raw[k]);
+            if (!isNaN(n)) { rawPct = n; break; }
+          }
+        }
+        for (const k of chgKeys) {
+          if (raw[k] !== undefined && raw[k] !== null && raw[k] !== '') {
+            const n = Number(raw[k]);
+            if (!isNaN(n)) { rawChg = n; break; }
+          }
+        }
+
+        let finalPct = 0, finalChg = 0;
+        if (rawPct !== null) {
+          finalPct = rawPct;
+          if (rawChg !== null) {
+            finalChg = rawChg;
+          } else if (close > 0) {
+            finalChg = +(ltp - close).toFixed(2);
+          } else if (ltp > 0) {
+            close = +(ltp / (1 + finalPct / 100)).toFixed(2);
+            finalChg = +(ltp - close).toFixed(2);
+          }
+        } else if (close > 0 && ltp > 0) {
+          finalChg = +(ltp - close).toFixed(2);
+          finalPct = +((finalChg / close) * 100).toFixed(2);
+        } else if (rawChg !== null && ltp > 0) {
+          finalChg = rawChg;
+          close = +(ltp - finalChg).toFixed(2);
+          finalPct = close > 0 ? +((finalChg / close) * 100).toFixed(2) : 0;
+        }
+
         if (ltp > 0) {
           session.indicesData[inst.name] = { 
-            ltp, 
-            close: close > 0 ? close : (session.indicesData[inst.name]?.close || 0), 
-            pct, 
-            change, 
+            ltp: +Number(ltp).toFixed(2), 
+            close: close > 0 ? +Number(close).toFixed(2) : (session.indicesData[inst.name]?.close || 0), 
+            pct: +Number(finalPct).toFixed(2), 
+            change: +Number(finalChg).toFixed(2), 
             updatedAt: Date.now() 
           };
         }
@@ -1424,9 +1504,14 @@ async function fetchYahooIndices() {
 
   const fetchPromises = targets.map(async ({ symbol, name }) => {
     try {
-      const res = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`, { timeout: 6000 });
+      const res = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`, { 
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
       const meta = res.data?.chart?.result?.[0]?.meta;
-      if (meta) {
+      if (meta && meta.regularMarketPrice && meta.chartPreviousClose) {
         return { 
           name, 
           ltp: meta.regularMarketPrice, 
