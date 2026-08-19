@@ -53,11 +53,14 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 
 function quoteFromPrice(quote, index = 0) {
   const lastPrice = Number(quote.lastPrice ?? quote.ltp ?? 0);
-  const pctChange = Number(quote.pctChange ?? quote.changePercent ?? 0);
+  let pctChange = Number(quote.pctChange ?? quote.changePercent ?? 0);
   
   let pcClose = Number(quote.close ?? quote.previousClose ?? quote.pcClose ?? 0);
-  // Sanity check close vs LTP: If pcClose is missing or creates an impossible percentage leap (>35%), reconstruct from official % change
-  if (pcClose <= 0 || (lastPrice > 0 && Math.abs(lastPrice - pcClose) / pcClose > 0.35 && Math.abs(pctChange) <= 25)) {
+  // Sanity check close vs LTP: If pctChange is impossibly large (>50%), clamp to 0 and reset close to lastPrice
+  if (Math.abs(pctChange) > 50) {
+    pctChange = 0;
+    pcClose = lastPrice;
+  } else if (pcClose <= 0 || (lastPrice > 0 && Math.abs(lastPrice - pcClose) / pcClose > 0.35)) {
     pcClose = pctChange !== 0 ? +(lastPrice / (1 + pctChange / 100)).toFixed(2) : lastPrice;
   }
   
@@ -114,15 +117,20 @@ function renderMarket() {
   renderWatchlistMeta();
   el('market-body').innerHTML = quotes.map((quote) => {
     const ltp = Number(quote.lastPrice) || 0;
-    const close = Number(quote.pcClose || quote.prevClose || quote.close || quote.lastPrice) || ltp;
-    const diff = ltp - close;
     
+    // CRITICAL FIX: Always use the official pctChange from the server as the single source of truth.
+    // Previously, diff was computed from (ltp - close) which diverged wildly when close was stale/wrong.
     let pct;
     if (quote.pctChange !== undefined && quote.pctChange !== null && !isNaN(Number(quote.pctChange))) {
       pct = Number(quote.pctChange);
     } else {
-      pct = close > 0 ? (diff / close) * 100 : 0;
+      const close = Number(quote.pcClose || quote.close || ltp);
+      pct = close > 0 ? ((ltp - close) / close) * 100 : 0;
     }
+    
+    // Back-calculate the absolute change from pctChange to keep diff and pct always consistent
+    const prevClose = pct !== 0 ? ltp / (1 + pct / 100) : ltp;
+    const diff = ltp - prevClose;
     
     const sign = diff > 0 ? '+' : (diff < 0 ? '-' : '');
     const absDiff = Math.abs(diff);
