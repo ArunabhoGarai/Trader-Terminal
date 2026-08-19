@@ -25,12 +25,19 @@ loadDotEnv(path.join(__dirname, '.env'));
 const CONFIG = {
   host: process.env.HOST || '0.0.0.0',
   port: Number(process.env.PORT || 3001),
-  apiBaseUrl: (process.env.IIFL_API_BASE_URL || 'https://api.iiflcapital.com/v1').replace(/\/$/, ''),
-  marketsUrl: (process.env.IIFL_MARKETS_URL || 'https://markets.iiflcapital.com').replace(/\/$/, ''),
+  apiBaseUrl: (process.env.IIFL_API_BASE_URL || 'https://api.iiflcapital.com/v1').replace(/^http:\/\//i, 'https://').replace(/\/$/, ''),
+  marketsUrl: (process.env.IIFL_MARKETS_URL || 'https://markets.iiflcapital.com').replace(/^http:\/\//i, 'https://').replace(/\/$/, ''),
   appKey: process.env.IIFL_APP_KEY || '',
   appSecret: process.env.IIFL_APP_SECRET || '',
   redirectUri: process.env.IIFL_REDIRECT_URI || `http://localhost:${process.env.PORT || 3001}/auth/callback`,
   quotePollMs: Math.max(Number(process.env.IIFL_QUOTE_POLL_MS || 100), 50),
+};
+
+const IIFL_HEADERS = {
+  'Accept': 'application/json, text/plain, */*',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Origin': 'https://markets.iiflcapital.com',
+  'Referer': 'https://markets.iiflcapital.com/',
 };
 
 const MAX_WATCHLIST_SIZE = 400;
@@ -594,7 +601,12 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   if (!clientId) throw new Error('The IIFL callback did not include a client ID. Confirm the current /getusersession request schema with IIFL before enabling live login.');
   const checksum = crypto.createHash('sha256').update(`${clientId}${code}${CONFIG.appSecret}`).digest('hex');
   const response = await axios.post(`${CONFIG.apiBaseUrl}/getusersession`, { clientId, checkSum: checksum }, {
-    headers: { 'Content-Type': 'application/json', AppKey: CONFIG.appKey }, timeout: 15000,
+    headers: { 
+      ...IIFL_HEADERS,
+      'Content-Type': 'application/json', 
+      'AppKey': CONFIG.appKey 
+    }, 
+    timeout: 15000,
   });
   const token = extractToken(response.data);
   if (!token) throw new Error('IIFL did not return an access token. Verify the app key, client ID, redirect URI, and token endpoint settings.');
@@ -719,7 +731,11 @@ async function refreshLiveQuotes(session) {
     const responses = await Promise.all(
       chunks.map(chunk =>
         axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, chunk, {
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.accessToken}` },
+          headers: { 
+            ...IIFL_HEADERS,
+            'Content-Type': 'application/json', 
+            'Authorization': `Bearer ${session.accessToken}` 
+          },
           timeout: 4000,
         }).catch(err => {
           if (err.response?.status === 401 || err.response?.status === 403) {
