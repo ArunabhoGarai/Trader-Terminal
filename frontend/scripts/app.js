@@ -54,17 +54,23 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 function quoteFromPrice(quote, index = 0) {
   const lastPrice = Number(quote.lastPrice ?? quote.ltp ?? 0);
   const pctChange = Number(quote.pctChange ?? quote.changePercent ?? 0);
-  const pcClose = Number((quote.close ?? quote.previousClose ?? (lastPrice / (1 + pctChange / 100))) || lastPrice);
+  
+  let pcClose = Number(quote.close ?? quote.previousClose ?? quote.pcClose ?? 0);
+  // Sanity check close vs LTP: If pcClose is missing or creates an impossible percentage leap (>35%), reconstruct from official % change
+  if (pcClose <= 0 || (lastPrice > 0 && Math.abs(lastPrice - pcClose) / pcClose > 0.35 && Math.abs(pctChange) <= 25)) {
+    pcClose = pctChange !== 0 ? +(lastPrice / (1 + pctChange / 100)).toFixed(2) : lastPrice;
+  }
+  
   const spread = Math.max(lastPrice * .001, .05);
 
-  let week52High = Number(quote.week52High ?? lastPrice * (1.02 + (index % 3) * .025));
-  let week52Low = Number(quote.week52Low ?? lastPrice * (.72 - (index % 3) * .02));
+  let week52High = Number(quote.week52High ?? 0);
+  let week52Low = Number(quote.week52Low ?? 0);
 
-  // REALTIME 52W CALCULATION: Dynamically update 52W High and Low if lastPrice breaks previous 52W bounds
-  if (lastPrice > 0) {
-    if (week52High > 0 && lastPrice > week52High) week52High = lastPrice;
-    if (week52Low > 0 && lastPrice < week52Low) week52Low = lastPrice;
-  }
+  // REALTIME 52W CALCULATION: Dynamically update 52W High if realtime high breaks previous 52W bounds
+  const realtimeHigh = Math.max(lastPrice, Number(quote.high) || lastPrice);
+  const realtimeLow = Math.min(lastPrice, Number(quote.low) || lastPrice);
+  if (week52High > 0 && realtimeHigh > week52High) week52High = realtimeHigh;
+  if (week52Low > 0 && realtimeLow > 0 && realtimeLow < week52Low) week52Low = realtimeLow;
 
   return {
     id: quote.id || quote.instrumentId || String(index), instrumentId: String(quote.instrumentId || quote.id || index),
@@ -75,7 +81,7 @@ function quoteFromPrice(quote, index = 0) {
     bidQty: Number(quote.bestBidQty ?? quote.bestBidQuantity ?? 100 + index * 17),
     offerPrice: quote.bestAskPrice === 0 ? 0 : Number(quote.bestAskPrice ?? lastPrice + spread), 
     offerQty: Number(quote.bestAskQty ?? quote.bestAskQuantity ?? 120 + index * 19),
-    open: Number(quote.open ?? pcClose * .996), high: Number(quote.high ?? lastPrice * 1.013), low: Number(quote.low ?? lastPrice * .988),
+    open: Number(quote.open ?? pcClose * .996), high: Number(quote.high ?? lastPrice), low: Number(quote.low ?? lastPrice),
     totalQty: Number(quote.tradedVolume ?? quote.totalQty ?? 80000 + index * 11457),
     week52High,
     week52Low,
@@ -101,24 +107,27 @@ function renderWatchlistMeta() {
 }
 
 function renderMarket() {
-  const searchInput = el('local-search');
-  if (searchInput && state.localSearch !== searchInput.value.toLowerCase()) {
-    state.localSearch = searchInput.value.toLowerCase();
-  }
   let quotes = state.quotes.filter(matchesFilters);
-  if (state.sortByPctDesc) {
+  if (state.filters.sortBy === 'changePercentDesc') {
     quotes.sort((a, b) => b.pctChange - a.pctChange);
   }
   renderWatchlistMeta();
   el('market-body').innerHTML = quotes.map((quote) => {
     const ltp = Number(quote.lastPrice) || 0;
-    const close = Number(quote.pcClose || quote.prevClose || quote.lastPrice) || ltp;
+    const close = Number(quote.pcClose || quote.prevClose || quote.close || quote.lastPrice) || ltp;
     const diff = ltp - close;
-    const pct = close > 0 ? (diff / close) * 100 : (Number(quote.pctChange) || 0);
     
-    const sign = diff > 0 ? '+' : '';
-    const formattedDiff = `${sign}${diff.toFixed(2)}`;
-    const formattedPct = `${sign}${pct.toFixed(2)}%`;
+    let pct;
+    if (quote.pctChange !== undefined && quote.pctChange !== null && !isNaN(Number(quote.pctChange))) {
+      pct = Number(quote.pctChange);
+    } else {
+      pct = close > 0 ? (diff / close) * 100 : 0;
+    }
+    
+    const sign = diff > 0 ? '+' : (diff < 0 ? '-' : '');
+    const absDiff = Math.abs(diff);
+    const formattedDiff = `${sign}${absDiff.toFixed(2)}`;
+    const formattedPct = `${pct > 0 ? '+' : (pct < 0 ? '-' : '')}${Math.abs(pct).toFixed(2)}%`;
     const chgText = `${formattedDiff} (${formattedPct})`;
 
     const move = diff >= 0 ? 'up' : 'down';
@@ -419,14 +428,14 @@ function renderAnalysis() {
         return qSym === cleanSym || String(q.instrumentId) === String(event.instrumentId);
       });
       
-      let w52High = live ? Number(live.week52High || live.new52WHL || 0) : Number(event.week52High || 0);
-      let w52Low = live ? Number(live.week52Low || live.new52WHL || 0) : Number(event.week52Low || 0);
+      let w52High = Number(live?.week52High || event.week52High || 0);
+      let w52Low = Number(live?.week52Low || event.week52Low || 0);
       
-      const ltp = Number(event.lastPrice || live?.lastPrice || 0);
-      if (ltp > 0) {
-        if (w52High > 0 && ltp > w52High) w52High = ltp;
-        if (w52Low > 0 && ltp < w52Low) w52Low = ltp;
-      }
+      const realtimeHigh = Math.max(Number(live?.high || 0), Number(live?.lastPrice || 0), Number(event.lastPrice || 0));
+      const realtimeLow = Math.min(Number(live?.low || Infinity), Number(live?.lastPrice || Infinity), Number(event.lastPrice || Infinity));
+
+      if (w52High > 0 && realtimeHigh > w52High) w52High = realtimeHigh;
+      if (w52Low > 0 && realtimeLow > 0 && realtimeLow < w52Low) w52Low = realtimeLow;
       
       const w52HighStr = w52High > 0 ? fmt(w52High) : '-';
       const w52LowStr = w52Low > 0 ? fmt(w52Low) : '-';
