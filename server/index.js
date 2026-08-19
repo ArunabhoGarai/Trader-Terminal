@@ -229,9 +229,26 @@ function quoteFromPayload(raw, fallback, position) {
   const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], fallback.lastPrice);
   let close = extract(raw, ['PClose', 'pClose', 'close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], fallback.close);
   let open = extract(raw, ['open', 'Open', 'OpenPrice', 'OpeningPrice', 'LastOpenPrice'], fallback.open); 
+
+  // Direct percent change from IIFL OpenAPI (official broker calculation)
+  const officialPct = extract(raw, ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'priceChangePercent', 'NetChangePercentage', 'PcntChg'], null);
   
-  const prevClose = close > 0 ? close : (open > 0 ? open : ltp);
-  const pctChange = prevClose > 0 ? ((ltp - prevClose) / prevClose) * 100 : 0;
+  let prevClose;
+  let finalPctChange;
+
+  if (officialPct !== null && !isNaN(officialPct)) {
+    finalPctChange = Number(officialPct);
+    // If close is missing or absurdly divergent (> 30% on equity which violates circuit limits), recalculate from official % change
+    if (!close || close <= 0 || (ltp > 0 && Math.abs(ltp - close) / close > 0.3 && Math.abs(finalPctChange) <= 20)) {
+      prevClose = +(ltp / (1 + finalPctChange / 100)).toFixed(2);
+    } else {
+      prevClose = close;
+    }
+  } else {
+    // If no direct % change from API, calculate strictly from valid close or open
+    prevClose = (close > 0 && Math.abs(ltp - close) / close <= 0.35) ? close : (fallback.close > 0 && Math.abs(ltp - fallback.close) / fallback.close <= 0.35 ? fallback.close : (open > 0 ? open : ltp));
+    finalPctChange = prevClose > 0 ? +(((ltp - prevClose) / prevClose) * 100).toFixed(2) : 0;
+  }
   
   // Extract Bid/Ask handling nested structures from IIFL OpenAPI
   let bidPrice = extract(raw, ['bestBidPrice', 'BuyRate', 'buyRate', 'BuyRate1', 'buyRate1', 'buyPrice', 'buyPrice1', 'BuyPrice1', 'BidRate', 'bidRate', 'BuyPrice', 'BidPrice'], raw.Bids?.[0]?.Price ?? raw.bids?.[0]?.price ?? fallback.bestBidPrice);
@@ -254,34 +271,32 @@ function quoteFromPayload(raw, fallback, position) {
     if (Math.abs(askPrice - ltp) / ltp > 0.05 || (high > 0 && askPrice > high) || (low > 0 && askPrice < low)) askPrice = +(ltp + spread).toFixed(2);
   }
 
-  // Extract 52W High & Low with all possible IIFL key aliases
-  let week52High = extract(raw, [
-    'week52High', 'FiftyTwoWeekHighPrice', 'FiftyTwoWeekHigh', 'High52Week', 'High52', 
-    '52WHigh', '52WeekHigh', 'FiftyTwoWkHigh', 'High52WK', 'High52W', 'High52WeekPrice', 'FiftyTwoWeekHighRate'
-  ], fallback.week52High);
+  // 52-WEEK HIGH / LOW:
+  // Fetch official 52W High/Low from IIFL API or catalog baseline
+  const catalogInst = (knownInstruments.get(instrumentKey(raw)) || knownInstruments.get(instrumentKey(fallback))) || null;
+  const fetched52WHigh = extract(raw, [
+    'FiftyTwoWeekHighPrice', 'FiftyTwoWeekHigh', 'High52Week', 'High52', 
+    '52WHigh', '52WeekHigh', 'FiftyTwoWkHigh', 'High52WK', 'High52W', 'High52WeekPrice', 'FiftyTwoWeekHighRate', 'week52High'
+  ], fallback.week52High || catalogInst?.week52High || 0);
 
-  let week52Low = extract(raw, [
-    'week52Low', 'FiftyTwoWeekLowPrice', 'FiftyTwoWeekLow', 'Low52Week', 'Low52', 
-    '52WLow', '52WeekLow', 'FiftyTwoWkLow', 'Low52WK', 'Low52W', 'Low52WeekPrice', 'FiftyTwoWeekLowRate'
-  ], fallback.week52Low);
+  const fetched52WLow = extract(raw, [
+    'FiftyTwoWeekLowPrice', 'FiftyTwoWeekLow', 'Low52Week', 'Low52', 
+    '52WLow', '52WeekLow', 'FiftyTwoWkLow', 'Low52WK', 'Low52W', 'Low52WeekPrice', 'FiftyTwoWeekLowRate', 'week52Low'
+  ], fallback.week52Low || catalogInst?.week52Low || 0);
 
-  // If live IIFL payload or raw object doesn't supply valid 52W bounds, ensure fallback is anchored to real LTP
-  if (!week52High || week52High <= 0) {
-    week52High = fallback.week52High > 0 && Math.abs(fallback.week52High - ltp) / ltp < 0.5 
-      ? fallback.week52High 
-      : +(ltp * 1.03).toFixed(2);
-  }
-  if (!week52Low || week52Low <= 0) {
-    week52Low = fallback.week52Low > 0 && Math.abs(fallback.week52Low - ltp) / ltp < 0.5 
-      ? fallback.week52Low 
-      : +(ltp * 0.85).toFixed(2);
-  }
+  // Strict User Rule:
+  // Display 52 weeks high from IIFL and compare with realtime high.
+  // If realtime high is greater than fetched 52W high, then update 52W high, else display fetched IIFL 52W high.
+  const realtimeHigh = Math.max(ltp, high > 0 ? high : ltp);
+  const realtimeLow = Math.min(ltp, low > 0 ? low : ltp);
 
-  // REALTIME 52W CALCULATION: Dynamically update 52W High and Low if LTP breaks previous 52W bounds
-  if (ltp > 0) {
-    if (week52High > 0 && ltp > week52High) week52High = ltp;
-    if (week52Low > 0 && ltp < week52Low) week52Low = ltp;
-  }
+  let week52High = fetched52WHigh > 0 
+    ? (realtimeHigh > fetched52WHigh ? realtimeHigh : fetched52WHigh) 
+    : (realtimeHigh > 0 ? realtimeHigh : 0);
+
+  let week52Low = fetched52WLow > 0 
+    ? (realtimeLow > 0 && realtimeLow < fetched52WLow ? realtimeLow : fetched52WLow) 
+    : (realtimeLow > 0 ? realtimeLow : 0);
 
   let tickTime = extract(raw, ['TickTime', 'tickTime', 'tickTimestamp', 'timestamp', 'Time', 'time'], null);
   let parsedTime = new Date().toISOString();
@@ -299,7 +314,7 @@ function quoteFromPayload(raw, fallback, position) {
     instrumentId: String(raw.instrumentId ?? raw.token ?? raw.ExchangeInstrumentID ?? raw.ExchangeInstrumentId ?? fallback.instrumentId),
     symbol: raw.symbol ?? raw.tradingSymbol ?? raw.TradingSymbol ?? raw.DisplayName ?? raw.displayName ?? fallback.symbol,
     lastPrice: ltp,
-    pctChange: extract(raw, ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'priceChangePercent', 'NetChangePercentage', 'PcntChg'], pctChange),
+    pctChange: finalPctChange,
     close: prevClose,
     open, 
     high, 
@@ -704,17 +719,29 @@ async function refreshLiveQuotes(session) {
     requestInstruments.set(instrumentKey(inst), { exchange: inst.exchange, instrumentId: inst.instrumentId, symbol: inst.name, isWatchlist: false });
   });
 
-  // High-Speed Rotating Scanner Queue:
-  // Instead of flooding IIFL with 700+ instruments (14 parallel requests) every tick,
-  // we rotate 50 scanner scrips per tick alongside the active watchlist.
-  // This drops network latency from 450ms down to 35ms, delivering true 100ms blazing speed!
+  // DEFAULT HIGH-THROUGHPUT ENGINE:
+  // Parallel fetch of ALL instruments (Watchlist + 52W High + 52W Low + Gainers + Losers + Indices) via Promise.allSettled.
+  // Fallback: If rateLimitBackoffMs is triggered by IIFL, dynamically fall back to rotating slices until rate limit clears.
   const allScannerItems = [...mergedHighsList, ...mergedLowsList, ...cleanGainersList, ...cleanLosersList];
-  const SCANNER_SLICE_SIZE = 50;
-  if (allScannerItems.length > 0) {
+  
+  if (rateLimitBackoffMs > 0 && allScannerItems.length > 0) {
+    // Graceful Fallback Mode: Throttle to 50 scanner items per tick during rate-limit cooldown
+    const SCANNER_SLICE_SIZE = 50;
     const slice = allScannerItems.slice(scannerCursor, scannerCursor + SCANNER_SLICE_SIZE);
     scannerCursor = (scannerCursor + SCANNER_SLICE_SIZE) >= allScannerItems.length ? 0 : scannerCursor + SCANNER_SLICE_SIZE;
     
     slice.forEach((item) => {
+      const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol) || (item.instrumentId && /^\d+$/.test(String(item.instrumentId)) ? item : null);
+      if (inst && inst.instrumentId && /^\d+$/.test(String(inst.instrumentId).trim())) {
+        const k = instrumentKey(inst);
+        if (!requestInstruments.has(k)) {
+          requestInstruments.set(k, { exchange: inst.exchange || 'NSEEQ', instrumentId: String(inst.instrumentId).trim(), symbol: inst.symbol, isWatchlist: false });
+        }
+      }
+    });
+  } else {
+    // Default Mode: Full parallel multi-chunk streaming across all instruments
+    allScannerItems.forEach((item) => {
       const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol) || (item.instrumentId && /^\d+$/.test(String(item.instrumentId)) ? item : null);
       if (inst && inst.instrumentId && /^\d+$/.test(String(inst.instrumentId).trim())) {
         const k = instrumentKey(inst);
@@ -745,7 +772,8 @@ async function refreshLiveQuotes(session) {
     let authFailed = false;
     let authErrorMsg = '';
 
-    const responses = await Promise.all(
+    // Parallel execution across all chunks using Promise.allSettled
+    const settledResults = await Promise.allSettled(
       chunks.map(chunk =>
         axios.post(`${CONFIG.apiBaseUrl}/marketdata/marketquotes`, chunk, {
           headers: { 
@@ -754,34 +782,37 @@ async function refreshLiveQuotes(session) {
             'Authorization': `Bearer ${session.accessToken}` 
           },
           timeout: 4000,
-        }).catch(err => {
-          if (err.response?.status === 401 || err.response?.status === 403) {
-            authFailed = true;
-            authErrorMsg = err.response?.data?.message || 'IIFL session expired';
-          } else if (err.response?.status === 429 || err.response?.data?.message?.toLowerCase().includes('rate limit')) {
-            rateLimitBackoffMs = Math.min((rateLimitBackoffMs || 500) * 2, 5000);
-            console.warn(`[IIFL RATE LIMIT] ⚠️ HTTP 429 Rate limit reached on chunk. Backing off ${rateLimitBackoffMs}ms to protect server IP.`);
-            session.lastError = `IIFL Rate limit active (${rateLimitBackoffMs}ms backoff)`;
-          } else {
-            console.warn(`[IIFL QUOTE CHUNK ERROR]:`, err.response?.data?.message || err.message);
-          }
-          return null;
         })
       )
     );
+
+    const results = [];
+    for (const outcome of settledResults) {
+      if (outcome.status === 'fulfilled') {
+        const res = outcome.value;
+        if (res && Array.isArray(res.data?.result)) {
+          results.push(...res.data.result);
+        }
+      } else {
+        const err = outcome.reason;
+        if (err.response?.status === 401 || err.response?.status === 403) {
+          authFailed = true;
+          authErrorMsg = err.response?.data?.message || 'IIFL session expired';
+        } else if (err.response?.status === 429 || err.response?.data?.message?.toLowerCase().includes('rate limit')) {
+          rateLimitBackoffMs = Math.min((rateLimitBackoffMs || 500) * 2, 5000);
+          console.warn(`[IIFL RATE LIMIT] ⚠️ HTTP 429 Rate limit reached on chunk. Backing off ${rateLimitBackoffMs}ms to protect server IP.`);
+          session.lastError = `IIFL Rate limit active (${rateLimitBackoffMs}ms backoff)`;
+        } else {
+          console.warn(`[IIFL QUOTE CHUNK ERROR]:`, err.response?.data?.message || err.message);
+        }
+      }
+    }
 
     if (authFailed) {
       console.warn('[IIFL AUTH EXPIRED] ⚠️ Token is no longer valid. Switching session to SIMULATION mode.');
       clearSession(session, 'IIFL session expired. Sign in again to continue live data.');
       advanceSimulation(session);
       return { success: false, events: [] };
-    }
-
-    const results = [];
-    for (const res of responses) {
-      if (res && Array.isArray(res.data?.result)) {
-        results.push(...res.data.result);
-      }
     }
 
     const previous = new Map(session.quotes.map((quote) => [instrumentKey(quote), quote]));
@@ -803,8 +834,17 @@ async function refreshLiveQuotes(session) {
       const raw = resultsByKey.get(inst.instrumentId);
       if (raw) {
         const ltp = extract(raw, ['ltp', 'lastPrice', 'lastTradedPrice', 'LastTradedPrice', 'LTP', 'LastPrice'], 0);
+        const close = extract(raw, ['PClose', 'pClose', 'close', 'previousClose', 'pcClose', 'Close', 'PreviousClose', 'ClosePrice', 'PrevClose'], 0);
+        const pct = extract(raw, ['pctChange', 'changePercent', 'PercentChange', 'ChangePercent', 'ChangePercentage', 'PcntChg', 'NetChangePercentage'], null);
+        const change = extract(raw, ['change', 'Change', 'NetChange', 'PriceChange', 'NetChangePrice'], null);
         if (ltp > 0) {
-          session.indicesData[inst.name] = { ltp, updatedAt: Date.now() };
+          session.indicesData[inst.name] = { 
+            ltp, 
+            close: close > 0 ? close : (session.indicesData[inst.name]?.close || 0), 
+            pct, 
+            change, 
+            updatedAt: Date.now() 
+          };
         }
       }
     }
@@ -1421,11 +1461,21 @@ app.get('/api/indices', async (req, res) => {
       const liveData = cachedIndicesData[name];
       const data = TERMINAL_INDEX_MAP[name];
       const yData = getYahoo(name);
-      const ltp = liveData?.ltp || yData?.ltp || data.simBase;
-      const cl = yData?.close || data.simClose;
 
-      const chg = +(ltp - cl).toFixed(2);
-      const pct = cl > 0 ? +((chg / cl) * 100).toFixed(2) : 0;
+      const ltp = liveData?.ltp || yData?.ltp || data.simBase;
+      const cl = (liveData?.close > 0 ? liveData.close : null) || (yData?.close > 0 ? yData.close : null) || data.simClose;
+
+      let chg, pct;
+      if (liveData?.change !== null && liveData?.change !== undefined && liveData?.pct !== null && liveData?.pct !== undefined) {
+        chg = +Number(liveData.change).toFixed(2);
+        pct = +Number(liveData.pct).toFixed(2);
+      } else if (cl > 0) {
+        chg = +(ltp - cl).toFixed(2);
+        pct = +((chg / cl) * 100).toFixed(2);
+      } else {
+        chg = 0;
+        pct = 0;
+      }
 
       indices.push({ name, ltp: +ltp.toFixed(2), change: chg, pct, live: true });
     }
