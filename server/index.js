@@ -1719,13 +1719,18 @@ app.get('/auth/callback', async (req, res) => {
   const code = req.query.code || req.query.authCode || req.query.authcode;
   if (!code || typeof code !== 'string') return res.status(400).send('IIFL did not provide an authorization code.');
   try {
-    await exchangeAuthorizationCode(code, callbackClientId(req), session);
+    const clientId = callbackClientId(req);
+    console.log(`[IIFL Auth] 🔑 Exchanging auth code for client: ${clientId}...`);
+    await exchangeAuthorizationCode(code, clientId, session);
     await refreshLiveQuotes(session);
+    console.log('[IIFL Auth] ✅ Authentication successful. Switched session to LIVE mode.');
     res.redirect('/');
   } catch (error) {
     clearSession(session, 'IIFL authentication failed.');
-    console.error('[IIFL auth] Token exchange failed:', error.response?.status || error.message);
-    res.status(401).send('IIFL authentication could not be completed. Check the server logs and your registered redirect URI.');
+    const errorData = error.response?.data ? JSON.stringify(error.response.data) : 'No response body';
+    console.error(`[IIFL auth] ❌ Token exchange failed (HTTP ${error.response?.status || error.message}):`, errorData);
+    console.error(`[IIFL auth] Diagnostic context: redirectUri=${CONFIG.redirectUri}, appKey=${CONFIG.appKey ? CONFIG.appKey.slice(0, 4) + '***' : 'MISSING'}, clientId=${callbackClientId(req)}`);
+    res.status(401).send(`IIFL authentication could not be completed (HTTP ${error.response?.status || 401}): ${errorData}. Check server/.env redirect URI and IIFL portal settings.`);
   }
 });
 
