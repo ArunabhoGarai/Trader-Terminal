@@ -652,22 +652,34 @@ function startNSEScraper() {
   }, 5 * 60 * 1000);
 }
 
-function getNSEMarketWideData() {
-  return {
-    highs: global52WHighs,
-    lows: global52WLows,
-    highs_mc: mc52WHighs,
-    lows_mc: mc52WLows,
-    gainers: globalGainers,
-    losers: globalLosers,
-    volume: globalVolume,
-    value: globalValue
-  };
+function get52WBounds(symbol) {
+  if (!symbol) return null;
+  const clean = String(symbol).replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+  const allHighs = [...mc52WHighs, ...global52WHighs];
+  const allLows = [...mc52WLows, ...global52WLows];
+  
+  let high = 0, low = 0;
+  for (const item of allHighs) {
+    const s = String(item.nseSymbol || item.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+    if (s === clean && item.week52High > 0) {
+      high = Number(item.week52High);
+      break;
+    }
+  }
+  for (const item of allLows) {
+    const s = String(item.nseSymbol || item.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+    if (s === clean && item.week52Low > 0) {
+      low = Number(item.week52Low);
+      break;
+    }
+  }
+  return (high > 0 || low > 0) ? { high, low } : null;
 }
 
 module.exports = {
   startNSEScraper,
   getNSEMarketWideData,
+  get52WBounds,
   scrapeNSE,
   scrapeMoneycontrol52W,
   scrapeMoneycontrolGainersLosers

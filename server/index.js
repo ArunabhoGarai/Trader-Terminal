@@ -17,6 +17,8 @@ const express = require('express');
 const { WebSocketServer } = require('ws');
 const nseScraper = require('./nse_scraper');
 const nseMaster = require('./nse_master');
+const { IIFLMarketDataStream } = require('./iifl_stream');
+let iiflStream = null;
 
 nseMaster.loadNSEMaster();
 
@@ -212,7 +214,7 @@ function makeSimulationQuote(instrument, position = 0) {
     low, bestBidPrice: Math.max(0, basePrice - spread),
     bestBidQty: 80 + position * 53, bestAskPrice: basePrice + spread,
     bestAskQty: 100 + position * 61, tradedVolume: 70000 + position * 12431,
-    week52High, week52Low, updatedAt: new Date().toISOString(), position,
+    week52High, week52Low, isReal52W: false, updatedAt: new Date().toISOString(), position,
   };
 }
 
@@ -285,31 +287,50 @@ function quoteFromPayload(raw, fallback, position) {
   }
 
   // 52-WEEK HIGH / LOW:
-  // Fetch official 52W High/Low from IIFL API or catalog baseline
-  const catalogInst = (knownInstruments.get(instrumentKey(raw)) || knownInstruments.get(instrumentKey(fallback))) || null;
-  const fetched52WHigh = extract(raw, [
+  // 1. Direct from IIFL API payload
+  let raw52High = extract(raw, [
     'FiftyTwoWeekHighPrice', 'FiftyTwoWeekHigh', 'High52Week', 'High52', 
     '52WHigh', '52WeekHigh', 'FiftyTwoWkHigh', 'High52WK', 'High52W', 'High52WeekPrice', 'FiftyTwoWeekHighRate', 'week52High'
-  ], fallback.week52High || catalogInst?.week52High || 0, false);
+  ], 0, false);
 
-  const fetched52WLow = extract(raw, [
+  let raw52Low = extract(raw, [
     'FiftyTwoWeekLowPrice', 'FiftyTwoWeekLow', 'Low52Week', 'Low52', 
     '52WLow', '52WeekLow', 'FiftyTwoWkLow', 'Low52WK', 'Low52W', 'Low52WeekPrice', 'FiftyTwoWeekLowRate', 'week52Low'
-  ], fallback.week52Low || catalogInst?.week52Low || 0, false);
+  ], 0, false);
+
+  // 2. If missing in raw, check previous quote ONLY if it was verified real 52W (not simulation dummy)
+  let fetched52WHigh = raw52High > 0 ? raw52High : (fallback?.isReal52W ? Number(fallback.week52High) || 0 : 0);
+  let fetched52WLow = raw52Low > 0 ? raw52Low : (fallback?.isReal52W ? Number(fallback.week52Low) || 0 : 0);
+
+  // 3. If still missing, check official NSE / Moneycontrol scraper cache for this symbol
+  const symClean = String(raw.symbol || raw.tradingSymbol || fallback.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+  if (fetched52WHigh === 0 || fetched52WLow === 0) {
+    const scraped52 = nseScraper.get52WBounds?.(symClean);
+    if (scraped52) {
+      if (fetched52WHigh === 0 && scraped52.high > 0) fetched52WHigh = scraped52.high;
+      if (fetched52WLow === 0 && scraped52.low > 0) fetched52WLow = scraped52.low;
+    }
+  }
 
   // Strict User Rule:
-  // Display 52 weeks high from IIFL and compare with realtime high.
-  // If realtime high is greater than fetched 52W high, then update 52W high, else display fetched IIFL 52W high.
+  // The 52 weeks high should remain as fetched from IIFL until day high > 52 weeks high.
+  // If realtime high > fetched 52W high, then update to realtime high, else display fetched IIFL 52W high.
   const realtimeHigh = Math.max(ltp, high > 0 ? high : ltp);
   const realtimeLow = Math.min(ltp, low > 0 ? low : ltp);
 
-  let week52High = fetched52WHigh > 0 
-    ? (realtimeHigh > fetched52WHigh ? realtimeHigh : fetched52WHigh) 
-    : 0;
+  let week52High = 0;
+  let isReal52W = false;
 
-  let week52Low = fetched52WLow > 0 
-    ? (realtimeLow > 0 && realtimeLow < fetched52WLow ? realtimeLow : fetched52WLow) 
-    : 0;
+  if (fetched52WHigh > 0) {
+    isReal52W = true;
+    week52High = realtimeHigh > fetched52WHigh ? realtimeHigh : fetched52WHigh;
+  }
+
+  let week52Low = 0;
+  if (fetched52WLow > 0) {
+    isReal52W = true;
+    week52Low = (realtimeLow > 0 && realtimeLow < fetched52WLow) ? realtimeLow : fetched52WLow;
+  }
 
   let tickTime = extract(raw, ['TickTime', 'tickTime', 'tickTimestamp', 'timestamp', 'Time', 'time'], null);
   let parsedTime = new Date().toISOString();
@@ -339,6 +360,7 @@ function quoteFromPayload(raw, fallback, position) {
     tradedVolume: extract(raw, ['tradedVolume', 'totalQty', 'totalTradedQuantity', 'TotalQty', 'Volume', 'TotalTradedQuantity', 'TotalTradedQty', 'TradedVolume', 'VolumeTraded', 'TTQ'], fallback.tradedVolume),
     week52High, 
     week52Low,
+    isReal52W,
     updatedAt: parsedTime, 
     position: fallback.position,
   };
@@ -606,6 +628,257 @@ function updateActionWatch(session, nextQuotes) {
 }
 
 // ---------------------------------------------------------------------------
+// IIFL Real-Time Binary Market Data Stream Integration
+// ---------------------------------------------------------------------------
+function ensureIIFLStream(session) {
+  if (!session || !session.accessToken) {
+    if (iiflStream) {
+      iiflStream.disconnect();
+      iiflStream = null;
+    }
+    return;
+  }
+
+  if (iiflStream && iiflStream.isConnected && iiflStream.token === session.accessToken) {
+    return;
+  }
+
+  if (!iiflStream) {
+    iiflStream = new IIFLMarketDataStream();
+
+    iiflStream.on('connected', () => {
+      console.log('[IIFL STREAM] 🚀 Stream active! Registering batch subscriptions for Watchlist, Indices, and Market Analysis...');
+      syncStreamSubscriptions(session);
+    });
+
+    iiflStream.on('quote', (streamQuote) => {
+      handleIncomingStreamQuote(session, streamQuote);
+    });
+
+    iiflStream.on('52w_high', (highEvent) => {
+      handle52WEvent(session, highEvent.instrumentId, highEvent.week52High, true);
+    });
+
+    iiflStream.on('52w_low', (lowEvent) => {
+      handle52WEvent(session, lowEvent.instrumentId, lowEvent.week52Low, false);
+    });
+
+    iiflStream.on('error', (err) => {
+      console.warn('[IIFL STREAM] ⚠️ Stream error:', err.message);
+    });
+  }
+
+  iiflStream.connect(session.accessToken);
+}
+
+function syncStreamSubscriptions(session) {
+  if (!iiflStream || !iiflStream.isConnected || !session) return;
+  
+  const topics = new Set();
+  
+  // 1. Watchlist topics: <exchange>/<instrumentId>
+  if (Array.isArray(session.watchlist)) {
+    session.watchlist.forEach((inst) => {
+      if (inst.instrumentId && /^\d+$/.test(String(inst.instrumentId).trim())) {
+        const ex = (inst.exchange || 'NSEEQ').toLowerCase();
+        topics.add(`${ex}/${String(inst.instrumentId).trim()}`);
+      }
+    });
+  }
+
+  // 2. Major Indices topics
+  topics.add('nseeq/999920000'); // Nifty 50
+  topics.add('nseeq/999920005'); // Bank Nifty
+  topics.add('bseeq/999901');    // Sensex
+  
+  // 3. Event topics for 52W High / Low alerts & Market status
+  topics.add('nseeq');
+  topics.add('bseeq');
+
+  // 4. Market Analysis Scanner topics (up to 1024 scrips in batch)
+  const realNseData = nseScraper.getNSEMarketWideData();
+  const allScannerItems = [
+    ...(realNseData.highs_mc || []),
+    ...(realNseData.highs || []),
+    ...(realNseData.lows_mc || []),
+    ...(realNseData.lows || []),
+    ...(realNseData.gainers || []),
+    ...(realNseData.losers || [])
+  ];
+
+  allScannerItems.forEach((item) => {
+    const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol) || (item.instrumentId && /^\d+$/.test(String(item.instrumentId)) ? item : null);
+    if (inst && inst.instrumentId && /^\d+$/.test(String(inst.instrumentId).trim())) {
+      const ex = (inst.exchange || 'NSEEQ').toLowerCase();
+      topics.add(`${ex}/${String(inst.instrumentId).trim()}`);
+    }
+  });
+
+  const topicsList = Array.from(topics);
+  console.log(`[IIFL STREAM] 📡 Registering ${topicsList.length} subscriptions in batch (0ms polling)...`);
+  iiflStream.subscribe(topicsList);
+}
+
+function handleIncomingStreamQuote(session, streamQuote) {
+  if (!session || !streamQuote) return;
+
+  // 1. Update Index data if this is an index instrument
+  if (streamQuote.instrumentId === '999920000' || streamQuote.instrumentId === '26000') {
+    if (!session.indicesData) session.indicesData = {};
+    session.indicesData['nifty'] = {
+      ltp: streamQuote.lastPrice,
+      close: streamQuote.close,
+      pct: streamQuote.pctChange,
+      change: streamQuote.diff,
+      updatedAt: Date.now()
+    };
+  } else if (streamQuote.instrumentId === '999920005' || streamQuote.instrumentId === '26009') {
+    if (!session.indicesData) session.indicesData = {};
+    session.indicesData['banknifty'] = {
+      ltp: streamQuote.lastPrice,
+      close: streamQuote.close,
+      pct: streamQuote.pctChange,
+      change: streamQuote.diff,
+      updatedAt: Date.now()
+    };
+  } else if (streamQuote.instrumentId === '999901' || streamQuote.instrumentId === '10001') {
+    if (!session.indicesData) session.indicesData = {};
+    session.indicesData['sensex'] = {
+      ltp: streamQuote.lastPrice,
+      close: streamQuote.close,
+      pct: streamQuote.pctChange,
+      change: streamQuote.diff,
+      updatedAt: Date.now()
+    };
+  }
+
+  // 2. Update session.quotes in-place if in active watchlist
+  let quoteUpdated = false;
+  if (Array.isArray(session.quotes)) {
+    const qIdx = session.quotes.findIndex(q => 
+      String(q.instrumentId) === String(streamQuote.instrumentId) || 
+      (q.exchange === streamQuote.exchange && String(q.instrumentId) === String(streamQuote.instrumentId))
+    );
+
+    if (qIdx >= 0) {
+      const existing = session.quotes[qIdx];
+      const prev52High = existing.week52High || 0;
+      const prev52Low = existing.week52Low || 0;
+
+      // Preserve 52W bounds logic: only update if realtime exceeds fetched 52W high
+      const new52High = prev52High > 0 ? (streamQuote.high > prev52High ? streamQuote.high : prev52High) : 0;
+      const new52Low = prev52Low > 0 ? (streamQuote.low > 0 && streamQuote.low < prev52Low ? streamQuote.low : prev52Low) : 0;
+
+      session.quotes[qIdx] = {
+        ...existing,
+        lastPrice: streamQuote.lastPrice,
+        open: streamQuote.open || existing.open,
+        high: streamQuote.high || existing.high,
+        low: streamQuote.low || existing.low,
+        close: streamQuote.close || existing.close,
+        pctChange: streamQuote.pctChange,
+        bestBidPrice: streamQuote.bestBidPrice || existing.bestBidPrice,
+        bestBidQty: streamQuote.bestBidQty || existing.bestBidQty,
+        bestAskPrice: streamQuote.bestAskPrice || existing.bestAskPrice,
+        bestAskQty: streamQuote.bestAskQty || existing.bestAskQty,
+        tradedVolume: streamQuote.tradedVolume || existing.tradedVolume,
+        week52High: new52High,
+        week52Low: new52Low,
+        isReal52W: Boolean(new52High > 0),
+        updatedAt: streamQuote.updatedAt
+      };
+      quoteUpdated = true;
+    }
+  }
+
+  // 3. Update scanner lists in-place so scanner tables stay updated in real-time with zero duplicates
+  const cleanSym = String(streamQuote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+  if (session.marketAnalysis) {
+    updateScannerItemInPlace(session.marketAnalysis.highs, streamQuote, cleanSym);
+    updateScannerItemInPlace(session.marketAnalysis.lows, streamQuote, cleanSym);
+    updateScannerItemInPlace(session.marketAnalysis.gainers, streamQuote, cleanSym);
+    updateScannerItemInPlace(session.marketAnalysis.losers, streamQuote, cleanSym);
+  }
+
+  // 4. Update scanner quotes cache
+  if (!session.scannerQuotesCache) session.scannerQuotesCache = new Map();
+  session.scannerQuotesCache.set(String(streamQuote.instrumentId), streamQuote);
+
+  // 5. Trigger real-time Action Watch breakout detection
+  let newEvents = [];
+  if (quoteUpdated) {
+    newEvents = updateActionWatch(session, session.quotes);
+  }
+
+  // 6. Instantly push 0ms live tick to connected browser WebSocket clients!
+  if (session.wsClients && session.wsClients.size > 0) {
+    broadcastToSession(session, {
+      type: 'tick',
+      quotes: session.quotes,
+      actionWatch: session.actionWatch,
+      marketAnalysis: session.marketAnalysis,
+      newEvents,
+      session: publicSession(session),
+      watchlist: publicWatchlist(session),
+      timestamp: new Date().toISOString(),
+    });
+  }
+}
+
+function updateScannerItemInPlace(list, streamQuote, cleanSym) {
+  if (!Array.isArray(list)) return;
+  const item = list.find(it => {
+    const s = String(it.nseSymbol || it.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+    return s === cleanSym || String(it.instrumentId) === String(streamQuote.instrumentId);
+  });
+  if (item) {
+    item.lastPrice = streamQuote.lastPrice;
+    if (streamQuote.high > 0) item.high = streamQuote.high;
+    if (streamQuote.low > 0) item.low = streamQuote.low;
+    if (streamQuote.open > 0) item.open = streamQuote.open;
+    if (streamQuote.close > 0) item.prevClose = streamQuote.close;
+    item.pctChange = streamQuote.pctChange;
+    item.diff = streamQuote.diff;
+    if (streamQuote.tradedVolume > 0) item.tradedVolume = streamQuote.tradedVolume;
+    if (streamQuote.week52High > 0) item.week52High = streamQuote.week52High;
+    if (streamQuote.week52Low > 0) item.week52Low = streamQuote.week52Low;
+    item.updatedAt = streamQuote.updatedAt;
+  }
+}
+
+function handle52WEvent(session, instrumentId, price, isHigh) {
+  if (!session || !instrumentId || !price) return;
+  if (Array.isArray(session.quotes)) {
+    const q = session.quotes.find(item => String(item.instrumentId) === String(instrumentId));
+    if (q) {
+      if (isHigh) {
+        q.week52High = price;
+        q.isReal52W = true;
+      } else {
+        q.week52Low = price;
+        q.isReal52W = true;
+      }
+    }
+  }
+
+  // Update scanner lists on 52W event
+  if (session.marketAnalysis) {
+    const update52WInList = (list) => {
+      if (!Array.isArray(list)) return;
+      const it = list.find(item => String(item.instrumentId) === String(instrumentId));
+      if (it) {
+        if (isHigh) it.week52High = price;
+        else it.week52Low = price;
+      }
+    };
+    update52WInList(session.marketAnalysis.highs);
+    update52WInList(session.marketAnalysis.lows);
+    update52WInList(session.marketAnalysis.gainers);
+    update52WInList(session.marketAnalysis.losers);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // IIFL API integration
 // ---------------------------------------------------------------------------
 function clearSession(session, message) {
@@ -614,6 +887,7 @@ function clearSession(session, message) {
   session.authenticatedAt = null;
   session.mode = 'SIMULATION';
   session.lastError = message || null;
+  ensureIIFLStream(session);
 }
 
 function extractToken(payload) {
@@ -649,6 +923,9 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   session.actionWatchDate = indiaTradingDate();
   session.wasLoggedInAt8AM = isBefore815AM();
   session.intradayRanges.clear();
+
+  // Launch real-time binary stream
+  ensureIIFLStream(session);
 }
 
 let rateLimitBackoffMs = 0;
@@ -1607,6 +1884,12 @@ app.post('/api/watchlist', (req, res) => {
   session.watchlist.push(next);
   session.quotes.push(session.mode === 'LIVE' ? makeEmptyLiveQuote(next, session.watchlist.length - 1) : makeSimulationQuote(next, session.watchlist.length - 1));
   
+  // Real-time stream subscription for the added scrip
+  if (iiflStream && iiflStream.isConnected) {
+    const ex = (exchange || 'NSEEQ').toLowerCase();
+    iiflStream.subscribe([`${ex}/${String(instrumentId).trim()}`]);
+  }
+
   // Instant 0ms response to client
   res.status(201).json(terminalPayload(session));
 
@@ -1627,6 +1910,13 @@ app.delete('/api/watchlist/:exchange/:instrumentId', (req, res) => {
   if (index < 0) return res.status(404).json({ message: 'That scrip is not in this watchlist.' });
   session.watchlist.splice(index, 1);
   session.quotes.splice(index, 1);
+
+  // Unsubscribe from real-time binary stream
+  if (iiflStream && iiflStream.isConnected) {
+    const ex = (req.params.exchange || 'NSEEQ').toLowerCase();
+    iiflStream.unsubscribe([`${ex}/${String(req.params.instrumentId).trim()}`]);
+  }
+
   // Notify WebSocket clients
   broadcastToSession(session, { type: 'watchlist', quotes: session.quotes, watchlist: publicWatchlist(session), actionWatch: session.actionWatch, session: publicSession(session) });
   res.json(terminalPayload(session));
@@ -2016,9 +2306,15 @@ server.listen(CONFIG.port, CONFIG.host, async () => {
   }
 
   // STEP 2: Safely launch background services only after Equity Catalog is ready
-  console.log('[Services] 🚀 Starting background services (Quote Polling, NSE Scraper, Sensex Resolver)...');
+  console.log('[Services] 🚀 Starting background services (IIFL Stream, Quote Polling, NSE Scraper, Sensex Resolver)...');
   const globalSession = browserSessions.get(GLOBAL_SESSION_ID);
-  if (globalSession) advanceSimulation(globalSession);
+  if (globalSession) {
+    advanceSimulation(globalSession);
+    if (globalSession.accessToken) {
+      console.log('[IIFL STREAM] 🔌 Restoring IIFL Stream on server startup...');
+      ensureIIFLStream(globalSession);
+    }
+  }
   startPolling();
   nseScraper.startNSEScraper(5 * 60 * 1000);
   fetchSensexToken();
