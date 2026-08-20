@@ -676,6 +676,19 @@ function get52WBounds(symbol) {
   return (high > 0 || low > 0) ? { high, low } : null;
 }
 
+function getNSEMarketWideData() {
+  return {
+    highs: global52WHighs,
+    lows: global52WLows,
+    highs_mc: mc52WHighs,
+    lows_mc: mc52WLows,
+    gainers: globalGainers,
+    losers: globalLosers,
+    volume: globalVolume,
+    value: globalValue
+  };
+}
+
 module.exports = {
   startNSEScraper,
   getNSEMarketWideData,
