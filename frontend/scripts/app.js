@@ -20,7 +20,7 @@ const state = {
   marketAnalysis: { highs: [], lows: [], gainers: [], losers: [] },
   filters: { exchange: 'ALL', segment: 'ALL' },
   localSearch: '',
-  sortByPctDesc: false,
+  marketSort: 'none', // 'none' | 'desc' | 'asc'
   catalog: [],
   suggestions: [],
   selectedSuggestion: null,
@@ -111,8 +111,10 @@ function renderWatchlistMeta() {
 
 function renderMarket() {
   let quotes = state.quotes.filter(matchesFilters);
-  if (state.filters.sortBy === 'changePercentDesc') {
-    quotes.sort((a, b) => b.pctChange - a.pctChange);
+  if (state.marketSort === 'desc') {
+    quotes.sort((a, b) => Number(b.pctChange || 0) - Number(a.pctChange || 0));
+  } else if (state.marketSort === 'asc') {
+    quotes.sort((a, b) => Number(a.pctChange || 0) - Number(b.pctChange || 0));
   }
   renderWatchlistMeta();
   el('market-body').innerHTML = quotes.map((quote) => {
@@ -470,12 +472,20 @@ function renderAnalysis() {
 
   const fmtChgFull = (quote) => {
     const ltp = Number(quote.lastPrice) || 0;
-    const close = Number(quote.prevClose || quote.lastPrice) || ltp;
-    const diff = ltp - close;
-    const pct = close > 0 ? (diff / close) * 100 : (Number(quote.pctChange) || 0);
-    const sign = diff > 0 ? '+' : '';
-    const formattedDiff = `${sign}${diff.toFixed(2)}`;
-    const formattedPct = `${sign}${pct.toFixed(2)}%`;
+    let pct = 0;
+    if (quote.pctChange !== undefined && quote.pctChange !== null && !isNaN(Number(quote.pctChange))) {
+      pct = Number(quote.pctChange);
+    } else {
+      const close = Number(quote.prevClose || quote.close || ltp);
+      pct = close > 0 ? ((ltp - close) / close) * 100 : 0;
+    }
+    
+    // Mathematically consistent diff
+    const prevClose = pct !== 0 ? ltp / (1 + pct / 100) : (Number(quote.prevClose) || ltp);
+    const diff = ltp - prevClose;
+    const sign = diff > 0 ? '+' : (diff < 0 ? '-' : '');
+    const formattedDiff = `${sign}${Math.abs(diff).toFixed(2)}`;
+    const formattedPct = `${pct > 0 ? '+' : (pct < 0 ? '-' : '')}${Math.abs(pct).toFixed(2)}%`;
     return `${formattedDiff} (${formattedPct})`;
   };
 
@@ -1419,12 +1429,20 @@ function bindEvents() {
     });
   }
 
-  // Toggle sort by pct change
+  // Toggle sort by pct change in Market Watch table
   const sortPctBtn = el('sort-pct-change');
   if (sortPctBtn) {
     sortPctBtn.addEventListener('click', () => {
-      state.sortByPctDesc = !state.sortByPctDesc;
-      sortPctBtn.textContent = state.sortByPctDesc ? '%chg ▼' : '%chg';
+      if (!state.marketSort || state.marketSort === 'none') {
+        state.marketSort = 'desc';
+        sortPctBtn.innerHTML = 'Chg (%Chg) <span style="font-size:10px; color:#38bdf8;">▼</span>';
+      } else if (state.marketSort === 'desc') {
+        state.marketSort = 'asc';
+        sortPctBtn.innerHTML = 'Chg (%Chg) <span style="font-size:10px; color:#38bdf8;">▲</span>';
+      } else {
+        state.marketSort = 'none';
+        sortPctBtn.innerHTML = 'Chg (%Chg)';
+      }
       renderMarket();
     });
   }
