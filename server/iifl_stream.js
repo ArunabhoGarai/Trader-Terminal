@@ -1,15 +1,52 @@
 'use strict';
 
 /**
- * IIFL Real-Time Market Data Stream (Binary WebSocket / MQTT Bridge)
+ * IIFL Real-Time Market Data Stream (Binary MQTT Bridge)
  * 
- * Official documentation: https://developers.iiflcapital.com/apidocs/marketdatastream
- * Host: bridge.iiflcapital.com:8883 (TLS)
- * Capacity: Up to 1024 subscriptions per batch, up to 6000 per client
+ * Official Reference: https://github.com/IIFLCapital/BridgePy
+ * Endpoint: bridge.iiflcapital.com:8883 (TLS)
+ * Auth:
+ *   Username: Extracted JWT preferred_username / sub
+ *   Password: "OPENID~~" + userSessionToken + "~"
+ * Topics:
+ *   Market Quotes: prod/marketfeed/mw/v1/<exchange>/<instrumentId>
+ *   Indices:       prod/marketfeed/index/v1/<exchange>/<instrumentId>
+ *   52W High:      prod/marketfeed/high52week/v1/<exchange>
+ *   52W Low:       prod/marketfeed/low52week/v1/<exchange>
+ *   Upper Circuit: prod/marketfeed/uppercircuit/v1/<exchange>
+ *   Lower Circuit: prod/marketfeed/lowercircuit/v1/<exchange>
+ *   Market Status: prod/marketfeed/marketstatus/v1/<exchange>
+ *   Open Interest: prod/marketfeed/oi/v1/<exchange>/<instrumentId>
  */
 
 const mqtt = require('mqtt');
 const EventEmitter = require('events');
+
+function extractUsernameFromToken(token) {
+  if (!token) return 'tester';
+  try {
+    const parts = String(token).split('.');
+    if (parts.length >= 2) {
+      let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (payload.length % 4) payload += '=';
+      const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+      return decoded.preferred_username || decoded.sub || decoded.client_id || decoded.userId || 'tester';
+    }
+  } catch (_) {}
+  return 'tester';
+}
+
+function formatDateClientId() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const day = pad(d.getDate());
+  const month = pad(d.getMonth() + 1);
+  const year = String(d.getFullYear()).slice(-2);
+  const hours = pad(d.getHours());
+  const mins = pad(d.getMinutes());
+  const secs = pad(d.getSeconds());
+  return `bridgePy${day}${month}${year}${hours}${mins}${secs}`;
+}
 
 class IIFLMarketDataStream extends EventEmitter {
   constructor(options = {}) {
@@ -22,6 +59,17 @@ class IIFLMarketDataStream extends EventEmitter {
     this.subscribedTopics = new Set();
     this.reconnectTimer = null;
     this.isExplicitDisconnect = false;
+
+    // Official IIFL topic prefixes
+    this.TOPIC_MW = 'prod/marketfeed/mw/v1/';
+    this.TOPIC_INDEX = 'prod/marketfeed/index/v1/';
+    this.TOPIC_OI = 'prod/marketfeed/oi/v1/';
+    this.TOPIC_STATUS = 'prod/marketfeed/marketstatus/v1/';
+    this.TOPIC_LPP = 'prod/marketfeed/lpp/v1/';
+    this.TOPIC_52HIGH = 'prod/marketfeed/high52week/v1/';
+    this.TOPIC_52LOW = 'prod/marketfeed/low52week/v1/';
+    this.TOPIC_UPPER_CIRCUIT = 'prod/marketfeed/uppercircuit/v1/';
+    this.TOPIC_LOWER_CIRCUIT = 'prod/marketfeed/lowercircuit/v1/';
   }
 
   /**
@@ -42,17 +90,22 @@ class IIFLMarketDataStream extends EventEmitter {
 
     this.isExplicitDisconnect = false;
     const brokerUrl = `mqtts://${this.host}:${this.port}`;
-    console.log(`[IIFL STREAM] 🔌 Connecting to ${brokerUrl} ...`);
+    const username = extractUsernameFromToken(this.token);
+    const password = `OPENID~~${this.token}~`;
+    const clientId = formatDateClientId();
+
+    console.log(`[IIFL STREAM] 🔌 Connecting to ${brokerUrl} as ${username} (${clientId})...`);
 
     const mqttOptions = {
-      username: this.token,
-      password: this.token,
-      clientId: `iifl_tt_${Date.now()}_${Math.random().toString(16).substring(2, 8)}`,
+      username,
+      password,
+      clientId,
+      protocolVersion: 4, // MQTT v3.1.1
       clean: true,
-      keepalive: 30,
+      keepalive: 20,
       reconnectPeriod: 5000,
       connectTimeout: 15000,
-      rejectUnauthorized: false, // Permit self-signed or internal CA if needed
+      rejectUnauthorized: false,
     };
 
     try {
@@ -60,7 +113,7 @@ class IIFLMarketDataStream extends EventEmitter {
 
       this.client.on('connect', (connack) => {
         this.isConnected = true;
-        console.log('[IIFL STREAM] ✅ Connected to IIFL Market Data Stream Bridge (CONNACK).');
+        console.log('[IIFL STREAM] ✅ Connected to IIFL Market Data Stream Bridge (CONNACK Success).');
         this.emit('connected', connack);
 
         // Resubscribe to all active topics on reconnection
@@ -87,7 +140,7 @@ class IIFLMarketDataStream extends EventEmitter {
 
       this.client.on('offline', () => {
         this.isConnected = false;
-        console.log('[IIFL STREAM] ⏳ Stream is offline, waiting to reconnect...');
+        console.log('[IIFL STREAM] ⏳ Stream offline, waiting to reconnect...');
       });
     } catch (err) {
       console.error('[IIFL STREAM] ❌ Connection error:', err.message);
@@ -96,34 +149,60 @@ class IIFLMarketDataStream extends EventEmitter {
   }
 
   /**
-   * Subscribe to market data topics in batches of up to 1024 topics
-   * @param {string[]} topics - e.g. ['nseeq/2885', 'nsefo/35005', 'bseeq/999901', 'nseeq']
+   * Subscribe to market data scrips or indices
+   * Formats topics with official IIFL prefixes (e.g. prod/marketfeed/mw/v1/nseeq/2885)
+   * @param {string[]} rawTokens - e.g. ['nseeq/2885', 'nseeq/999920000', 'bseeq/999901', 'nseeq']
    */
-  subscribe(topics) {
-    if (!Array.isArray(topics) || topics.length === 0) return;
+  subscribe(rawTokens) {
+    if (!Array.isArray(rawTokens) || rawTokens.length === 0) return;
     
-    const validTopics = topics
-      .map(t => String(t).trim().toLowerCase())
-      .filter(Boolean);
+    const fullTopics = [];
 
-    validTopics.forEach(t => this.subscribedTopics.add(t));
+    for (const raw of rawTokens) {
+      const clean = String(raw).trim().toLowerCase();
+      if (!clean) continue;
+
+      if (clean === 'nseeq' || clean === 'bseeq' || clean === 'nsefo') {
+        // Event channels (52W High/Low, Circuits, Status)
+        fullTopics.push(this.TOPIC_52HIGH + clean);
+        fullTopics.push(this.TOPIC_52LOW + clean);
+        fullTopics.push(this.TOPIC_STATUS + clean);
+        fullTopics.push(this.TOPIC_UPPER_CIRCUIT + clean);
+        fullTopics.push(this.TOPIC_LOWER_CIRCUIT + clean);
+      } else if (clean.includes('999920000') || clean.includes('999920005') || clean.includes('999901') || clean.includes('26000') || clean.includes('26009')) {
+        // Indices
+        fullTopics.push(this.TOPIC_INDEX + clean);
+        fullTopics.push(this.TOPIC_MW + clean);
+      } else {
+        // Market quotes
+        fullTopics.push(this.TOPIC_MW + clean);
+      }
+    }
+
+    fullTopics.forEach(t => this.subscribedTopics.add(t));
 
     if (this.isConnected && this.client) {
-      this._rawSubscribe(validTopics);
+      this._rawSubscribe(fullTopics);
     }
   }
 
   /**
    * Unsubscribe from market data topics
-   * @param {string[]} topics 
    */
-  unsubscribe(topics) {
-    if (!Array.isArray(topics) || topics.length === 0) return;
-    const cleanTopics = topics.map(t => String(t).trim().toLowerCase()).filter(Boolean);
-    cleanTopics.forEach(t => this.subscribedTopics.delete(t));
+  unsubscribe(rawTokens) {
+    if (!Array.isArray(rawTokens) || rawTokens.length === 0) return;
+    
+    const fullTopics = [];
+    for (const raw of rawTokens) {
+      const clean = String(raw).trim().toLowerCase();
+      fullTopics.push(this.TOPIC_MW + clean);
+      fullTopics.push(this.TOPIC_INDEX + clean);
+    }
+
+    fullTopics.forEach(t => this.subscribedTopics.delete(t));
 
     if (this.isConnected && this.client) {
-      this.client.unsubscribe(cleanTopics, (err) => {
+      this.client.unsubscribe(fullTopics, (err) => {
         if (err) console.warn('[IIFL STREAM] ⚠️ Unsubscribe error:', err.message);
       });
     }
@@ -140,7 +219,7 @@ class IIFLMarketDataStream extends EventEmitter {
         if (err) {
           console.warn('[IIFL STREAM] ⚠️ Batch subscription error:', err.message);
         } else {
-          console.log(`[IIFL STREAM] 📡 Subscribed to batch of ${batch.length} topics (granted: ${granted?.length || 0}).`);
+          console.log(`[IIFL STREAM] 📡 Subscribed to ${batch.length} topic(s) (granted: ${granted?.length || 0}).`);
         }
       });
     }
@@ -171,28 +250,29 @@ class IIFLMarketDataStream extends EventEmitter {
     const len = buffer.length;
 
     try {
-      if (len === 188) {
-        // 1. Market Feed (188 bytes)
-        const quote = parseMarketFeed(buffer, topicStr);
+      if (topicStr.includes('/mw/') || topicStr.includes('/index/')) {
+        // Market Feed or Index Feed (188 bytes)
+        const subTopic = topicStr.split('v1/')[1] || '';
+        const quote = parseMarketFeed(buffer, subTopic);
         if (quote) {
           this.emit('quote', quote);
-          this.emit(`quote:${quote.exchange}:${quote.instrumentId}`, quote);
         }
-      } else if (len === 12) {
-        // 2. 52-Week High / 52-Week Low / Upper Circuit / Lower Circuit / LPP (12 bytes)
-        if (topicStr.includes('high') || topicStr === 'nseeq' || topicStr === 'bseeq') {
-          const highEvent = parse52WHigh(buffer, topicStr);
-          if (highEvent) this.emit('52w_high', highEvent);
-        } else if (topicStr.includes('low')) {
-          const lowEvent = parse52WLow(buffer, topicStr);
-          if (lowEvent) this.emit('52w_low', lowEvent);
-        }
-      } else if (len === 16) {
-        // 3. Open Interest (16 bytes)
+      } else if (topicStr.includes('/high52week/')) {
+        // 52-Week High (12 bytes)
+        const subTopic = topicStr.split('v1/')[1] || '';
+        const highEvent = parse52WHigh(buffer, subTopic);
+        if (highEvent) this.emit('52w_high', highEvent);
+      } else if (topicStr.includes('/low52week/')) {
+        // 52-Week Low (12 bytes)
+        const subTopic = topicStr.split('v1/')[1] || '';
+        const lowEvent = parse52WLow(buffer, subTopic);
+        if (lowEvent) this.emit('52w_low', lowEvent);
+      } else if (topicStr.includes('/oi/')) {
+        // Open Interest (16 bytes)
         const oi = parseOpenInterest(buffer, topicStr);
         if (oi) this.emit('open_interest', oi);
-      } else if (len === 2) {
-        // 4. Market Status (2 bytes)
+      } else if (topicStr.includes('/marketstatus/')) {
+        // Market Status (2 bytes)
         const status = parseMarketStatus(buffer, topicStr);
         if (status) this.emit('market_status', status);
       }
@@ -206,14 +286,13 @@ class IIFLMarketDataStream extends EventEmitter {
 // Binary Packet Decoders (Strict Little-Endian as per IIFL Documentation)
 // ---------------------------------------------------------------------------
 
-function parseMarketFeed(buffer, topic = '') {
+function parseMarketFeed(buffer, subTopic = '') {
   if (buffer.length < 188) return null;
 
-  // Header topic parsing: e.g. "nseeq/2885" -> exchange="NSEEQ", instrumentId="2885"
   let exchange = 'NSEEQ';
   let instrumentId = '';
-  if (topic && topic.includes('/')) {
-    const parts = topic.split('/');
+  if (subTopic && subTopic.includes('/')) {
+    const parts = subTopic.split('/');
     exchange = parts[0].toUpperCase();
     instrumentId = parts[1];
   }
@@ -237,7 +316,7 @@ function parseMarketFeed(buffer, topic = '') {
   const priceDivisor = buffer.readInt32LE(58) || 100;
   const lastTradedTime = buffer.readInt32LE(62);
 
-  // Market Depth: 5 Bids (12 bytes each) + 5 Asks (12 bytes each) = 120 bytes (offset 66..185)
+  // Market Depth: 5 Bids + 5 Asks (120 bytes, offset 66..185)
   const bids = [];
   let offset = 66;
   for (let i = 0; i < 5; i++) {
@@ -302,25 +381,25 @@ function parseMarketFeed(buffer, topic = '') {
   };
 }
 
-function parse52WHigh(buffer, topic = '') {
+function parse52WHigh(buffer, subTopic = '') {
   if (buffer.length < 12) return null;
   const instrumentId = String(buffer.readUInt32LE(0));
   const highRaw = buffer.readUInt32LE(4);
   const priceDivisor = buffer.readInt32LE(8) || 100;
   return {
-    exchange: topic.split('/')[0]?.toUpperCase() || 'NSEEQ',
+    exchange: subTopic ? subTopic.toUpperCase() : 'NSEEQ',
     instrumentId,
     week52High: +(highRaw / priceDivisor).toFixed(2)
   };
 }
 
-function parse52WLow(buffer, topic = '') {
+function parse52WLow(buffer, subTopic = '') {
   if (buffer.length < 12) return null;
   const instrumentId = String(buffer.readUInt32LE(0));
   const lowRaw = buffer.readUInt32LE(4);
   const priceDivisor = buffer.readInt32LE(8) || 100;
   return {
-    exchange: topic.split('/')[0]?.toUpperCase() || 'NSEEQ',
+    exchange: subTopic ? subTopic.toUpperCase() : 'NSEEQ',
     instrumentId,
     week52Low: +(lowRaw / priceDivisor).toFixed(2)
   };
