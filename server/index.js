@@ -935,11 +935,15 @@ const inFlightQuotesMap = new Map();
 async function refreshLiveQuotes(session) {
   if (!session.accessToken) return { success: false, events: [] };
   
+  // Zero-HTTP-Polling: When IIFL WebSocket/MQTT Stream is connected, bypass HTTP REST requests completely!
+  if (iiflStream && iiflStream.isConnected) {
+    return { success: true, events: [] };
+  }
+
   const sessionId = session.id || 'default';
   const now = Date.now();
   const lastTime = inFlightQuotesMap.get(sessionId) || 0;
-  if (now - lastTime < 50) {
-    // 50ms throttle guard: permits up to 20 req/sec for zero-delay millisecond ticks while respecting 20 RPS limit
+  if (now - lastTime < 500) {
     return { success: true, events: [] };
   }
   inFlightQuotesMap.set(sessionId, now);
