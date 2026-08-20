@@ -125,6 +125,16 @@ button { cursor: pointer; }
 .market-table th:nth-child(18),
 .market-table td:nth-child(18) { width: 30px; text-align: center; }
 
+#sort-pct-change {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+#sort-pct-change:hover {
+  background-color: #2a3436;
+  color: #38bdf8;
+}
+
 .market-table tbody tr:hover td { background-color: #1d282b; }
 .market-table .symbol { font-weight: 700; text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: #6d787a; }
 .market-table .symbol:hover { color: #5dbce3; }
