@@ -328,6 +328,13 @@ function analysisRows() {
   const options = analysisOptions();
   if (state.analysisTab === 'action') {
     return state.actionWatch.filter((event) => {
+      // Must strictly belong to the user's active Market Watch
+      const isInWatchlist = state.quotes.some((q) => 
+        String(q.instrumentId) === String(event.instrumentId) || 
+        (q.symbol && event.symbol && q.symbol === event.symbol)
+      );
+      if (!isInWatchlist) return false;
+
       const exchange = String(event.exchange || '').toUpperCase();
       const isFutureOption = (event.segment || '').toUpperCase() === 'F&O' || exchange.endsWith('FO');
       const exchangeAllowed = exchange.startsWith('NSE') ? options.nse : exchange.startsWith('BSE') ? options.bse : false;
@@ -953,16 +960,21 @@ function applyDeltaPatch(delta) {
 
   // 4. Process new action watch breakout events with instant 0ms DOM prepend
   if (Array.isArray(delta.newEvents) && delta.newEvents.length > 0) {
-    processBreakoutEvents(delta.newEvents);
-    flashNewAlerts(delta.newEvents);
-    if (Array.isArray(state.actionWatch)) {
-      state.actionWatch.unshift(...delta.newEvents);
-      if (state.actionWatch.length > 200) state.actionWatch.length = 200;
-    }
-    updateAlertBadge(state.actionWatch ? state.actionWatch.length : 0);
-    if (state.analysisTab === 'action') {
-      for (let i = delta.newEvents.length - 1; i >= 0; i--) {
-        prependActionWatchRow(delta.newEvents[i]);
+    const validEvents = delta.newEvents.filter((ev) => 
+      state.quotes.some((q) => String(q.instrumentId) === String(ev.instrumentId) || (q.symbol && ev.symbol && q.symbol === ev.symbol))
+    );
+    if (validEvents.length > 0) {
+      processBreakoutEvents(validEvents);
+      flashNewAlerts(validEvents);
+      if (Array.isArray(state.actionWatch)) {
+        state.actionWatch.unshift(...validEvents);
+        if (state.actionWatch.length > 200) state.actionWatch.length = 200;
+      }
+      updateAlertBadge(state.actionWatch ? state.actionWatch.length : 0);
+      if (state.analysisTab === 'action') {
+        for (let i = validEvents.length - 1; i >= 0; i--) {
+          prependActionWatchRow(validEvents[i]);
+        }
       }
     }
   }
