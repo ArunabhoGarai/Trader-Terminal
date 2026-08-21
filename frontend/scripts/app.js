@@ -870,10 +870,43 @@ function applyDeltaPatch(delta) {
     }
   }
 
-  // 3. Process new action watch breakout events if present
+  // 3. Update scanner lists in state.marketAnalysis in memory
+  if (state.marketAnalysis) {
+    const cleanSym = targetQuote ? String(targetQuote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim() : '';
+    const updateInList = (list) => {
+      if (!Array.isArray(list)) return;
+      const it = list.find(x => String(x.instrumentId) === instId || (cleanSym && String(x.nseSymbol || x.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim() === cleanSym));
+      if (it) {
+        if (delta.lp !== undefined) it.lastPrice = delta.lp;
+        if (delta.pct !== undefined) it.pctChange = delta.pct;
+        if (delta.h !== undefined) it.high = delta.h;
+        if (delta.l !== undefined) it.low = delta.l;
+        if (delta.o !== undefined) it.open = delta.o;
+        if (delta.c !== undefined) { it.close = delta.c; it.prevClose = delta.c; }
+        if (delta.v !== undefined) it.tradedVolume = delta.v;
+        if (delta.w52h !== undefined && delta.w52h > 0) it.week52High = delta.w52h;
+        if (delta.w52l !== undefined && delta.w52l > 0) it.week52Low = delta.w52l;
+      }
+    };
+    updateInList(state.marketAnalysis.highs);
+    updateInList(state.marketAnalysis.lows);
+    updateInList(state.marketAnalysis.gainers);
+    updateInList(state.marketAnalysis.losers);
+  }
+
+  // 4. Process new action watch breakout events if present
   if (Array.isArray(delta.newEvents) && delta.newEvents.length > 0) {
     processBreakoutEvents(delta.newEvents);
     flashNewAlerts(delta.newEvents);
+    if (Array.isArray(state.actionWatch)) {
+      state.actionWatch.unshift(...delta.newEvents);
+      if (state.actionWatch.length > 200) state.actionWatch.length = 200;
+    }
+  }
+
+  // 5. If Analysis window is open, schedule render to update it in real-time
+  const analysisWin = el('analysis-window');
+  if (analysisWin && !analysisWin.classList.contains('is-hidden')) {
     scheduleRender();
   }
 }
