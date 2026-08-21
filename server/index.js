@@ -766,6 +766,7 @@ function handleIncomingStreamQuote(session, streamQuote) {
 
   // 2. Update session.quotes in-place if in active watchlist
   let quoteUpdated = false;
+  let currentQ = null;
   if (Array.isArray(session.quotes)) {
     const qIdx = session.quotes.findIndex(q => 
       String(q.instrumentId) === String(streamQuote.instrumentId) || 
@@ -781,7 +782,7 @@ function handleIncomingStreamQuote(session, streamQuote) {
       const new52High = prev52High > 0 ? (streamQuote.high > prev52High ? streamQuote.high : prev52High) : 0;
       const new52Low = prev52Low > 0 ? (streamQuote.low > 0 && streamQuote.low < prev52Low ? streamQuote.low : prev52Low) : 0;
 
-      session.quotes[qIdx] = {
+      currentQ = {
         ...existing,
         lastPrice: streamQuote.lastPrice,
         open: streamQuote.open || existing.open,
@@ -799,6 +800,7 @@ function handleIncomingStreamQuote(session, streamQuote) {
         isReal52W: Boolean(new52High > 0),
         updatedAt: streamQuote.updatedAt
       };
+      session.quotes[qIdx] = currentQ;
       quoteUpdated = true;
     }
   }
@@ -824,7 +826,6 @@ function handleIncomingStreamQuote(session, streamQuote) {
 
   // 6. Direct Institutional Delta Broadcast (< 80 bytes, 0ms micro-latency)
   if (session.wsClients && session.wsClients.size > 0) {
-    const currentQ = quoteUpdated && qIdx >= 0 ? session.quotes[qIdx] : null;
     const deltaPayload = {
       type: 'delta',
       id: String(streamQuote.instrumentId),
