@@ -163,14 +163,19 @@ function renderMarket() {
     const hasActiveBadge = badgeInfo && badgeInfo.expiresAt > Date.now();
     const breakoutBadge = hasActiveBadge ? ` <span class="scrip-breakout-badge ${badgeInfo.type === 'HIGH' ? 'breakout-badge-high' : 'breakout-badge-low'}">${badgeInfo.type}</span>` : '';
 
+    const w52High = Number(quote.week52High) || 0;
+    const w52Low = Number(quote.week52Low) || 0;
+    const w52HighStr = w52High > 0 ? fmt(w52High) : '-';
+    const w52LowStr = w52Low > 0 ? fmt(w52Low) : '-';
+
     return `<tr class="${trClass}" data-key="${escapeHtml(keyFor(quote))}">
       <td>${escapeHtml(quote.exchange.slice(0, 1))}</td><td>${escapeHtml(quote.exchange.includes('FO') ? 'F' : 'C')}</td><td>⌁</td><td class="${move}-arrow">${diff >= 0 ? '▲' : '▼'}</td><td></td>
       <td class="symbol">${escapeHtml(quote.symbol)}${breakoutBadge}${moveBadge}</td><td class="${rateClass}">${fmt(quote.lastPrice)}</td><td class="${chgFillClass}">${escapeHtml(chgText)}</td>
       <td>${qty(quote.bidQty)}</td><td>${fmt(quote.bidPrice)}</td><td>${qty(quote.offerQty)}</td><td>${fmt(quote.offerPrice)}</td>
-      <td>${fmt(quote.open)}</td><td>${fmt(quote.high)}</td><td>${fmt(quote.low)}</td><td>${fmt(quote.pcClose)}</td><td>${qty(quote.totalQty)}</td>
+      <td>${fmt(quote.open)}</td><td>${fmt(quote.high)}</td><td>${fmt(quote.low)}</td><td class="w52-high-cell" style="color:#107c41; font-weight:bold;">${w52HighStr}</td><td class="w52-low-cell" style="color:#d81e05; font-weight:bold;">${w52LowStr}</td><td>${fmt(quote.pcClose)}</td><td>${qty(quote.totalQty)}</td>
       <td class="find-cell"><button class="remove-scrip" data-key="${escapeHtml(keyFor(quote))}" title="Remove ${escapeHtml(quote.symbol)}" aria-label="Remove ${escapeHtml(quote.symbol)}">×</button></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="18" class="empty-watchlist">No scrips match these filters.</td></tr>';
+  }).join('') || '<tr><td colspan="20" class="empty-watchlist">No scrips match these filters.</td></tr>';
   buildMarketRowMap();
 }
 
@@ -182,7 +187,7 @@ function buildMarketRowMap() {
   rows.forEach(tr => {
     const key = tr.getAttribute('data-key');
     const cells = tr.children;
-    if (key && cells.length >= 17) {
+    if (key && cells.length >= 19) {
       marketRowMap.set(key, {
         tr,
         arrowCell: cells[3],
@@ -195,8 +200,10 @@ function buildMarketRowMap() {
         openCell: cells[12],
         highCell: cells[13],
         lowCell: cells[14],
-        closeCell: cells[15],
-        volCell: cells[16]
+        w52HighCell: cells[15],
+        w52LowCell: cells[16],
+        closeCell: cells[17],
+        volCell: cells[18]
       });
     }
   });
@@ -488,6 +495,7 @@ function renderAnalysis() {
 
     // Update alert count badge
     updateAlertBadge(rows.length);
+    applyAnalysisColumnWidths();
     makeColumnsResizable(document.querySelector('.analysis-table'));
     restoreSelectedColumnHighlight();
     return;
@@ -593,6 +601,7 @@ function renderAnalysis() {
     </tr>`;
   }).join('') || '<tr><td colspan="9" class="analysis-empty">No scrips match the selected analysis filters.</td></tr>';
 
+  applyAnalysisColumnWidths();
   makeColumnsResizable(document.querySelector('.analysis-table'));
   restoreSelectedColumnHighlight();
 }
@@ -685,6 +694,12 @@ function loadStateFromCache() {
       state.marketAnalysis = cache.marketAnalysis;
       loaded = true;
     }
+    if (cache.columnWidths) {
+      state.columnWidths = cache.columnWidths;
+    } else {
+      const savedWidths = localStorage.getItem('trader_analysis_col_widths');
+      if (savedWidths) state.columnWidths = JSON.parse(savedWidths);
+    }
     return loaded;
   } catch (_) {
     return false;
@@ -696,6 +711,8 @@ function applyTerminalPayload(data) {
   if (data.watchlist) state.watchlist = data.watchlist;
   if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
   if (data.marketAnalysis) state.marketAnalysis = data.marketAnalysis;
+  if (data.columnWidths && Object.keys(data.columnWidths).length > 0) state.columnWidths = data.columnWidths;
+  else if (data.session?.columnWidths && Object.keys(data.session.columnWidths).length > 0) state.columnWidths = data.session.columnWidths;
   setSession(data.session);
   if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
   renderMarket();
@@ -889,6 +906,8 @@ function applyDeltaPatch(delta) {
       if (delta.o !== undefined) row.openCell.textContent = fmt(targetQuote.open);
       if (delta.c !== undefined) row.closeCell.textContent = fmt(targetQuote.close);
       if (delta.v !== undefined) row.volCell.textContent = qty(targetQuote.totalQty);
+      if (delta.w52h !== undefined && delta.w52h > 0 && row.w52HighCell) row.w52HighCell.textContent = fmt(delta.w52h);
+      if (delta.w52l !== undefined && delta.w52l > 0 && row.w52LowCell) row.w52LowCell.textContent = fmt(delta.w52l);
 
       // Micro-tick hardware flash
       const flashClass = diff >= 0 ? 'flash-tick-up' : 'flash-tick-down';
@@ -937,7 +956,23 @@ function applyDeltaPatch(delta) {
     }
   }
 
-  // 5. If non-action scanner tab is open, schedule render to update it in real-time
+  // 5. If Action Watch tab is open and 52W high/low updated, patch visible Action Watch rows
+  if (state.analysisTab === 'action' && (delta.w52h > 0 || delta.w52l > 0)) {
+    const tbody = el('analysis-body');
+    if (tbody) {
+      const rows = tbody.querySelectorAll('tr');
+      rows.forEach(tr => {
+        const tokenCell = tr.children[2];
+        const symCell = tr.children[3];
+        if (tokenCell && (tokenCell.textContent.trim() === instId || (targetQuote && symCell && symCell.textContent.trim() === targetQuote.symbol))) {
+          if (delta.w52l > 0 && tr.children[6]) tr.children[6].textContent = fmt(delta.w52l);
+          if (delta.w52h > 0 && tr.children[7]) tr.children[7].textContent = fmt(delta.w52h);
+        }
+      });
+    }
+  }
+
+  // 6. If non-action scanner tab is open, schedule render to update it in real-time
   const analysisWin = el('analysis-window');
   if (analysisWin && !analysisWin.classList.contains('is-hidden') && state.analysisTab !== 'action') {
     scheduleRender();
@@ -1688,9 +1723,7 @@ function bindEvents() {
         th.style.minWidth = `${newWidth}px`;
         th.style.maxWidth = `${newWidth}px`;
 
-        if (!state.columnWidths) state.columnWidths = {};
-        if (!state.columnWidths[state.analysisTab]) state.columnWidths[state.analysisTab] = {};
-        state.columnWidths[state.analysisTab][state.selectedAnalysisColIndex] = newWidth;
+        saveAnalysisColumnWidth(state.analysisTab || 'action', state.selectedAnalysisColIndex, newWidth);
 
         const headerName = th.textContent.replace(/[▼▲⭐🔥📉]/g, '').trim();
         toast(`↔ Resizing "${headerName}" column (${newWidth}px). Press Enter to finish.`);
@@ -1948,10 +1981,49 @@ function restoreSelectedColumnHighlight() {
   }
 }
 
+let saveWidthsTimeout = null;
+function saveAnalysisColumnWidth(tab, colIndex, width) {
+  if (!state.columnWidths) state.columnWidths = {};
+  if (!state.columnWidths[tab]) state.columnWidths[tab] = {};
+  state.columnWidths[tab][colIndex] = width;
+
+  try {
+    localStorage.setItem('trader_analysis_col_widths', JSON.stringify(state.columnWidths));
+  } catch (_) {}
+
+  clearTimeout(saveWidthsTimeout);
+  saveWidthsTimeout = setTimeout(() => {
+    fetch('/api/settings/column-widths', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tab, widths: state.columnWidths[tab], fullMap: state.columnWidths })
+    }).catch(() => {});
+  }, 300);
+}
+
+function applyAnalysisColumnWidths() {
+  const table = document.querySelector('.analysis-table');
+  if (!table) return;
+  const tab = state.analysisTab || 'action';
+  const saved = state.columnWidths?.[tab];
+  if (!saved) return;
+
+  const ths = table.querySelectorAll('thead th');
+  ths.forEach((th, idx) => {
+    const w = saved[idx];
+    if (w && w >= 20) {
+      th.style.width = `${w}px`;
+      th.style.minWidth = `${w}px`;
+      th.style.maxWidth = `${w}px`;
+    }
+  });
+}
+
 function makeColumnsResizable(tableEl) {
   if (!tableEl) return;
+  const isAnalysis = tableEl.classList.contains('analysis-table');
   const headers = tableEl.querySelectorAll('th');
-  headers.forEach((th) => {
+  headers.forEach((th, colIndex) => {
     if (th.querySelector('.resizer')) return;
     const resizer = document.createElement('div');
     resizer.className = 'resizer';
@@ -1965,6 +2037,7 @@ function makeColumnsResizable(tableEl) {
       const newWidth = Math.max(30, startWidth + dx);
       th.style.width = `${newWidth}px`;
       th.style.minWidth = `${newWidth}px`;
+      th.style.maxWidth = `${newWidth}px`;
       resizer.classList.add('resizing');
     };
 
@@ -1972,6 +2045,11 @@ function makeColumnsResizable(tableEl) {
       resizer.classList.remove('resizing');
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
+
+      const finalWidth = th.offsetWidth;
+      if (isAnalysis) {
+        saveAnalysisColumnWidth(state.analysisTab || 'action', colIndex, finalWidth);
+      }
     };
 
     resizer.addEventListener('mousedown', (e) => {
