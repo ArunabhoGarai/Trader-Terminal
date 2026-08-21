@@ -591,6 +591,19 @@ function updateActionWatch(session, nextQuotes) {
          (isNewLow  && priorRange.lastAlertLow  !== null && eventPrice >= priorRange.lastAlertLow  - 0.01));
 
       if (!isDuplicate) {
+        let w52High = Number(quote.week52High) || 0;
+        let w52Low = Number(quote.week52Low) || 0;
+        if (w52High === 0 || w52Low === 0) {
+          const cleanSym = String(quote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+          const scraped = nseScraper.get52WBounds?.(cleanSym);
+          if (scraped) {
+            if (w52High === 0 && scraped.high > 0) w52High = scraped.high;
+            if (w52Low === 0 && scraped.low > 0) w52Low = scraped.low;
+          }
+        }
+        if (w52High > 0 && eventPrice > w52High) w52High = eventPrice;
+        if (w52Low > 0 && eventPrice > 0 && eventPrice < w52Low) w52Low = eventPrice;
+
         const event = {
           instrumentId: String(quote.instrumentId),
           symbol: quote.symbol,
@@ -599,8 +612,8 @@ function updateActionWatch(session, nextQuotes) {
           status,
           lastPrice: eventPrice,
           close: previousClose,
-          week52High: quote.week52High > 0 ? (eventPrice > quote.week52High ? eventPrice : quote.week52High) : 0,
-          week52Low: quote.week52Low > 0 ? (eventPrice < quote.week52Low ? eventPrice : quote.week52Low) : 0,
+          week52High: w52High,
+          week52Low: w52Low,
           direction,
           timestamp: quote.updatedAt || new Date().toISOString(),
           time: indiaTimeString(),
@@ -775,12 +788,21 @@ function handleIncomingStreamQuote(session, streamQuote) {
 
     if (qIdx >= 0) {
       const existing = session.quotes[qIdx];
-      const prev52High = existing.week52High || 0;
-      const prev52Low = existing.week52Low || 0;
+      let prev52High = existing.week52High || 0;
+      let prev52Low = existing.week52Low || 0;
+
+      if (prev52High === 0 || prev52Low === 0) {
+        const cleanSym = String(existing.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+        const scraped52 = nseScraper.get52WBounds?.(cleanSym);
+        if (scraped52) {
+          if (prev52High === 0 && scraped52.high > 0) prev52High = scraped52.high;
+          if (prev52Low === 0 && scraped52.low > 0) prev52Low = scraped52.low;
+        }
+      }
 
       // Preserve 52W bounds logic: only update if realtime exceeds fetched 52W high
-      const new52High = prev52High > 0 ? (streamQuote.high > prev52High ? streamQuote.high : prev52High) : 0;
-      const new52Low = prev52Low > 0 ? (streamQuote.low > 0 && streamQuote.low < prev52Low ? streamQuote.low : prev52Low) : 0;
+      const new52High = prev52High > 0 ? (streamQuote.high > prev52High ? streamQuote.high : prev52High) : (streamQuote.week52High || 0);
+      const new52Low = prev52Low > 0 ? (streamQuote.low > 0 && streamQuote.low < prev52Low ? streamQuote.low : prev52Low) : (streamQuote.week52Low || 0);
 
       currentQ = {
         ...existing,
