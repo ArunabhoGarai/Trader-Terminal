@@ -580,11 +580,23 @@ function updateActionWatch(session, nextQuotes) {
     if (isNewHigh || isNewLow) {
       const status = isNewHigh ? 'New High' : 'New Low';
 
+      let sym = quote.symbol;
+      if (!sym) {
+        const inst = knownInstrument(quote.exchange, quote.instrumentId) || 
+                     knownInstruments.get(`NSEEQ:${quote.instrumentId}`) || 
+                     knownInstruments.get(`BSEEQ:${quote.instrumentId}`);
+        if (inst && inst.symbol) sym = inst.symbol;
+        else {
+          const nseInfo = nseMaster.findInstrumentById?.(quote.instrumentId);
+          if (nseInfo && nseInfo.symbol) sym = `${nseInfo.symbol}-EQ`;
+        }
+      }
+
       let w52High = Number(quote.week52High) || 0;
       let w52Low = Number(quote.week52Low) || 0;
       if (w52High === 0 || w52Low === 0) {
-        const cleanSym = String(quote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
-        const nse52 = nse52WMaster.get52WBounds(cleanSym) || nse52WMaster.get52WBounds(quote.symbol) || nseScraper.get52WBounds?.(cleanSym);
+        const cleanSym = String(sym || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+        const nse52 = nse52WMaster.get52WBounds(cleanSym) || nse52WMaster.get52WBounds(sym) || nseScraper.get52WBounds?.(cleanSym);
         if (nse52) {
           if (w52High === 0 && nse52.high > 0) w52High = nse52.high;
           if (w52Low === 0 && nse52.low > 0) w52Low = nse52.low;
@@ -593,9 +605,9 @@ function updateActionWatch(session, nextQuotes) {
 
       const event = {
         instrumentId: String(quote.instrumentId),
-        symbol: quote.symbol,
-        exchange: quote.exchange,
-        segment: quote.segment || segmentLabel(quote.exchange),
+        symbol: sym || `TOKEN-${quote.instrumentId}`,
+        exchange: quote.exchange || 'NSEEQ',
+        segment: quote.segment || segmentLabel(quote.exchange || 'NSEEQ'),
         status,
         lastPrice: eventPrice,
         close: previousClose,
@@ -716,6 +728,34 @@ function syncStreamSubscriptions(session) {
 function handleIncomingStreamQuote(session, streamQuote) {
   if (!session || !streamQuote) return;
 
+  // 0. Resolve scrip symbol and 52W bounds if missing from binary packet
+  if (!streamQuote.symbol) {
+    const inst = knownInstrument(streamQuote.exchange, streamQuote.instrumentId) || 
+                 knownInstruments.get(`NSEEQ:${streamQuote.instrumentId}`) || 
+                 knownInstruments.get(`BSEEQ:${streamQuote.instrumentId}`);
+    if (inst && inst.symbol) {
+      streamQuote.symbol = inst.symbol;
+      streamQuote.displayName = inst.displayName || inst.symbol;
+      streamQuote.segment = inst.segment || segmentLabel(streamQuote.exchange || 'NSEEQ');
+    } else {
+      const nseInfo = nseMaster.findInstrumentById?.(streamQuote.instrumentId);
+      if (nseInfo && nseInfo.symbol) {
+        streamQuote.symbol = `${nseInfo.symbol}-EQ`;
+        streamQuote.displayName = nseInfo.companyName || streamQuote.symbol;
+        streamQuote.segment = 'Equity';
+      }
+    }
+  }
+
+  if (streamQuote.symbol && (!streamQuote.week52High || !streamQuote.week52Low)) {
+    const cleanSym = String(streamQuote.symbol).replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+    const nse52 = nse52WMaster.get52WBounds(cleanSym) || nse52WMaster.get52WBounds(streamQuote.symbol);
+    if (nse52) {
+      if (!streamQuote.week52High && nse52.high > 0) streamQuote.week52High = nse52.high;
+      if (!streamQuote.week52Low && nse52.low > 0) streamQuote.week52Low = nse52.low;
+    }
+  }
+
   // 1. Update Index data if this is an index instrument
   if (streamQuote.instrumentId === '999920000' || streamQuote.instrumentId === '26000') {
     if (!session.indicesData) session.indicesData = {};
@@ -821,11 +861,10 @@ function handleIncomingStreamQuote(session, streamQuote) {
   if (!session.scannerQuotesCache) session.scannerQuotesCache = new Map();
   session.scannerQuotesCache.set(String(streamQuote.instrumentId), streamQuote);
 
-  // 5. Trigger real-time Action Watch breakout detection
+  // 5. Trigger real-time Action Watch breakout detection strictly for Market Watch scrips
   let newEvents = [];
-  const targetQuoteForAction = currentQ || streamQuote;
-  if (targetQuoteForAction && targetQuoteForAction.lastPrice > 0) {
-    newEvents = updateActionWatch(session, [targetQuoteForAction]);
+  if (quoteUpdated && currentQ && currentQ.lastPrice > 0) {
+    newEvents = updateActionWatch(session, [currentQ]);
   }
 
   // 6. Direct Institutional Delta Broadcast (< 80 bytes, 0ms micro-latency)
