@@ -17,6 +17,7 @@ const express = require('express');
 const { WebSocketServer } = require('ws');
 const nseScraper = require('./nse_scraper');
 const nseMaster = require('./nse_master');
+const nse52WMaster = require('./nse_52w_master');
 const { IIFLMarketDataStream } = require('./iifl_stream');
 let iiflStream = null;
 
@@ -174,11 +175,16 @@ function indiaTimeString() {
 // Quote builders
 // ---------------------------------------------------------------------------
 function makeEmptyLiveQuote(instrument, position = 0) {
+  const cleanSym = String(instrument.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+  const nse52 = nse52WMaster.get52WBounds(cleanSym) || nse52WMaster.get52WBounds(instrument.symbol);
+  const week52High = nse52 ? nse52.high : 0;
+  const week52Low = nse52 ? nse52.low : 0;
+
   return {
     exchange: instrument.exchange, instrumentId: instrument.instrumentId, symbol: instrument.symbol,
     lastPrice: 0, pctChange: 0, close: 0, open: 0, high: 0, low: 0,
     bestBidPrice: 0, bestBidQty: 0, bestAskPrice: 0, bestAskQty: 0,
-    tradedVolume: 0, week52High: 0, week52Low: 0, position
+    tradedVolume: 0, week52High, week52Low, isReal52W: Boolean(week52High > 0), position
   };
 }
 
@@ -404,6 +410,7 @@ function loadGlobalState() {
       if (data.authenticatedAt) session.authenticatedAt = data.authenticatedAt;
       if (data.actionWatch) session.actionWatch = data.actionWatch;
       if (data.actionWatchDate) session.actionWatchDate = data.actionWatchDate;
+      if (data.columnWidths) session.columnWidths = data.columnWidths;
 
       // Restore watchlist, ensuring basePrice is available from catalog
       if (data.watchlist) {
@@ -444,6 +451,7 @@ function saveGlobalState() {
     watchlist: session.watchlist,
     actionWatch: session.actionWatch,
     actionWatchDate: session.actionWatchDate,
+    columnWidths: session.columnWidths || {},
     intradayRanges: Array.from(session.intradayRanges.entries()),
   };
   const json = JSON.stringify(state);
@@ -475,6 +483,7 @@ function publicSession(session) {
     configured: configured(),
     expiresAt: session.expiresAt,
     pollIntervalMs: CONFIG.quotePollMs,
+    columnWidths: session.columnWidths || {},
     lastError: session.lastError
   };
 }
@@ -484,7 +493,7 @@ function publicWatchlist(session) {
 }
 
 function terminalPayload(session) {
-  return { quotes: session.quotes, session: publicSession(session), watchlist: publicWatchlist(session), actionWatch: session.actionWatch, marketAnalysis: session.marketAnalysis };
+  return { quotes: session.quotes, session: publicSession(session), watchlist: publicWatchlist(session), actionWatch: session.actionWatch, marketAnalysis: session.marketAnalysis, columnWidths: session.columnWidths || {} };
 }
 
 // ---------------------------------------------------------------------------
@@ -571,11 +580,11 @@ function updateActionWatch(session, nextQuotes) {
       let w52High = Number(quote.week52High) || 0;
       let w52Low = Number(quote.week52Low) || 0;
       if (w52High === 0 || w52Low === 0) {
-        const cleanSym = String(quote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
-        const scraped = nseScraper.get52WBounds?.(cleanSym);
-        if (scraped) {
-          if (w52High === 0 && scraped.high > 0) w52High = scraped.high;
-          if (w52Low === 0 && scraped.low > 0) w52Low = scraped.low;
+        const cleanSym = String(quote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+        const nse52 = nse52WMaster.get52WBounds(cleanSym) || nse52WMaster.get52WBounds(quote.symbol) || nseScraper.get52WBounds?.(cleanSym);
+        if (nse52) {
+          if (w52High === 0 && nse52.high > 0) w52High = nse52.high;
+          if (w52Low === 0 && nse52.low > 0) w52Low = nse52.low;
         }
       }
 
@@ -675,6 +684,7 @@ function syncStreamSubscriptions(session) {
   // 3. Event topics for 52W High / Low alerts & Market status
   topics.add('nseeq');
   topics.add('bseeq');
+  topics.add('nsefo');
 
   // 4. Market Analysis Scanner topics (up to 1024 scrips in batch)
   const realNseData = nseScraper.getNSEMarketWideData();
@@ -760,11 +770,11 @@ function handleIncomingStreamQuote(session, streamQuote) {
       let prev52Low = existing.week52Low || 0;
 
       if (prev52High === 0 || prev52Low === 0) {
-        const cleanSym = String(existing.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
-        const scraped52 = nseScraper.get52WBounds?.(cleanSym);
-        if (scraped52) {
-          if (prev52High === 0 && scraped52.high > 0) prev52High = scraped52.high;
-          if (prev52Low === 0 && scraped52.low > 0) prev52Low = scraped52.low;
+        const cleanSym = String(existing.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+        const nse52 = nse52WMaster.get52WBounds(cleanSym) || nse52WMaster.get52WBounds(existing.symbol) || nseScraper.get52WBounds?.(cleanSym);
+        if (nse52) {
+          if (prev52High === 0 && nse52.high > 0) prev52High = nse52.high;
+          if (prev52Low === 0 && nse52.low > 0) prev52Low = nse52.low;
         }
       }
 
@@ -895,8 +905,10 @@ function updateScannerItemInPlace(list, streamQuote, cleanSym) {
 
 function handle52WEvent(session, instrumentId, price, isHigh) {
   if (!session || !instrumentId || !price) return;
+  const instIdStr = String(instrumentId);
+
   if (Array.isArray(session.quotes)) {
-    const q = session.quotes.find(item => String(item.instrumentId) === String(instrumentId));
+    const q = session.quotes.find(item => String(item.instrumentId) === instIdStr);
     if (q) {
       if (isHigh) {
         q.week52High = price;
@@ -908,11 +920,21 @@ function handle52WEvent(session, instrumentId, price, isHigh) {
     }
   }
 
+  // Update Action Watch events in session
+  if (Array.isArray(session.actionWatch)) {
+    session.actionWatch.forEach(ev => {
+      if (String(ev.instrumentId) === instIdStr) {
+        if (isHigh) ev.week52High = price;
+        else ev.week52Low = price;
+      }
+    });
+  }
+
   // Update scanner lists on 52W event
   if (session.marketAnalysis) {
     const update52WInList = (list) => {
       if (!Array.isArray(list)) return;
-      const it = list.find(item => String(item.instrumentId) === String(instrumentId));
+      const it = list.find(item => String(item.instrumentId) === instIdStr);
       if (it) {
         if (isHigh) it.week52High = price;
         else it.week52Low = price;
@@ -922,6 +944,16 @@ function handle52WEvent(session, instrumentId, price, isHigh) {
     update52WInList(session.marketAnalysis.lows);
     update52WInList(session.marketAnalysis.gainers);
     update52WInList(session.marketAnalysis.losers);
+  }
+
+  // Instantly broadcast live 52W delta tick to connected browser WebSocket clients
+  if (session.wsClients && session.wsClients.size > 0) {
+    broadcastToSession(session, {
+      type: 'delta',
+      id: instIdStr,
+      w52h: isHigh ? price : undefined,
+      w52l: !isHigh ? price : undefined,
+    });
   }
 }
 
@@ -1715,6 +1747,21 @@ app.post('/api/nse/refresh', async (req, res) => {
   res.json(result);
 });
 
+app.post('/api/settings/column-widths', (req, res) => {
+  const session = browserSession(req, res);
+  const { tab, widths, fullMap } = req.body || {};
+  if (!session.columnWidths) session.columnWidths = {};
+
+  if (fullMap && typeof fullMap === 'object') {
+    session.columnWidths = { ...session.columnWidths, ...fullMap };
+  } else if (tab && widths && typeof widths === 'object') {
+    session.columnWidths[tab] = { ...(session.columnWidths[tab] || {}), ...widths };
+  }
+
+  saveGlobalState();
+  res.json({ status: 'ok', columnWidths: session.columnWidths });
+});
+
 app.get('/api/instruments', async (req, res) => {
   const exchange = String(req.query.exchange || 'NSE');
   const segment = String(req.query.segment || 'Equity');
@@ -2368,6 +2415,7 @@ server.listen(CONFIG.port, CONFIG.host, async () => {
   }
   startPolling();
   nseScraper.startNSEScraper(5 * 60 * 1000);
+  nse52WMaster.startDaily52WSchedule();
   fetchSensexToken();
   setInterval(fetchSensexToken, 24 * 60 * 60 * 1000);
 });
