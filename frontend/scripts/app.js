@@ -949,6 +949,7 @@ function applyDeltaPatch(delta) {
       state.actionWatch.unshift(...delta.newEvents);
       if (state.actionWatch.length > 200) state.actionWatch.length = 200;
     }
+    updateAlertBadge(state.actionWatch ? state.actionWatch.length : 0);
     if (state.analysisTab === 'action') {
       for (let i = delta.newEvents.length - 1; i >= 0; i--) {
         prependActionWatchRow(delta.newEvents[i]);
