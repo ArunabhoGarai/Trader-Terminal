@@ -601,9 +601,6 @@ function updateActionWatch(session, nextQuotes) {
             if (w52Low === 0 && scraped.low > 0) w52Low = scraped.low;
           }
         }
-        if (w52High > 0 && eventPrice > w52High) w52High = eventPrice;
-        if (w52Low > 0 && eventPrice > 0 && eventPrice < w52Low) w52Low = eventPrice;
-
         const event = {
           instrumentId: String(quote.instrumentId),
           symbol: quote.symbol,
@@ -800,9 +797,9 @@ function handleIncomingStreamQuote(session, streamQuote) {
         }
       }
 
-      // Preserve 52W bounds logic: only update if realtime exceeds fetched 52W high
-      const new52High = prev52High > 0 ? (streamQuote.high > prev52High ? streamQuote.high : prev52High) : (streamQuote.week52High || 0);
-      const new52Low = prev52Low > 0 ? (streamQuote.low > 0 && streamQuote.low < prev52Low ? streamQuote.low : prev52Low) : (streamQuote.week52Low || 0);
+      // Raw 52W bounds directly from IIFL
+      const new52High = streamQuote.week52High > 0 ? streamQuote.week52High : prev52High;
+      const new52Low = streamQuote.week52Low > 0 ? streamQuote.week52Low : prev52Low;
 
       currentQ = {
         ...existing,
