@@ -171,6 +171,35 @@ function renderMarket() {
       <td class="find-cell"><button class="remove-scrip" data-key="${escapeHtml(keyFor(quote))}" title="Remove ${escapeHtml(quote.symbol)}" aria-label="Remove ${escapeHtml(quote.symbol)}">×</button></td>
     </tr>`;
   }).join('') || '<tr><td colspan="18" class="empty-watchlist">No scrips match these filters.</td></tr>';
+  buildMarketRowMap();
+}
+
+const marketRowMap = new Map();
+
+function buildMarketRowMap() {
+  marketRowMap.clear();
+  const rows = document.querySelectorAll('#market-body tr[data-key]');
+  rows.forEach(tr => {
+    const key = tr.getAttribute('data-key');
+    const cells = tr.children;
+    if (key && cells.length >= 17) {
+      marketRowMap.set(key, {
+        tr,
+        arrowCell: cells[3],
+        rateCell: cells[6],
+        chgCell: cells[7],
+        bidQtyCell: cells[8],
+        bidPriceCell: cells[9],
+        offerQtyCell: cells[10],
+        offerPriceCell: cells[11],
+        openCell: cells[12],
+        highCell: cells[13],
+        lowCell: cells[14],
+        closeCell: cells[15],
+        volCell: cells[16]
+      });
+    }
+  });
 }
 
 function renderSearchResults() {
@@ -771,8 +800,94 @@ function applyIndexUpdate(name, data) {
   c.className = diff > 0 ? 'positive' : (diff < 0 ? 'negative' : '');
 }
 
+function applyDeltaPatch(delta) {
+  if (!delta || !delta.id) return;
+  const instId = String(delta.id);
+  const ex = delta.ex || 'NSEEQ';
+
+  // 1. In-Place update in state.quotes array
+  let targetQuote = null;
+  for (let i = 0; i < state.quotes.length; i++) {
+    const q = state.quotes[i];
+    if (String(q.instrumentId) === instId || (q.exchange === ex && String(q.instrumentId) === instId)) {
+      targetQuote = q;
+      if (delta.lp !== undefined) q.lastPrice = delta.lp;
+      if (delta.pct !== undefined) q.pctChange = delta.pct;
+      if (delta.h !== undefined) q.high = delta.h;
+      if (delta.l !== undefined) q.low = delta.l;
+      if (delta.o !== undefined) q.open = delta.o;
+      if (delta.c !== undefined) { q.close = delta.c; q.pcClose = delta.c; }
+      if (delta.bp !== undefined) q.bidPrice = delta.bp;
+      if (delta.bq !== undefined) q.bidQty = delta.bq;
+      if (delta.ap !== undefined) q.offerPrice = delta.ap;
+      if (delta.aq !== undefined) q.offerQty = delta.aq;
+      if (delta.v !== undefined) q.totalQty = delta.v;
+      if (delta.w52h !== undefined) q.week52High = delta.w52h;
+      if (delta.w52l !== undefined) q.week52Low = delta.w52l;
+      break;
+    }
+  }
+
+  // 2. Direct DOM cell mutation in O(1) micro-time
+  if (targetQuote) {
+    const qKey = keyFor(targetQuote);
+    const row = marketRowMap.get(qKey);
+    if (row) {
+      const ltp = Number(targetQuote.lastPrice) || 0;
+      const pct = Number(targetQuote.pctChange) || 0;
+      const prevClose = pct !== 0 ? ltp / (1 + pct / 100) : ltp;
+      const diff = ltp - prevClose;
+      const sign = diff > 0 ? '+' : (diff < 0 ? '-' : '');
+      const absDiff = Math.abs(diff);
+      const formattedDiff = `${sign}${absDiff.toFixed(2)}`;
+      const formattedPct = `${pct > 0 ? '+' : (pct < 0 ? '-' : '')}${Math.abs(pct).toFixed(2)}%`;
+      const chgText = `${formattedDiff} (${formattedPct})`;
+
+      row.rateCell.textContent = fmt(targetQuote.lastPrice);
+      row.chgCell.textContent = chgText;
+
+      row.rateCell.className = diff > 0 ? 'rate-up' : (diff < 0 ? 'rate-down' : 'plain-rate');
+      row.chgCell.className = diff > 0 ? 'chg-fill-pos' : (diff < 0 ? 'chg-fill-neg' : 'chg-fill-flat');
+      
+      row.arrowCell.textContent = diff >= 0 ? '▲' : '▼';
+      row.arrowCell.className = diff >= 0 ? 'up-arrow' : 'down-arrow';
+
+      if (delta.bp !== undefined) row.bidPriceCell.textContent = fmt(targetQuote.bidPrice);
+      if (delta.bq !== undefined) row.bidQtyCell.textContent = qty(targetQuote.bidQty);
+      if (delta.ap !== undefined) row.offerPriceCell.textContent = fmt(targetQuote.offerPrice);
+      if (delta.aq !== undefined) row.offerQtyCell.textContent = qty(targetQuote.offerQty);
+      if (delta.h !== undefined) row.highCell.textContent = fmt(targetQuote.high);
+      if (delta.l !== undefined) row.lowCell.textContent = fmt(targetQuote.low);
+      if (delta.o !== undefined) row.openCell.textContent = fmt(targetQuote.open);
+      if (delta.c !== undefined) row.closeCell.textContent = fmt(targetQuote.close);
+      if (delta.v !== undefined) row.volCell.textContent = qty(targetQuote.totalQty);
+
+      // Micro-tick hardware flash
+      const flashClass = diff >= 0 ? 'flash-tick-up' : 'flash-tick-down';
+      row.rateCell.classList.remove('flash-tick-up', 'flash-tick-down');
+      void row.rateCell.offsetWidth;
+      row.rateCell.classList.add(flashClass);
+    }
+  }
+
+  // 3. Process new action watch breakout events if present
+  if (Array.isArray(delta.newEvents) && delta.newEvents.length > 0) {
+    processBreakoutEvents(delta.newEvents);
+    flashNewAlerts(delta.newEvents);
+    scheduleRender();
+  }
+}
+
 function handleWebSocketMessage(data) {
   switch (data.type) {
+    case 'delta':
+      applyDeltaPatch(data);
+      break;
+
+    case 'delta_index':
+      applyIndexUpdate(data.name, data.data);
+      break;
+
     case 'init':
     case 'tick':
     case 'watchlist':
