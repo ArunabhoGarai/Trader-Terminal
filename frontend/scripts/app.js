@@ -468,14 +468,16 @@ function renderAnalysis() {
     el('analysis-body').innerHTML = rows.map((event) => {
       const dirClass = event.direction === 'up' ? 'analysis-tick-up' : event.direction === 'down' ? 'analysis-tick-down' : 'analysis-tick-flat';
       
-      const cleanSym = String(event.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
-      const live = state.quotes.find((q) => {
-        const qSym = String(q.symbol || '').replace(/-EQ$/i, '').toUpperCase().trim();
-        return qSym === cleanSym || String(q.instrumentId) === String(event.instrumentId);
-      });
+      let sym = event.symbol;
+      const live = state.quotes.find((q) => String(q.instrumentId) === String(event.instrumentId));
+      if (!sym && live && live.symbol) sym = live.symbol;
+      if (!sym && Array.isArray(state.suggestions)) {
+        const cat = state.suggestions.find((s) => String(s.instrumentId) === String(event.instrumentId));
+        if (cat && cat.symbol) sym = cat.symbol;
+      }
       
-      const w52High = Number(live?.week52High || event.week52High || 0);
-      const w52Low = Number(live?.week52Low || event.week52Low || 0);
+      const w52High = Number(event.week52High || live?.week52High || 0);
+      const w52Low = Number(event.week52Low || live?.week52Low || 0);
       
       const w52HighStr = w52High > 0 ? fmt(w52High) : '-';
       const w52LowStr = w52Low > 0 ? fmt(w52Low) : '-';
@@ -484,7 +486,7 @@ function renderAnalysis() {
         <td style="text-align:center">${escapeHtml((event.exchange || 'N').slice(0, 1))}</td>
         <td style="text-align:center">${escapeHtml(event.segment === 'F&O' ? 'F' : 'C')}</td>
         <td style="text-align:center">${escapeHtml(event.instrumentId)}</td>
-        <td class="scrip-sym">${escapeHtml(event.symbol)}</td>
+        <td class="scrip-sym">${escapeHtml(sym || event.symbol || event.instrumentId)}</td>
         <td class="analysis-status-cell" style="text-align:center">${escapeHtml(event.status)}</td>
         <td class="analysis-rate" style="font-weight:bold">${fmt(event.lastPrice)}</td>
         <td class="analysis-rate" style="font-weight:bold; color:#d81e05">${w52LowStr}</td>
@@ -818,9 +820,17 @@ function prependActionWatchRow(event) {
   const emptyRow = tbody.querySelector('.analysis-empty');
   if (emptyRow) emptyRow.closest('tr')?.remove();
 
+  let sym = event.symbol;
+  const live = state.quotes.find((q) => String(q.instrumentId) === String(event.instrumentId));
+  if (!sym && live && live.symbol) sym = live.symbol;
+  if (!sym && Array.isArray(state.suggestions)) {
+    const cat = state.suggestions.find((s) => String(s.instrumentId) === String(event.instrumentId));
+    if (cat && cat.symbol) sym = cat.symbol;
+  }
+
   const dirClass = event.direction === 'up' ? 'analysis-tick-up' : event.direction === 'down' ? 'analysis-tick-down' : 'analysis-tick-flat';
-  const w52High = Number(event.week52High) || 0;
-  const w52Low = Number(event.week52Low) || 0;
+  const w52High = Number(event.week52High || live?.week52High || 0);
+  const w52Low = Number(event.week52Low || live?.week52Low || 0);
   const w52HighStr = w52High > 0 ? fmt(w52High) : '-';
   const w52LowStr = w52Low > 0 ? fmt(w52Low) : '-';
 
@@ -828,7 +838,7 @@ function prependActionWatchRow(event) {
     <td style="text-align:center">${escapeHtml((event.exchange || 'N').slice(0, 1))}</td>
     <td style="text-align:center">${escapeHtml(event.segment === 'F&O' ? 'F' : 'C')}</td>
     <td style="text-align:center">${escapeHtml(event.instrumentId)}</td>
-    <td class="scrip-sym">${escapeHtml(event.symbol)}</td>
+    <td class="scrip-sym">${escapeHtml(sym || event.symbol || event.instrumentId)}</td>
     <td class="analysis-status-cell" style="text-align:center">${escapeHtml(event.status)}</td>
     <td class="analysis-rate" style="font-weight:bold">${fmt(event.lastPrice)}</td>
     <td class="analysis-rate" style="font-weight:bold; color:#d81e05">${w52LowStr}</td>
