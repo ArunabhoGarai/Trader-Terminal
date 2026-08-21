@@ -157,6 +157,25 @@ button { cursor: pointer; }
   animation: blink-selected-scrip 0.5s infinite alternate !important;
 }
 
+/* Real-Time Micro-Tick Flashes */
+@keyframes tick-flash-green {
+  0% { background-color: #059669 !important; color: #ffffff !important; }
+  100% { background-color: inherit; color: inherit; }
+}
+
+@keyframes tick-flash-red {
+  0% { background-color: #dc2626 !important; color: #ffffff !important; }
+  100% { background-color: inherit; color: inherit; }
+}
+
+.flash-tick-up {
+  animation: tick-flash-green 0.4s ease-out;
+}
+
+.flash-tick-down {
+  animation: tick-flash-red 0.4s ease-out;
+}
+
 @keyframes blink-selected-scrip {
   0% {
     background-color: #f59e0b !important;
