@@ -744,6 +744,33 @@ function scheduleReconnect() {
   state.wsReconnectDelay = Math.min(state.wsReconnectDelay * 1.5, 15000);
 }
 
+let renderScheduled = false;
+function scheduleRender() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(() => {
+    renderScheduled = false;
+    renderMarket();
+    renderAnalysis();
+    if (state.quotes) updateLiveChartTick(state.quotes);
+  });
+}
+
+function applyIndexUpdate(name, data) {
+  if (!data) return;
+  const v = el(`${name}-value`);
+  const c = el(`${name}-change`);
+  if (!v || !c) return;
+  const ltp = Number(data.ltp) || 0;
+  if (ltp <= 0) return;
+  const pct = Number(data.pct) || 0;
+  const diff = Number(data.change) || (data.close > 0 ? ltp - data.close : 0);
+  const sign = diff > 0 ? '+' : (diff < 0 ? '-' : '');
+  v.textContent = ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  c.textContent = `${sign}${Math.abs(diff).toFixed(2)} (${sign}${Math.abs(pct).toFixed(2)}%)`;
+  c.className = diff > 0 ? 'positive' : (diff < 0 ? 'negative' : '');
+}
+
 function handleWebSocketMessage(data) {
   switch (data.type) {
     case 'init':
@@ -755,6 +782,13 @@ function handleWebSocketMessage(data) {
       if (Array.isArray(data.actionWatch)) state.actionWatch = data.actionWatch;
       if (data.marketAnalysis) state.marketAnalysis = data.marketAnalysis;
       if (data.session) setSession(data.session);
+
+      // Instant live indices update directly from WebSocket stream
+      if (data.indicesData) {
+        if (data.indicesData.nifty) applyIndexUpdate('nifty', data.indicesData.nifty);
+        if (data.indicesData.banknifty) applyIndexUpdate('banknifty', data.indicesData.banknifty);
+        if (data.indicesData.sensex) applyIndexUpdate('sensex', data.indicesData.sensex);
+      }
 
       // Check for new action watch events and update 1-min flashing badges
       if (data.type === 'tick' && Array.isArray(data.newEvents) && data.newEvents.length > 0) {
@@ -770,13 +804,9 @@ function handleWebSocketMessage(data) {
       }
 
       if (state.selectedKey && !state.quotes.some((quote) => keyFor(quote) === state.selectedKey)) state.selectedKey = null;
-      renderMarket();
-      renderAnalysis();
-      saveStateToCache();
       
-      // Update real-time interactive chart
-      if (data.quotes) updateLiveChartTick(state.quotes);
-      
+      // Fast non-blocking UI render via requestAnimationFrame
+      scheduleRender();
       break;
 
     case 'pong':
