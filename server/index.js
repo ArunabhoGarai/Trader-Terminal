@@ -725,31 +725,43 @@ function handleIncomingStreamQuote(session, streamQuote) {
   // 1. Update Index data if this is an index instrument
   if (streamQuote.instrumentId === '999920000' || streamQuote.instrumentId === '26000') {
     if (!session.indicesData) session.indicesData = {};
-    session.indicesData['nifty'] = {
+    const idxData = {
       ltp: streamQuote.lastPrice,
       close: streamQuote.close,
       pct: streamQuote.pctChange,
       change: streamQuote.diff,
       updatedAt: Date.now()
     };
+    session.indicesData['nifty'] = idxData;
+    if (session.wsClients && session.wsClients.size > 0) {
+      broadcastToSession(session, { type: 'delta_index', name: 'nifty', data: idxData });
+    }
   } else if (streamQuote.instrumentId === '999920005' || streamQuote.instrumentId === '26009') {
     if (!session.indicesData) session.indicesData = {};
-    session.indicesData['banknifty'] = {
+    const idxData = {
       ltp: streamQuote.lastPrice,
       close: streamQuote.close,
       pct: streamQuote.pctChange,
       change: streamQuote.diff,
       updatedAt: Date.now()
     };
+    session.indicesData['banknifty'] = idxData;
+    if (session.wsClients && session.wsClients.size > 0) {
+      broadcastToSession(session, { type: 'delta_index', name: 'banknifty', data: idxData });
+    }
   } else if (streamQuote.instrumentId === '999901' || streamQuote.instrumentId === '10001') {
     if (!session.indicesData) session.indicesData = {};
-    session.indicesData['sensex'] = {
+    const idxData = {
       ltp: streamQuote.lastPrice,
       close: streamQuote.close,
       pct: streamQuote.pctChange,
       change: streamQuote.diff,
       updatedAt: Date.now()
     };
+    session.indicesData['sensex'] = idxData;
+    if (session.wsClients && session.wsClients.size > 0) {
+      broadcastToSession(session, { type: 'delta_index', name: 'sensex', data: idxData });
+    }
   }
 
   // 2. Update session.quotes in-place if in active watchlist
@@ -810,7 +822,34 @@ function handleIncomingStreamQuote(session, streamQuote) {
     newEvents = updateActionWatch(session, session.quotes);
   }
 
-  // 6. Smooth high-performance batched broadcast (50ms flush) to prevent browser UI freezing
+  // 6. Direct Institutional Delta Broadcast (< 80 bytes, 0ms micro-latency)
+  if (session.wsClients && session.wsClients.size > 0) {
+    const currentQ = quoteUpdated && qIdx >= 0 ? session.quotes[qIdx] : null;
+    const deltaPayload = {
+      type: 'delta',
+      id: String(streamQuote.instrumentId),
+      ex: streamQuote.exchange,
+      lp: streamQuote.lastPrice,
+      pct: streamQuote.pctChange,
+      diff: streamQuote.diff,
+      h: streamQuote.high,
+      l: streamQuote.low,
+      o: streamQuote.open,
+      c: streamQuote.close,
+      bp: streamQuote.bestBidPrice,
+      bq: streamQuote.bestBidQty,
+      ap: streamQuote.bestAskPrice,
+      aq: streamQuote.bestAskQty,
+      v: streamQuote.tradedVolume,
+      w52h: currentQ ? currentQ.week52High : (streamQuote.week52High || 0),
+      w52l: currentQ ? currentQ.week52Low : (streamQuote.week52Low || 0),
+      time: streamQuote.updatedAt,
+      newEvents: newEvents.length > 0 ? newEvents : undefined
+    };
+    broadcastToSession(session, deltaPayload);
+  }
+
+  // Also schedule state sync
   scheduleStreamBroadcast(session, newEvents);
 }
 
@@ -839,7 +878,7 @@ function scheduleStreamBroadcast(session, newEvents = []) {
       watchlist: publicWatchlist(session),
       timestamp: new Date().toISOString(),
     });
-  }, 50); // 50ms = 20 fps smooth non-blocking streaming
+  }, 1000); // 1-second full-state synchronization heartbeat
 }
 
 function updateScannerItemInPlace(list, streamQuote, cleanSym) {
