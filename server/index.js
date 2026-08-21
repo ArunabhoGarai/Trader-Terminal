@@ -810,19 +810,36 @@ function handleIncomingStreamQuote(session, streamQuote) {
     newEvents = updateActionWatch(session, session.quotes);
   }
 
-  // 6. Instantly push 0ms live tick to connected browser WebSocket clients!
-  if (session.wsClients && session.wsClients.size > 0) {
+  // 6. Smooth high-performance batched broadcast (50ms flush) to prevent browser UI freezing
+  scheduleStreamBroadcast(session, newEvents);
+}
+
+let streamBroadcastTimer = null;
+let pendingStreamEvents = [];
+
+function scheduleStreamBroadcast(session, newEvents = []) {
+  if (Array.isArray(newEvents) && newEvents.length > 0) {
+    pendingStreamEvents.push(...newEvents);
+  }
+  if (streamBroadcastTimer) return;
+  streamBroadcastTimer = setTimeout(() => {
+    streamBroadcastTimer = null;
+    if (!session.wsClients || session.wsClients.size === 0) return;
+    const eventsToSend = pendingStreamEvents;
+    pendingStreamEvents = [];
+
     broadcastToSession(session, {
       type: 'tick',
       quotes: session.quotes,
       actionWatch: session.actionWatch,
       marketAnalysis: session.marketAnalysis,
-      newEvents,
+      indicesData: session.indicesData,
+      newEvents: eventsToSend,
       session: publicSession(session),
       watchlist: publicWatchlist(session),
       timestamp: new Date().toISOString(),
     });
-  }
+  }, 50); // 50ms = 20 fps smooth non-blocking streaming
 }
 
 function updateScannerItemInPlace(list, streamQuote, cleanSym) {
