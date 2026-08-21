@@ -101,7 +101,7 @@ button { cursor: pointer; }
 .table-wrap { overflow: auto; background: var(--screen); border-left: 1px solid #919b9c; border-right: 1px solid #919b9c; }
 
 /* ── MARKET TABLE ── */
-.market-table { width: 100%; min-width: 1090px; border-collapse: collapse; table-layout: fixed; font-family: var(--ui-font); font-size: 11px; color: #f0f3f3; }
+.market-table { width: 100%; min-width: 1280px; border-collapse: collapse; table-layout: fixed; font-family: var(--ui-font); font-size: 11px; color: #f0f3f3; }
 .market-table th { position: sticky; top: 0; z-index: 1; height: 21px; padding: 2px 4px; color: #202526; font-weight: 700; text-align: left; white-space: nowrap; background: linear-gradient(#f7fafa,#cfd7d8); border: 1px solid #7d8789; }
 .market-table td { height: 19px; padding: 1px 5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border-right: 1px solid #454b4c; border-bottom: 1px solid #171919; text-align: right; }
 /* first 5 icon cols */
@@ -117,13 +117,31 @@ button { cursor: pointer; }
 .market-table td:nth-child(5) { width: 26px; text-align: center; }
 /* Symbol col */
 .market-table th:nth-child(6),
-.market-table td:nth-child(6) { width: 140px; text-align: left; }
-/* Data cols */
-.market-table th:nth-child(n+7),
-.market-table td:nth-child(n+7) { width: 75px; }
-/* Last col (remove) */
+.market-table td:nth-child(6) { width: 130px; text-align: left; }
+/* Last Rate */
+.market-table th:nth-child(7),
+.market-table td:nth-child(7) { width: 75px; }
+/* Chg (%Chg) */
+.market-table th:nth-child(8),
+.market-table td:nth-child(8) { width: 125px; }
+/* Bid & Offer & OHLC Data cols (cols 9 to 17) */
+.market-table th:nth-child(n+9),
+.market-table td:nth-child(n+9) { width: 72px; }
+/* 52W High & 52W Low (cols 16 and 17) */
+.market-table th:nth-child(16),
+.market-table td:nth-child(16),
+.market-table th:nth-child(17),
+.market-table td:nth-child(17) { width: 75px; }
+/* PC close (col 18) - Generous width */
 .market-table th:nth-child(18),
-.market-table td:nth-child(18) { width: 30px; text-align: center; }
+.market-table td:nth-child(18) { width: 78px; text-align: right; }
+/* Total Qty (col 19) */
+.market-table th:nth-child(19),
+.market-table td:nth-child(19) { width: 80px; text-align: right; }
+/* Last col - Remove scrip cross button (col 20) - Compact width */
+.market-table th:nth-child(20),
+.market-table td:nth-child(20),
+.market-table .find-cell { width: 28px !important; max-width: 28px !important; text-align: center; padding: 0 !important; }
 
 #sort-pct-change {
   cursor: pointer;
@@ -215,8 +233,7 @@ button { cursor: pointer; }
 .symbol-tag { color: #475569; font-size: 10px; font-weight: 600; background: #f1f5f9; padding: 1px 5px; border-radius: 3px; border: 1px solid #cbd5e1; white-space: nowrap; }
 .symbol-company-name { color: #334155; font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 .watchlist-capacity { padding: 3px 5px; border: 1px solid #9ca8aa; background: #e9eeee; color: #4a5c60; font-family: var(--mono); font-size: 10px; white-space: nowrap; }
-.watchlist-capacity.full { border-color: #b5701c; background: #fff1cb; color: #814400; font-weight: 700; }
-.remove-scrip { width: 17px; height: 16px; padding: 0; border: 1px solid #81383d; background: #551d21; color: #ffdbdc; font-weight: 700; line-height: 12px; }
+.remove-scrip { width: 16px; height: 16px; margin: 0 auto; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid #81383d; background: #551d21; color: #ffdbdc; font-weight: 700; line-height: 12px; cursor: pointer; border-radius: 2px; }
 .remove-scrip:hover { background: #a31a24; }
 .empty-watchlist { height: 30px !important; color: #c7d1d2; text-align: center !important; }
 
