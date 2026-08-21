@@ -557,80 +557,51 @@ function updateActionWatch(session, nextQuotes) {
       continue;
     }
 
-    // -----------------------------------------------------------------------
-    // HYBRID DUAL-TRIGGER BREAKOUT ENGINE
-    // Merges real-time LTP micro-tick detection WITH IIFL exchange Day High/Low
-    // -----------------------------------------------------------------------
-    // 1. High Breakout: Triggers if live LTP broke prior high OR if exchange DayHigh expanded
-    const isLtpNewHigh = ltp > priorRange.high;
-    const isDayHighBreakout = dayHigh > 0 && dayHigh > priorRange.high;
-    const isNewHigh = isLtpNewHigh || isDayHighBreakout;
-    const triggerHighPrice = Math.max(ltp, dayHigh > 0 ? dayHigh : ltp);
+    // Trigger strictly when IIFL's official exchange Day High expands or Day Low drops
+    const isNewHigh = dayHigh > 0 && dayHigh > priorRange.high;
+    const isNewLow = dayLow > 0 && dayLow < priorRange.low;
+    const eventPrice = isNewHigh ? dayHigh : (isNewLow ? dayLow : ltp);
 
-    // 2. Low Breakout: Triggers if live LTP broke prior low OR if exchange DayLow dropped
-    const isLtpNewLow = ltp < priorRange.low;
-    const isDayLowBreakout = dayLow > 0 && dayLow < priorRange.low;
-    const isNewLow = isLtpNewLow || isDayLowBreakout;
-    const triggerLowPrice = (dayLow > 0 && isDayLowBreakout) ? Math.min(ltp, dayLow) : ltp;
-
-    const eventPrice = isNewHigh ? triggerHighPrice : (isNewLow ? triggerLowPrice : ltp);
-
-    // Sentiment: LTP vs previous day's close (not vs previous tick)
+    // Sentiment: LTP vs previous day's close
     const direction = previousClose > 0 && ltp < previousClose ? 'down' : 'up';
 
     if (isNewHigh || isNewLow) {
-      const nowMs = Date.now();
       const status = isNewHigh ? 'New High' : 'New Low';
 
-      // Deduplication: suppress duplicate events for the same scrip+status
-      // within a 2-second window if price hasn't meaningfully expanded
-      const isDuplicate =
-        priorRange.lastAlertTime &&
-        (nowMs - priorRange.lastAlertTime) < 2000 &&
-        ((isNewHigh && priorRange.lastAlertHigh !== null && eventPrice <= priorRange.lastAlertHigh + 0.01) ||
-         (isNewLow  && priorRange.lastAlertLow  !== null && eventPrice >= priorRange.lastAlertLow  - 0.01));
-
-      if (!isDuplicate) {
-        let w52High = Number(quote.week52High) || 0;
-        let w52Low = Number(quote.week52Low) || 0;
-        if (w52High === 0 || w52Low === 0) {
-          const cleanSym = String(quote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
-          const scraped = nseScraper.get52WBounds?.(cleanSym);
-          if (scraped) {
-            if (w52High === 0 && scraped.high > 0) w52High = scraped.high;
-            if (w52Low === 0 && scraped.low > 0) w52Low = scraped.low;
-          }
+      let w52High = Number(quote.week52High) || 0;
+      let w52Low = Number(quote.week52Low) || 0;
+      if (w52High === 0 || w52Low === 0) {
+        const cleanSym = String(quote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+        const scraped = nseScraper.get52WBounds?.(cleanSym);
+        if (scraped) {
+          if (w52High === 0 && scraped.high > 0) w52High = scraped.high;
+          if (w52Low === 0 && scraped.low > 0) w52Low = scraped.low;
         }
-        const event = {
-          instrumentId: String(quote.instrumentId),
-          symbol: quote.symbol,
-          exchange: quote.exchange,
-          segment: quote.segment || segmentLabel(quote.exchange),
-          status,
-          lastPrice: eventPrice,
-          close: previousClose,
-          week52High: w52High,
-          week52Low: w52Low,
-          direction,
-          timestamp: quote.updatedAt || new Date().toISOString(),
-          time: indiaTimeString(),
-        };
-        newEvents.push(event);
-        session.actionWatch.unshift(event);
-        if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
-
-        // Record this alert for deduplication on the next tick
-        priorRange.lastAlertHigh = isNewHigh ? eventPrice : priorRange.lastAlertHigh;
-        priorRange.lastAlertLow  = isNewLow  ? eventPrice : priorRange.lastAlertLow;
-        priorRange.lastAlertTime = nowMs;
       }
+
+      const event = {
+        instrumentId: String(quote.instrumentId),
+        symbol: quote.symbol,
+        exchange: quote.exchange,
+        segment: quote.segment || segmentLabel(quote.exchange),
+        status,
+        lastPrice: eventPrice,
+        close: previousClose,
+        week52High: w52High,
+        week52Low: w52Low,
+        direction,
+        timestamp: quote.updatedAt || new Date().toISOString(),
+        time: indiaTimeString(),
+      };
+      newEvents.push(event);
+      session.actionWatch.unshift(event);
+      if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
     }
 
-    // Update tracked session range using BOTH LTP and official Day High/Low
+    // Update tracked session range using official Day High/Low
     session.intradayRanges.set(key, {
-      ...priorRange,
-      high: Math.max(priorRange.high, ltp, dayHigh > 0 ? dayHigh : ltp),
-      low:  Math.min(priorRange.low,  ltp, dayLow > 0  ? dayLow  : ltp),
+      high: dayHigh > 0 ? Math.max(priorRange.high, dayHigh) : priorRange.high,
+      low: (dayLow > 0 && priorRange.low > 0) ? Math.min(priorRange.low, dayLow) : (dayLow || priorRange.low),
     });
   }
 
