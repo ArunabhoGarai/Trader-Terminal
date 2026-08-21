@@ -467,14 +467,8 @@ function renderAnalysis() {
         return qSym === cleanSym || String(q.instrumentId) === String(event.instrumentId);
       });
       
-      let w52High = Number(live?.week52High || event.week52High || 0);
-      let w52Low = Number(live?.week52Low || event.week52Low || 0);
-      
-      const realtimeHigh = Math.max(Number(live?.high || 0), Number(live?.lastPrice || 0), Number(event.lastPrice || 0));
-      const realtimeLow = Math.min(Number(live?.low || Infinity), Number(live?.lastPrice || Infinity), Number(event.lastPrice || Infinity));
-
-      if (w52High > 0 && realtimeHigh > w52High) w52High = realtimeHigh;
-      if (w52Low > 0 && realtimeLow > 0 && realtimeLow < w52Low) w52Low = realtimeLow;
+      const w52High = Number(live?.week52High || event.week52High || 0);
+      const w52Low = Number(live?.week52Low || event.week52Low || 0);
       
       const w52HighStr = w52High > 0 ? fmt(w52High) : '-';
       const w52LowStr = w52Low > 0 ? fmt(w52Low) : '-';
