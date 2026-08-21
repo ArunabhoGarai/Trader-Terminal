@@ -794,6 +794,40 @@ function applyIndexUpdate(name, data) {
   c.className = diff > 0 ? 'positive' : (diff < 0 ? 'negative' : '');
 }
 
+function prependActionWatchRow(event) {
+  const tbody = el('analysis-body');
+  if (!tbody || state.analysisTab !== 'action') return;
+  
+  const emptyRow = tbody.querySelector('.analysis-empty');
+  if (emptyRow) emptyRow.closest('tr')?.remove();
+
+  const dirClass = event.direction === 'up' ? 'analysis-tick-up' : event.direction === 'down' ? 'analysis-tick-down' : 'analysis-tick-flat';
+  const w52High = Number(event.week52High) || 0;
+  const w52Low = Number(event.week52Low) || 0;
+  const w52HighStr = w52High > 0 ? fmt(w52High) : '-';
+  const w52LowStr = w52Low > 0 ? fmt(w52Low) : '-';
+
+  const rowHtml = `<tr class="${dirClass}">
+    <td style="text-align:center">${escapeHtml((event.exchange || 'N').slice(0, 1))}</td>
+    <td style="text-align:center">${escapeHtml(event.segment === 'F&O' ? 'F' : 'C')}</td>
+    <td style="text-align:center">${escapeHtml(event.instrumentId)}</td>
+    <td class="scrip-sym">${escapeHtml(event.symbol)}</td>
+    <td class="analysis-status-cell" style="text-align:center">${escapeHtml(event.status)}</td>
+    <td class="analysis-rate" style="font-weight:bold">${fmt(event.lastPrice)}</td>
+    <td class="analysis-rate" style="font-weight:bold; color:#d81e05">${w52LowStr}</td>
+    <td class="analysis-rate" style="font-weight:bold; color:#107c41">${w52HighStr}</td>
+    <td class="analysis-time" style="text-align:center">${formatEventTime(event)}</td>
+  </tr>`;
+
+  tbody.insertAdjacentHTML('afterbegin', rowHtml);
+
+  while (tbody.children.length > 50) {
+    tbody.lastElementChild.remove();
+  }
+
+  updateAlertBadge(state.actionWatch ? state.actionWatch.length : tbody.children.length);
+}
+
 function applyDeltaPatch(delta) {
   if (!delta || !delta.id) return;
   const instId = String(delta.id);
@@ -888,7 +922,7 @@ function applyDeltaPatch(delta) {
     updateInList(state.marketAnalysis.losers);
   }
 
-  // 4. Process new action watch breakout events if present
+  // 4. Process new action watch breakout events with instant 0ms DOM prepend
   if (Array.isArray(delta.newEvents) && delta.newEvents.length > 0) {
     processBreakoutEvents(delta.newEvents);
     flashNewAlerts(delta.newEvents);
@@ -896,11 +930,16 @@ function applyDeltaPatch(delta) {
       state.actionWatch.unshift(...delta.newEvents);
       if (state.actionWatch.length > 200) state.actionWatch.length = 200;
     }
+    if (state.analysisTab === 'action') {
+      for (let i = delta.newEvents.length - 1; i >= 0; i--) {
+        prependActionWatchRow(delta.newEvents[i]);
+      }
+    }
   }
 
-  // 5. If Analysis window is open, schedule render to update it in real-time
+  // 5. If non-action scanner tab is open, schedule render to update it in real-time
   const analysisWin = el('analysis-window');
-  if (analysisWin && !analysisWin.classList.contains('is-hidden')) {
+  if (analysisWin && !analysisWin.classList.contains('is-hidden') && state.analysisTab !== 'action') {
     scheduleRender();
   }
 }
