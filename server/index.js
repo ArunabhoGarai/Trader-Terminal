@@ -408,7 +408,6 @@ function loadGlobalState() {
       }
       if (data.expiresAt) session.expiresAt = data.expiresAt;
       if (data.authenticatedAt) session.authenticatedAt = data.authenticatedAt;
-      if (data.actionWatch) session.actionWatch = data.actionWatch;
       if (data.actionWatchDate) session.actionWatchDate = data.actionWatchDate;
       if (data.columnWidths) session.columnWidths = data.columnWidths;
 
@@ -418,6 +417,12 @@ function loadGlobalState() {
           const catalogInst = knownInstruments.get(instrumentKey(savedInst));
           return { ...savedInst, basePrice: savedInst.basePrice || catalogInst?.basePrice || 100 };
         });
+      }
+
+      if (data.actionWatch && Array.isArray(data.actionWatch)) {
+        const watchInstSet = new Set(session.watchlist.map(w => String(w.instrumentId)));
+        const watchSymSet = new Set(session.watchlist.map(w => String(w.symbol || '').toUpperCase().trim()));
+        session.actionWatch = data.actionWatch.filter(ev => watchInstSet.has(String(ev.instrumentId)) || watchSymSet.has(String(ev.symbol || '').toUpperCase().trim()));
       }
       // Rebuild initial quotes matching the loaded watchlist - always start with valid simulation quotes so prices are NEVER 0/blank
       session.quotes = session.watchlist.map((inst, idx) => makeSimulationQuote(inst, idx));
@@ -538,9 +543,20 @@ function updateActionWatch(session, nextQuotes) {
     session.wasLoggedInAt8AM = Boolean(session.accessToken) && isBefore815AM();
   }
 
+  // Pre-build set of watchlist instrumentIds & symbols for strict O(1) membership check
+  const watchInstSet = new Set((session.watchlist || []).map(w => String(w.instrumentId)));
+  const watchSymSet = new Set((session.watchlist || []).map(w => String(w.symbol || '').toUpperCase().trim()));
+
   const newEvents = [];
 
   for (const quote of nextQuotes) {
+    const instId = String(quote.instrumentId);
+    const sym = String(quote.symbol || '').toUpperCase().trim();
+    // STRICT: Only process breakout alerts for scrips in the active Market Watch!
+    if (!watchInstSet.has(instId) && !watchSymSet.has(sym)) {
+      continue;
+    }
+
     const key = instrumentKey(quote);
     const ltp = quote.lastPrice;
     if (!ltp || ltp <= 0) continue;
