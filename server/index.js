@@ -566,10 +566,13 @@ function updateActionWatch(session, nextQuotes) {
       continue;
     }
 
-    // Trigger strictly when IIFL's official exchange Day High expands or Day Low drops
-    const isNewHigh = dayHigh > 0 && dayHigh > priorRange.high;
-    const isNewLow = dayLow > 0 && dayLow < priorRange.low;
-    const eventPrice = isNewHigh ? dayHigh : (isNewLow ? dayLow : ltp);
+    // Reliable breakout trigger: detects new highs/lows from BOTH live LTP and exchange Day High/Low
+    const currentHigh = Math.max(ltp, dayHigh > 0 ? dayHigh : ltp);
+    const currentLow = (dayLow > 0 && dayLow < ltp) ? dayLow : ltp;
+
+    const isNewHigh = currentHigh > priorRange.high;
+    const isNewLow = currentLow > 0 && currentLow < priorRange.low;
+    const eventPrice = isNewHigh ? currentHigh : (isNewLow ? currentLow : ltp);
 
     // Sentiment: LTP vs previous day's close
     const direction = previousClose > 0 && ltp < previousClose ? 'down' : 'up';
@@ -607,10 +610,10 @@ function updateActionWatch(session, nextQuotes) {
       if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
     }
 
-    // Update tracked session range using official Day High/Low
+    // Update tracked session range
     session.intradayRanges.set(key, {
-      high: dayHigh > 0 ? Math.max(priorRange.high, dayHigh) : priorRange.high,
-      low: (dayLow > 0 && priorRange.low > 0) ? Math.min(priorRange.low, dayLow) : (dayLow || priorRange.low),
+      high: Math.max(priorRange.high, currentHigh),
+      low: Math.min(priorRange.low, currentLow > 0 ? currentLow : priorRange.low),
     });
   }
 
@@ -820,8 +823,9 @@ function handleIncomingStreamQuote(session, streamQuote) {
 
   // 5. Trigger real-time Action Watch breakout detection
   let newEvents = [];
-  if (quoteUpdated) {
-    newEvents = updateActionWatch(session, session.quotes);
+  const targetQuoteForAction = currentQ || streamQuote;
+  if (targetQuoteForAction && targetQuoteForAction.lastPrice > 0) {
+    newEvents = updateActionWatch(session, [targetQuoteForAction]);
   }
 
   // 6. Direct Institutional Delta Broadcast (< 80 bytes, 0ms micro-latency)
