@@ -44,7 +44,7 @@ const IIFL_HEADERS = {
 };
 
 const MAX_WATCHLIST_SIZE = 400;
-const ACTION_WATCH_LIMIT = 200;
+const ACTION_WATCH_LIMIT = 10000;
 const SESSION_COOKIE = 'tt_session';
 const CONTRACT_CACHE_MS = 30 * 60 * 1000;
 
@@ -1130,11 +1130,14 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   session.expiresAt = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
   session.mode = 'LIVE';
   session.lastError = null;
-  // First live snapshot establishes today's range — not an alert
-  session.actionWatch = [];
-  session.actionWatchDate = indiaTradingDate();
-  session.wasLoggedInAt8AM = isBefore815AM();
-  session.intradayRanges.clear();
+  // Preserve action watch notifications across market session; only reset on new day at 12:00 AM
+  const today = indiaTradingDate();
+  if (session.actionWatchDate !== today) {
+    session.actionWatch = [];
+    session.actionWatchDate = today;
+    session.wasLoggedInAt8AM = isBefore815AM();
+    session.intradayRanges.clear();
+  }
 
   // Launch real-time binary stream
   ensureIIFLStream(session);
