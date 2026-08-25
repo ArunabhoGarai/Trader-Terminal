@@ -956,6 +956,58 @@ function applyDeltaPatch(delta) {
     updateInList(state.marketAnalysis.lows);
     updateInList(state.marketAnalysis.gainers);
     updateInList(state.marketAnalysis.losers);
+
+    // Live insertion for 52W High breakout if not already in list
+    if (delta.lp > 0 && delta.w52h > 0 && delta.lp >= delta.w52h && Array.isArray(state.marketAnalysis.highs)) {
+      const exists = state.marketAnalysis.highs.some(x => String(x.instrumentId) === instId || (cleanSym && String(x.nseSymbol || x.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim() === cleanSym));
+      if (!exists && targetQuote) {
+        state.marketAnalysis.highs.unshift({
+          symbol: targetQuote.symbol,
+          nseSymbol: cleanSym || targetQuote.symbol,
+          companyName: targetQuote.displayName || targetQuote.symbol,
+          lastPrice: delta.lp,
+          pctChange: delta.pct ?? targetQuote.pctChange,
+          diff: delta.diff ?? targetQuote.diff,
+          prevClose: delta.c ?? targetQuote.close,
+          high: delta.h ?? delta.lp,
+          low: delta.l ?? delta.lp,
+          open: delta.o ?? delta.lp,
+          tradedVolume: delta.v ?? targetQuote.tradedVolume,
+          week52High: delta.w52h,
+          week52Low: delta.w52l || targetQuote.week52Low || 0,
+          instrumentId: instId,
+          exchange: targetQuote.exchange || 'NSEEQ',
+          updatedAt: delta.time || new Date().toISOString(),
+          isRealtime52W: true
+        });
+      }
+    }
+
+    // Live insertion for 52W Low breakdown if not already in list
+    if (delta.lp > 0 && delta.w52l > 0 && delta.lp <= delta.w52l && Array.isArray(state.marketAnalysis.lows)) {
+      const exists = state.marketAnalysis.lows.some(x => String(x.instrumentId) === instId || (cleanSym && String(x.nseSymbol || x.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim() === cleanSym));
+      if (!exists && targetQuote) {
+        state.marketAnalysis.lows.unshift({
+          symbol: targetQuote.symbol,
+          nseSymbol: cleanSym || targetQuote.symbol,
+          companyName: targetQuote.displayName || targetQuote.symbol,
+          lastPrice: delta.lp,
+          pctChange: delta.pct ?? targetQuote.pctChange,
+          diff: delta.diff ?? targetQuote.diff,
+          prevClose: delta.c ?? targetQuote.close,
+          high: delta.h ?? delta.lp,
+          low: delta.l ?? delta.lp,
+          open: delta.o ?? delta.lp,
+          tradedVolume: delta.v ?? targetQuote.tradedVolume,
+          week52High: delta.w52h || targetQuote.week52High || 0,
+          week52Low: delta.w52l,
+          instrumentId: instId,
+          exchange: targetQuote.exchange || 'NSEEQ',
+          updatedAt: delta.time || new Date().toISOString(),
+          isRealtime52W: true
+        });
+      }
+    }
   }
 
   // 4. Process new action watch breakout events with instant 0ms DOM prepend
