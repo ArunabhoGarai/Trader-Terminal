@@ -341,7 +341,7 @@ function analysisRows() {
       const typeAllowed = isFutureOption ? options.fo : options.cash;
       const triggerAllowed = event.status === 'New High' ? options.high : options.low;
       return exchangeAllowed && typeAllowed && triggerAllowed;
-    }).slice(0, 200);
+    });
   }
   const filterRows = (sourceRows) => sourceRows.filter((quote) => {
     const exchange = String(quote.exchange || 'NSEEQ').toUpperCase();
@@ -855,7 +855,7 @@ function prependActionWatchRow(event) {
 
   tbody.insertAdjacentHTML('afterbegin', rowHtml);
 
-  while (tbody.children.length > 50) {
+  while (tbody.children.length > 10000) {
     tbody.lastElementChild.remove();
   }
 
@@ -1020,7 +1020,7 @@ function applyDeltaPatch(delta) {
       flashNewAlerts(validEvents);
       if (Array.isArray(state.actionWatch)) {
         state.actionWatch.unshift(...validEvents);
-        if (state.actionWatch.length > 200) state.actionWatch.length = 200;
+        if (state.actionWatch.length > 10000) state.actionWatch.length = 10000;
       }
       updateAlertBadge(state.actionWatch ? state.actionWatch.length : 0);
       if (state.analysisTab === 'action') {
