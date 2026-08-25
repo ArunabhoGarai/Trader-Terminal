@@ -136,7 +136,9 @@ function configured() {
 }
 
 function instrumentKey(instrument) {
-  return `${String(instrument.exchange).toUpperCase()}:${String(instrument.instrumentId)}`;
+  if (!instrument) return '';
+  const ex = exchangeCode(instrument.exchange, instrument.segment);
+  return `${ex}:${String(instrument.instrumentId || '').trim()}`;
 }
 
 function number(value, fallback = 0) {
@@ -543,17 +545,33 @@ function updateActionWatch(session, nextQuotes) {
     session.wasLoggedInAt8AM = Boolean(session.accessToken) && isBefore815AM();
   }
 
-  // Pre-build set of watchlist instrumentIds & symbols for strict O(1) membership check
-  const watchInstSet = new Set((session.watchlist || []).map(w => String(w.instrumentId)));
-  const watchSymSet = new Set((session.watchlist || []).map(w => String(w.symbol || '').toUpperCase().trim()));
+  // Pre-build set of watchlist instrumentIds & clean symbols for strict O(1) membership check
+  const watchInstSet = new Set();
+  const watchSymSet = new Set();
+
+  (session.watchlist || []).forEach(w => {
+    if (w.instrumentId) watchInstSet.add(String(w.instrumentId).trim());
+    if (w.symbol) {
+      const raw = String(w.symbol).toUpperCase().trim();
+      const clean = raw.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
+      watchSymSet.add(raw);
+      watchSymSet.add(clean);
+      watchSymSet.add(`${clean}-EQ`);
+    }
+  });
 
   const newEvents = [];
 
   for (const quote of nextQuotes) {
-    const instId = String(quote.instrumentId);
-    const sym = String(quote.symbol || '').toUpperCase().trim();
+    const instId = String(quote.instrumentId || '').trim();
+    const rawSym = String(quote.symbol || '').toUpperCase().trim();
+    const cleanSym = rawSym.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
+
     // STRICT: Only process breakout alerts for scrips in the active Market Watch!
-    if (!watchInstSet.has(instId) && !watchSymSet.has(sym)) {
+    const isWatched = (instId && watchInstSet.has(instId)) ||
+                      (rawSym && watchSymSet.has(rawSym)) ||
+                      (cleanSym && watchSymSet.has(cleanSym));
+    if (!isWatched) {
       continue;
     }
 
@@ -561,7 +579,7 @@ function updateActionWatch(session, nextQuotes) {
     const ltp = quote.lastPrice;
     if (!ltp || ltp <= 0) continue;
 
-    const priorRange = session.intradayRanges.get(key);
+    const priorRange = session.intradayRanges.get(key) || (instId ? session.intradayRanges.get(instId) : null) || (cleanSym ? session.intradayRanges.get(cleanSym) : null);
     const previousClose = number(quote.close, 0);
 
     const dayHigh = number(quote.high, 0);
@@ -572,13 +590,16 @@ function updateActionWatch(session, nextQuotes) {
       const baselineHigh = dayHigh > 0 ? Math.max(dayHigh, ltp) : ltp;
       const baselineLow  = dayLow > 0  ? Math.min(dayLow, ltp)  : ltp;
 
-      session.intradayRanges.set(key, {
+      const initialRange = {
         high: baselineHigh,
         low: baselineLow,
-        lastAlertHigh: null,  // LTP that triggered the last New High event
-        lastAlertLow: null,   // LTP that triggered the last New Low event
-        lastAlertTime: 0,     // Timestamp of last alert (for deduplication)
-      });
+        lastAlertHigh: null,
+        lastAlertLow: null,
+        lastAlertTime: 0,
+      };
+      session.intradayRanges.set(key, initialRange);
+      if (instId) session.intradayRanges.set(instId, initialRange);
+      if (cleanSym) session.intradayRanges.set(cleanSym, initialRange);
       continue;
     }
 
@@ -611,7 +632,6 @@ function updateActionWatch(session, nextQuotes) {
       let w52High = Number(quote.week52High) || 0;
       let w52Low = Number(quote.week52Low) || 0;
       if (w52High === 0 || w52Low === 0) {
-        const cleanSym = String(sym || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
         const nse52 = nse52WMaster.get52WBounds(cleanSym) || nse52WMaster.get52WBounds(sym) || nseScraper.get52WBounds?.(cleanSym);
         if (nse52) {
           if (w52High === 0 && nse52.high > 0) w52High = nse52.high;
@@ -638,11 +658,17 @@ function updateActionWatch(session, nextQuotes) {
       if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
     }
 
-    // Update tracked session range
-    session.intradayRanges.set(key, {
+    // Update tracked session range across key, instId, and cleanSym
+    const updatedRange = {
       high: Math.max(priorRange.high, currentHigh),
       low: Math.min(priorRange.low, currentLow > 0 ? currentLow : priorRange.low),
-    });
+      lastAlertHigh: isNewHigh ? eventPrice : (priorRange.lastAlertHigh || null),
+      lastAlertLow: isNewLow ? eventPrice : (priorRange.lastAlertLow || null),
+      lastAlertTime: (isNewHigh || isNewLow) ? Date.now() : (priorRange.lastAlertTime || 0),
+    };
+    session.intradayRanges.set(key, updatedRange);
+    if (instId) session.intradayRanges.set(instId, updatedRange);
+    if (cleanSym) session.intradayRanges.set(cleanSym, updatedRange);
   }
 
   return newEvents;
@@ -807,10 +833,18 @@ function handleIncomingStreamQuote(session, streamQuote) {
   let quoteUpdated = false;
   let currentQ = null;
   if (Array.isArray(session.quotes)) {
-    const qIdx = session.quotes.findIndex(q => 
-      String(q.instrumentId) === String(streamQuote.instrumentId) || 
-      (q.exchange === streamQuote.exchange && String(q.instrumentId) === String(streamQuote.instrumentId))
-    );
+    const streamInstId = String(streamQuote.instrumentId || '').trim();
+    const streamCleanSym = String(streamQuote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+
+    const qIdx = session.quotes.findIndex(q => {
+      const qInstId = String(q.instrumentId || '').trim();
+      if (qInstId && streamInstId && qInstId === streamInstId) return true;
+      if (q.symbol && streamCleanSym) {
+        const qClean = String(q.symbol).replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+        if (qClean === streamCleanSym) return true;
+      }
+      return false;
+    });
 
     if (qIdx >= 0) {
       const existing = session.quotes[qIdx];
@@ -826,9 +860,15 @@ function handleIncomingStreamQuote(session, streamQuote) {
         }
       }
 
-      // Raw 52W bounds directly from IIFL
-      const new52High = streamQuote.week52High > 0 ? streamQuote.week52High : prev52High;
-      const new52Low = streamQuote.week52Low > 0 ? streamQuote.week52Low : prev52Low;
+      // Dynamic 52W bounds directly from IIFL and live ticks
+      let new52High = streamQuote.week52High > 0 ? streamQuote.week52High : prev52High;
+      let new52Low = streamQuote.week52Low > 0 ? streamQuote.week52Low : prev52Low;
+
+      const liveHigh = Math.max(streamQuote.high || 0, streamQuote.lastPrice || 0, existing.high || 0);
+      const liveLow = Math.min(streamQuote.low > 0 ? streamQuote.low : (streamQuote.lastPrice || 999999), existing.low > 0 ? existing.low : (streamQuote.lastPrice || 999999));
+
+      if (new52High > 0 && liveHigh > new52High) new52High = liveHigh;
+      if (new52Low > 0 && liveLow > 0 && liveLow < new52Low) new52Low = liveLow;
 
       currentQ = {
         ...existing,
