@@ -706,7 +706,7 @@ function syncStreamSubscriptions(session) {
     }
   }
 
-  // Priority 1: Market Watch active watchlist scrips (e.g. 400 scrips)
+  // 1. Market Watch active watchlist scrips (e.g. 400 scrips) - full tick-by-tick quotes & depth
   if (Array.isArray(session.watchlist)) {
     session.watchlist.forEach((inst) => {
       if (inst.instrumentId && /^\d+$/.test(String(inst.instrumentId).trim())) {
@@ -716,29 +716,17 @@ function syncStreamSubscriptions(session) {
     });
   }
 
-  // Priority 2: Major Indices
+  // 2. Major Indices
   addTopic('nseeq/999920000'); // Nifty 50
   addTopic('nseeq/999920005'); // Bank Nifty
   addTopic('bseeq/999901');    // Sensex
 
-  // Priority 3: Event channels (52W High / Low broadcasts, Market status)
-  addTopic('nseeq');
-  addTopic('bseeq');
-  addTopic('nsefo');
+  // 3. Exchange-Wide Event Channels - IIFL broadcasts ALL 52W Highs/Lows across the entire exchange on these topics!
+  addTopic('nseeq'); // prod/marketfeed/high52week/v1/nseeq & low52week/v1/nseeq
+  addTopic('bseeq'); // prod/marketfeed/high52week/v1/bseeq & low52week/v1/bseeq
+  addTopic('nsefo'); // prod/marketfeed/high52week/v1/nsefo & low52week/v1/nsefo
 
-  // Priority 4: All remaining NSE equity instruments from the pre-loaded 4,000+ catalog
-  // (knownInstruments + nse52WMaster + nseMaster) up to 6,000 total topics
-  for (const inst of knownInstruments.values()) {
-    if (orderedTopics.length >= 6000) break;
-    if (inst && inst.instrumentId && /^\d+$/.test(String(inst.instrumentId).trim())) {
-      const ex = (inst.exchange || 'NSEEQ').toLowerCase();
-      if (ex === 'nseeq' || ex === 'nse') {
-        addTopic(`nseeq/${String(inst.instrumentId).trim()}`);
-      }
-    }
-  }
-
-  console.log(`[IIFL STREAM] 📡 Registering ${orderedTopics.length} prioritized subscriptions (Priority 1: ${session.watchlist?.length || 0} Watchlist Scrips)...`);
+  console.log(`[IIFL STREAM] 📡 Registering ${orderedTopics.length} focused subscriptions (${session.watchlist?.length || 0} Watchlist Scrips + Indices + Exchange 52W Channels)...`);
   iiflStream.subscribe(orderedTopics);
 }
 
@@ -865,12 +853,8 @@ function handleIncomingStreamQuote(session, streamQuote) {
     }
   }
 
-  // 3. Process 52-Week High and 52-Week Low real-time breakouts across all subscribed market scrips
+  // 3. Update scanner lists in-place so scanner tables stay updated in real-time with zero duplicates
   const cleanSym = String(streamQuote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
-  const w52H = streamQuote.week52High || (currentQ?.week52High) || 0;
-  const w52L = streamQuote.week52Low || (currentQ?.week52Low) || 0;
-  process52WRealtimeBreakout(session, streamQuote, cleanSym, w52H, w52L);
-
   if (session.marketAnalysis) {
     updateScannerItemInPlace(session.marketAnalysis.highs, streamQuote, cleanSym);
     updateScannerItemInPlace(session.marketAnalysis.lows, streamQuote, cleanSym);
@@ -946,123 +930,6 @@ function scheduleStreamBroadcast(session, newEvents = []) {
   }, 1000); // 1-second full-state synchronization heartbeat
 }
 
-function process52WRealtimeBreakout(session, streamQuote, cleanSym, w52High, w52Low) {
-  if (!session || !session.marketAnalysis || !cleanSym || streamQuote.lastPrice <= 0) return;
-
-  const currentHigh = Math.max(streamQuote.lastPrice || 0, streamQuote.high || 0);
-  const currentLow = (streamQuote.low > 0 && streamQuote.low < streamQuote.lastPrice) ? streamQuote.low : streamQuote.lastPrice;
-
-  // 1. Check 52-Week High Breakout
-  if (w52High > 0 && currentHigh >= w52High) {
-    if (!Array.isArray(session.marketAnalysis.highs)) session.marketAnalysis.highs = [];
-    const list = session.marketAnalysis.highs;
-    const existingIdx = list.findIndex(it => {
-      const s = String(it.nseSymbol || it.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
-      return s === cleanSym || String(it.instrumentId) === String(streamQuote.instrumentId);
-    });
-
-    const closeVal = streamQuote.close || (streamQuote.pctChange !== 0 ? +(streamQuote.lastPrice / (1 + streamQuote.pctChange / 100)).toFixed(2) : streamQuote.lastPrice);
-    
-    if (existingIdx >= 0) {
-      const item = list[existingIdx];
-      item.lastPrice = streamQuote.lastPrice;
-      item.pctChange = streamQuote.pctChange;
-      item.diff = streamQuote.diff;
-      if (streamQuote.high > 0) item.high = Math.max(item.high || 0, streamQuote.high);
-      if (streamQuote.low > 0) item.low = Math.min(item.low || streamQuote.low, streamQuote.low);
-      if (streamQuote.open > 0) item.open = streamQuote.open;
-      if (closeVal > 0) item.prevClose = closeVal;
-      if (streamQuote.tradedVolume > 0) item.tradedVolume = streamQuote.tradedVolume;
-      item.week52High = w52High;
-      if (w52Low > 0) item.week52Low = w52Low;
-      item.updatedAt = streamQuote.updatedAt || new Date().toISOString();
-      item.isRealtime52W = true;
-      if (existingIdx > 0) {
-        list.splice(existingIdx, 1);
-        list.unshift(item);
-      }
-    } else {
-      const newItem = {
-        symbol: `${cleanSym}-EQ`,
-        nseSymbol: cleanSym,
-        companyName: streamQuote.displayName || cleanSym,
-        lastPrice: streamQuote.lastPrice,
-        pctChange: streamQuote.pctChange,
-        diff: streamQuote.diff,
-        prevClose: closeVal,
-        high: streamQuote.high || streamQuote.lastPrice,
-        low: streamQuote.low || streamQuote.lastPrice,
-        open: streamQuote.open || streamQuote.lastPrice,
-        tradedVolume: streamQuote.tradedVolume || 0,
-        week52High: w52High,
-        week52Low: w52Low,
-        instrumentId: String(streamQuote.instrumentId),
-        exchange: streamQuote.exchange || 'NSEEQ',
-        updatedAt: streamQuote.updatedAt || new Date().toISOString(),
-        isRealtime52W: true,
-        hitTime: indiaTimeString()
-      };
-      list.unshift(newItem);
-      if (list.length > 500) list.pop();
-    }
-  }
-
-  // 2. Check 52-Week Low Breakdown
-  if (w52Low > 0 && currentLow > 0 && currentLow <= w52Low) {
-    if (!Array.isArray(session.marketAnalysis.lows)) session.marketAnalysis.lows = [];
-    const list = session.marketAnalysis.lows;
-    const existingIdx = list.findIndex(it => {
-      const s = String(it.nseSymbol || it.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
-      return s === cleanSym || String(it.instrumentId) === String(streamQuote.instrumentId);
-    });
-
-    const closeVal = streamQuote.close || (streamQuote.pctChange !== 0 ? +(streamQuote.lastPrice / (1 + streamQuote.pctChange / 100)).toFixed(2) : streamQuote.lastPrice);
-
-    if (existingIdx >= 0) {
-      const item = list[existingIdx];
-      item.lastPrice = streamQuote.lastPrice;
-      item.pctChange = streamQuote.pctChange;
-      item.diff = streamQuote.diff;
-      if (streamQuote.high > 0) item.high = Math.max(item.high || 0, streamQuote.high);
-      if (streamQuote.low > 0) item.low = Math.min(item.low || streamQuote.low, streamQuote.low);
-      if (streamQuote.open > 0) item.open = streamQuote.open;
-      if (closeVal > 0) item.prevClose = closeVal;
-      if (streamQuote.tradedVolume > 0) item.tradedVolume = streamQuote.tradedVolume;
-      if (w52High > 0) item.week52High = w52High;
-      item.week52Low = w52Low;
-      item.updatedAt = streamQuote.updatedAt || new Date().toISOString();
-      item.isRealtime52W = true;
-      if (existingIdx > 0) {
-        list.splice(existingIdx, 1);
-        list.unshift(item);
-      }
-    } else {
-      const newItem = {
-        symbol: `${cleanSym}-EQ`,
-        nseSymbol: cleanSym,
-        companyName: streamQuote.displayName || cleanSym,
-        lastPrice: streamQuote.lastPrice,
-        pctChange: streamQuote.pctChange,
-        diff: streamQuote.diff,
-        prevClose: closeVal,
-        high: streamQuote.high || streamQuote.lastPrice,
-        low: streamQuote.low || streamQuote.lastPrice,
-        open: streamQuote.open || streamQuote.lastPrice,
-        tradedVolume: streamQuote.tradedVolume || 0,
-        week52High: w52High,
-        week52Low: w52Low,
-        instrumentId: String(streamQuote.instrumentId),
-        exchange: streamQuote.exchange || 'NSEEQ',
-        updatedAt: streamQuote.updatedAt || new Date().toISOString(),
-        isRealtime52W: true,
-        hitTime: indiaTimeString()
-      };
-      list.unshift(newItem);
-      if (list.length > 500) list.pop();
-    }
-  }
-}
-
 function updateScannerItemInPlace(list, streamQuote, cleanSym) {
   if (!Array.isArray(list)) return;
   const item = list.find(it => {
@@ -1084,10 +951,52 @@ function updateScannerItemInPlace(list, streamQuote, cleanSym) {
   }
 }
 
+/**
+ * Direct event receiver for on_high_52_week_data_received & on_low_52_week_data_received
+ * Fires ONLY when official IIFL exchange 52W event occurs (0 backend CPU stress per ordinary tick).
+ */
 function handle52WEvent(session, instrumentId, price, isHigh) {
   if (!session || !instrumentId || !price) return;
-  const instIdStr = String(instrumentId);
+  const instIdStr = String(instrumentId).trim();
 
+  // 1. Resolve Instrument details
+  const inst = knownInstrument('NSEEQ', instIdStr) ||
+               knownInstruments.get(`NSEEQ:${instIdStr}`) ||
+               knownInstruments.get(`BSEEQ:${instIdStr}`) ||
+               session.quotes?.find(q => String(q.instrumentId) === instIdStr);
+
+  let sym = inst?.symbol;
+  let companyName = inst?.displayName || inst?.symbol;
+  let exchange = inst?.exchange || 'NSEEQ';
+
+  if (!sym) {
+    const nseInfo = nseMaster.findInstrumentById?.(instIdStr);
+    if (nseInfo && nseInfo.symbol) {
+      sym = `${nseInfo.symbol}-EQ`;
+      companyName = nseInfo.companyName || sym;
+    }
+  }
+
+  const cleanSym = String(sym || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
+  const nse52 = cleanSym ? (nse52WMaster.get52WBounds(cleanSym) || nse52WMaster.get52WBounds(sym)) : null;
+
+  // 2. Fetch latest live price data from quote cache or live quotes
+  const liveQuote = session.quotes?.find(q => String(q.instrumentId) === instIdStr) || 
+                    session.scannerQuotesCache?.get(instIdStr);
+
+  const ltp = liveQuote?.lastPrice || price;
+  const highVal = Math.max(price, liveQuote?.high || price);
+  const lowVal = liveQuote?.low || price;
+  const openVal = liveQuote?.open || ltp;
+  const prevClose = liveQuote?.close || liveQuote?.prevClose || (liveQuote?.pctChange ? +(ltp / (1 + liveQuote.pctChange / 100)).toFixed(2) : ltp);
+  const pctChange = liveQuote?.pctChange ?? (prevClose > 0 ? +(((ltp - prevClose) / prevClose) * 100).toFixed(2) : 0);
+  const diff = prevClose > 0 ? +(ltp - prevClose).toFixed(2) : 0;
+  const volume = liveQuote?.tradedVolume || liveQuote?.volume || 0;
+
+  const w52High = isHigh ? price : (liveQuote?.week52High || nse52?.high || 0);
+  const w52Low = !isHigh ? price : (liveQuote?.week52Low || nse52?.low || 0);
+
+  // 3. Update session.quotes if present
   if (Array.isArray(session.quotes)) {
     const q = session.quotes.find(item => String(item.instrumentId) === instIdStr);
     if (q) {
@@ -1101,7 +1010,7 @@ function handle52WEvent(session, instrumentId, price, isHigh) {
     }
   }
 
-  // Update Action Watch events in session
+  // 4. Update Action Watch events in session
   if (Array.isArray(session.actionWatch)) {
     session.actionWatch.forEach(ev => {
       if (String(ev.instrumentId) === instIdStr) {
@@ -1111,29 +1020,72 @@ function handle52WEvent(session, instrumentId, price, isHigh) {
     });
   }
 
-  // Update scanner lists on 52W event
+  // 5. Append / Prepend to 52W High or 52W Low list in Market Analysis
   if (session.marketAnalysis) {
-    const update52WInList = (list) => {
-      if (!Array.isArray(list)) return;
-      const it = list.find(item => String(item.instrumentId) === instIdStr);
-      if (it) {
-        if (isHigh) it.week52High = price;
-        else it.week52Low = price;
+    const targetList = isHigh ? session.marketAnalysis.highs : session.marketAnalysis.lows;
+    if (Array.isArray(targetList)) {
+      const existingIdx = targetList.findIndex(it => {
+        const s = String(it.nseSymbol || it.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+        return (cleanSym && s === cleanSym) || String(it.instrumentId) === instIdStr;
+      });
+
+      if (existingIdx >= 0) {
+        const item = targetList[existingIdx];
+        item.lastPrice = ltp;
+        item.pctChange = pctChange;
+        item.diff = diff;
+        if (isHigh) item.week52High = price;
+        else item.week52Low = price;
+        if (highVal > 0) item.high = highVal;
+        if (lowVal > 0) item.low = lowVal;
+        if (volume > 0) item.tradedVolume = volume;
+        item.updatedAt = new Date().toISOString();
+        item.isRealtime52W = true;
+        item.hitTime = indiaTimeString();
+        if (existingIdx > 0) {
+          targetList.splice(existingIdx, 1);
+          targetList.unshift(item);
+        }
+      } else {
+        const newItem = {
+          symbol: sym ? `${cleanSym}-EQ` : `TOKEN-${instIdStr}`,
+          nseSymbol: cleanSym || sym || instIdStr,
+          companyName: companyName || cleanSym || `Token ${instIdStr}`,
+          lastPrice: ltp,
+          pctChange,
+          diff,
+          prevClose,
+          high: highVal,
+          low: lowVal,
+          open: openVal,
+          tradedVolume: volume,
+          week52High: w52High,
+          week52Low: w52Low,
+          instrumentId: instIdStr,
+          exchange,
+          updatedAt: new Date().toISOString(),
+          isRealtime52W: true,
+          hitTime: indiaTimeString()
+        };
+        targetList.unshift(newItem);
+        if (targetList.length > 500) targetList.pop();
       }
-    };
-    update52WInList(session.marketAnalysis.highs);
-    update52WInList(session.marketAnalysis.lows);
-    update52WInList(session.marketAnalysis.gainers);
-    update52WInList(session.marketAnalysis.losers);
+    }
   }
 
-  // Instantly broadcast live 52W delta tick to connected browser WebSocket clients
+  // 6. Instantly broadcast live 52W event tick to connected browser WebSocket clients
   if (session.wsClients && session.wsClients.size > 0) {
     broadcastToSession(session, {
       type: 'delta',
       id: instIdStr,
-      w52h: isHigh ? price : undefined,
-      w52l: !isHigh ? price : undefined,
+      ex: exchange,
+      lp: ltp,
+      pct: pctChange,
+      diff,
+      w52h: isHigh ? price : w52High,
+      w52l: !isHigh ? price : w52Low,
+      is52WEvent: true,
+      time: new Date().toISOString()
     });
   }
 }
