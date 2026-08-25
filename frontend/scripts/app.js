@@ -884,8 +884,12 @@ function applyDeltaPatch(delta) {
       if (delta.ap !== undefined) q.offerPrice = delta.ap;
       if (delta.aq !== undefined) q.offerQty = delta.aq;
       if (delta.v !== undefined) q.totalQty = delta.v;
-      if (delta.w52h !== undefined) q.week52High = delta.w52h;
-      if (delta.w52l !== undefined) q.week52Low = delta.w52l;
+      if (delta.w52h !== undefined && delta.w52h > 0) q.week52High = delta.w52h;
+      if (delta.w52l !== undefined && delta.w52l > 0) q.week52Low = delta.w52l;
+
+      // Dynamic realtime 52W bound progression
+      if (q.high > 0 && q.high > (q.week52High || 0)) q.week52High = q.high;
+      if (q.low > 0 && q.week52Low > 0 && q.low < q.week52Low) q.week52Low = q.low;
       break;
     }
   }
@@ -923,8 +927,8 @@ function applyDeltaPatch(delta) {
       if (delta.o !== undefined) row.openCell.textContent = fmt(targetQuote.open);
       if (delta.c !== undefined) row.closeCell.textContent = fmt(targetQuote.close);
       if (delta.v !== undefined) row.volCell.textContent = qty(targetQuote.totalQty);
-      if (delta.w52h !== undefined && delta.w52h > 0 && row.w52HighCell) row.w52HighCell.textContent = fmt(delta.w52h);
-      if (delta.w52l !== undefined && delta.w52l > 0 && row.w52LowCell) row.w52LowCell.textContent = fmt(delta.w52l);
+      if (targetQuote.week52High > 0 && row.w52HighCell) row.w52HighCell.textContent = fmt(targetQuote.week52High);
+      if (targetQuote.week52Low > 0 && row.w52LowCell) row.w52LowCell.textContent = fmt(targetQuote.week52Low);
 
       // Micro-tick hardware flash
       const flashClass = diff >= 0 ? 'flash-tick-up' : 'flash-tick-down';
