@@ -695,50 +695,51 @@ function ensureIIFLStream(session) {
 function syncStreamSubscriptions(session) {
   if (!iiflStream || !iiflStream.isConnected || !session) return;
   
-  const topics = new Set();
-  
-  // 1. Watchlist topics: <exchange>/<instrumentId>
+  const orderedTopics = [];
+  const added = new Set();
+
+  function addTopic(topic) {
+    const clean = String(topic || '').trim().toLowerCase();
+    if (clean && !added.has(clean)) {
+      added.add(clean);
+      orderedTopics.push(clean);
+    }
+  }
+
+  // Priority 1: Market Watch active watchlist scrips (e.g. 400 scrips)
   if (Array.isArray(session.watchlist)) {
     session.watchlist.forEach((inst) => {
       if (inst.instrumentId && /^\d+$/.test(String(inst.instrumentId).trim())) {
         const ex = (inst.exchange || 'NSEEQ').toLowerCase();
-        topics.add(`${ex}/${String(inst.instrumentId).trim()}`);
+        addTopic(`${ex}/${String(inst.instrumentId).trim()}`);
       }
     });
   }
 
-  // 2. Major Indices topics
-  topics.add('nseeq/999920000'); // Nifty 50
-  topics.add('nseeq/999920005'); // Bank Nifty
-  topics.add('bseeq/999901');    // Sensex
-  
-  // 3. Event topics for 52W High / Low alerts & Market status
-  topics.add('nseeq');
-  topics.add('bseeq');
-  topics.add('nsefo');
+  // Priority 2: Major Indices
+  addTopic('nseeq/999920000'); // Nifty 50
+  addTopic('nseeq/999920005'); // Bank Nifty
+  addTopic('bseeq/999901');    // Sensex
 
-  // 4. Market Analysis Scanner topics (up to 1024 scrips in batch)
-  const realNseData = nseScraper.getNSEMarketWideData();
-  const allScannerItems = [
-    ...(realNseData.highs_mc || []),
-    ...(realNseData.highs || []),
-    ...(realNseData.lows_mc || []),
-    ...(realNseData.lows || []),
-    ...(realNseData.gainers || []),
-    ...(realNseData.losers || [])
-  ];
+  // Priority 3: Event channels (52W High / Low broadcasts, Market status)
+  addTopic('nseeq');
+  addTopic('bseeq');
+  addTopic('nsefo');
 
-  allScannerItems.forEach((item) => {
-    const inst = findInstrumentBySymbol(item.nseSymbol || item.symbol) || (item.instrumentId && /^\d+$/.test(String(item.instrumentId)) ? item : null);
+  // Priority 4: All remaining NSE equity instruments from the pre-loaded 4,000+ catalog
+  // (knownInstruments + nse52WMaster + nseMaster) up to 6,000 total topics
+  for (const inst of knownInstruments.values()) {
+    if (orderedTopics.length >= 6000) break;
     if (inst && inst.instrumentId && /^\d+$/.test(String(inst.instrumentId).trim())) {
       const ex = (inst.exchange || 'NSEEQ').toLowerCase();
-      topics.add(`${ex}/${String(inst.instrumentId).trim()}`);
+      if (ex === 'nseeq' || ex === 'nse') {
+        addTopic(`nseeq/${String(inst.instrumentId).trim()}`);
+      }
     }
-  });
+  }
 
-  const topicsList = Array.from(topics);
-  console.log(`[IIFL STREAM] 📡 Registering ${topicsList.length} subscriptions in batch (0ms polling)...`);
-  iiflStream.subscribe(topicsList);
+  console.log(`[IIFL STREAM] 📡 Registering ${orderedTopics.length} prioritized subscriptions (Priority 1: ${session.watchlist?.length || 0} Watchlist Scrips)...`);
+  iiflStream.subscribe(orderedTopics);
 }
 
 function handleIncomingStreamQuote(session, streamQuote) {
@@ -864,8 +865,12 @@ function handleIncomingStreamQuote(session, streamQuote) {
     }
   }
 
-  // 3. Update scanner lists in-place so scanner tables stay updated in real-time with zero duplicates
+  // 3. Process 52-Week High and 52-Week Low real-time breakouts across all subscribed market scrips
   const cleanSym = String(streamQuote.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+  const w52H = streamQuote.week52High || (currentQ?.week52High) || 0;
+  const w52L = streamQuote.week52Low || (currentQ?.week52Low) || 0;
+  process52WRealtimeBreakout(session, streamQuote, cleanSym, w52H, w52L);
+
   if (session.marketAnalysis) {
     updateScannerItemInPlace(session.marketAnalysis.highs, streamQuote, cleanSym);
     updateScannerItemInPlace(session.marketAnalysis.lows, streamQuote, cleanSym);
@@ -939,6 +944,123 @@ function scheduleStreamBroadcast(session, newEvents = []) {
       timestamp: new Date().toISOString(),
     });
   }, 1000); // 1-second full-state synchronization heartbeat
+}
+
+function process52WRealtimeBreakout(session, streamQuote, cleanSym, w52High, w52Low) {
+  if (!session || !session.marketAnalysis || !cleanSym || streamQuote.lastPrice <= 0) return;
+
+  const currentHigh = Math.max(streamQuote.lastPrice || 0, streamQuote.high || 0);
+  const currentLow = (streamQuote.low > 0 && streamQuote.low < streamQuote.lastPrice) ? streamQuote.low : streamQuote.lastPrice;
+
+  // 1. Check 52-Week High Breakout
+  if (w52High > 0 && currentHigh >= w52High) {
+    if (!Array.isArray(session.marketAnalysis.highs)) session.marketAnalysis.highs = [];
+    const list = session.marketAnalysis.highs;
+    const existingIdx = list.findIndex(it => {
+      const s = String(it.nseSymbol || it.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+      return s === cleanSym || String(it.instrumentId) === String(streamQuote.instrumentId);
+    });
+
+    const closeVal = streamQuote.close || (streamQuote.pctChange !== 0 ? +(streamQuote.lastPrice / (1 + streamQuote.pctChange / 100)).toFixed(2) : streamQuote.lastPrice);
+    
+    if (existingIdx >= 0) {
+      const item = list[existingIdx];
+      item.lastPrice = streamQuote.lastPrice;
+      item.pctChange = streamQuote.pctChange;
+      item.diff = streamQuote.diff;
+      if (streamQuote.high > 0) item.high = Math.max(item.high || 0, streamQuote.high);
+      if (streamQuote.low > 0) item.low = Math.min(item.low || streamQuote.low, streamQuote.low);
+      if (streamQuote.open > 0) item.open = streamQuote.open;
+      if (closeVal > 0) item.prevClose = closeVal;
+      if (streamQuote.tradedVolume > 0) item.tradedVolume = streamQuote.tradedVolume;
+      item.week52High = w52High;
+      if (w52Low > 0) item.week52Low = w52Low;
+      item.updatedAt = streamQuote.updatedAt || new Date().toISOString();
+      item.isRealtime52W = true;
+      if (existingIdx > 0) {
+        list.splice(existingIdx, 1);
+        list.unshift(item);
+      }
+    } else {
+      const newItem = {
+        symbol: `${cleanSym}-EQ`,
+        nseSymbol: cleanSym,
+        companyName: streamQuote.displayName || cleanSym,
+        lastPrice: streamQuote.lastPrice,
+        pctChange: streamQuote.pctChange,
+        diff: streamQuote.diff,
+        prevClose: closeVal,
+        high: streamQuote.high || streamQuote.lastPrice,
+        low: streamQuote.low || streamQuote.lastPrice,
+        open: streamQuote.open || streamQuote.lastPrice,
+        tradedVolume: streamQuote.tradedVolume || 0,
+        week52High: w52High,
+        week52Low: w52Low,
+        instrumentId: String(streamQuote.instrumentId),
+        exchange: streamQuote.exchange || 'NSEEQ',
+        updatedAt: streamQuote.updatedAt || new Date().toISOString(),
+        isRealtime52W: true,
+        hitTime: indiaTimeString()
+      };
+      list.unshift(newItem);
+      if (list.length > 500) list.pop();
+    }
+  }
+
+  // 2. Check 52-Week Low Breakdown
+  if (w52Low > 0 && currentLow > 0 && currentLow <= w52Low) {
+    if (!Array.isArray(session.marketAnalysis.lows)) session.marketAnalysis.lows = [];
+    const list = session.marketAnalysis.lows;
+    const existingIdx = list.findIndex(it => {
+      const s = String(it.nseSymbol || it.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim();
+      return s === cleanSym || String(it.instrumentId) === String(streamQuote.instrumentId);
+    });
+
+    const closeVal = streamQuote.close || (streamQuote.pctChange !== 0 ? +(streamQuote.lastPrice / (1 + streamQuote.pctChange / 100)).toFixed(2) : streamQuote.lastPrice);
+
+    if (existingIdx >= 0) {
+      const item = list[existingIdx];
+      item.lastPrice = streamQuote.lastPrice;
+      item.pctChange = streamQuote.pctChange;
+      item.diff = streamQuote.diff;
+      if (streamQuote.high > 0) item.high = Math.max(item.high || 0, streamQuote.high);
+      if (streamQuote.low > 0) item.low = Math.min(item.low || streamQuote.low, streamQuote.low);
+      if (streamQuote.open > 0) item.open = streamQuote.open;
+      if (closeVal > 0) item.prevClose = closeVal;
+      if (streamQuote.tradedVolume > 0) item.tradedVolume = streamQuote.tradedVolume;
+      if (w52High > 0) item.week52High = w52High;
+      item.week52Low = w52Low;
+      item.updatedAt = streamQuote.updatedAt || new Date().toISOString();
+      item.isRealtime52W = true;
+      if (existingIdx > 0) {
+        list.splice(existingIdx, 1);
+        list.unshift(item);
+      }
+    } else {
+      const newItem = {
+        symbol: `${cleanSym}-EQ`,
+        nseSymbol: cleanSym,
+        companyName: streamQuote.displayName || cleanSym,
+        lastPrice: streamQuote.lastPrice,
+        pctChange: streamQuote.pctChange,
+        diff: streamQuote.diff,
+        prevClose: closeVal,
+        high: streamQuote.high || streamQuote.lastPrice,
+        low: streamQuote.low || streamQuote.lastPrice,
+        open: streamQuote.open || streamQuote.lastPrice,
+        tradedVolume: streamQuote.tradedVolume || 0,
+        week52High: w52High,
+        week52Low: w52Low,
+        instrumentId: String(streamQuote.instrumentId),
+        exchange: streamQuote.exchange || 'NSEEQ',
+        updatedAt: streamQuote.updatedAt || new Date().toISOString(),
+        isRealtime52W: true,
+        hitTime: indiaTimeString()
+      };
+      list.unshift(newItem);
+      if (list.length > 500) list.pop();
+    }
+  }
 }
 
 function updateScannerItemInPlace(list, streamQuote, cleanSym) {

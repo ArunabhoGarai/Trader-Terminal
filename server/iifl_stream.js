@@ -149,16 +149,22 @@ class IIFLMarketDataStream extends EventEmitter {
   }
 
   /**
-   * Subscribe to market data scrips or indices
+   * Subscribe to market data scrips or indices (up to 6,000 topics max)
    * Formats topics with official IIFL prefixes (e.g. prod/marketfeed/mw/v1/nseeq/2885)
    * @param {string[]} rawTokens - e.g. ['nseeq/2885', 'nseeq/999920000', 'bseeq/999901', 'nseeq']
    */
   subscribe(rawTokens) {
     if (!Array.isArray(rawTokens) || rawTokens.length === 0) return;
     
+    const MAX_TOTAL_TOPICS = 6000;
     const fullTopics = [];
 
     for (const raw of rawTokens) {
+      if (this.subscribedTopics.size + fullTopics.length >= MAX_TOTAL_TOPICS) {
+        console.warn(`[IIFL STREAM] ⚠️ Reached max subscription limit of ${MAX_TOTAL_TOPICS} topics. Ignoring further subscriptions.`);
+        break;
+      }
+
       const clean = String(raw).trim().toLowerCase();
       if (!clean) continue;
 
@@ -179,10 +185,11 @@ class IIFLMarketDataStream extends EventEmitter {
       }
     }
 
-    fullTopics.forEach(t => this.subscribedTopics.add(t));
+    const newTopics = fullTopics.filter(t => !this.subscribedTopics.has(t));
+    newTopics.forEach(t => this.subscribedTopics.add(t));
 
-    if (this.isConnected && this.client) {
-      this._rawSubscribe(fullTopics);
+    if (this.isConnected && this.client && newTopics.length > 0) {
+      this._rawSubscribe(newTopics);
     }
   }
 
@@ -209,17 +216,20 @@ class IIFLMarketDataStream extends EventEmitter {
   }
 
   /**
-   * Internal batch subscription helper (max 1024 topics per MQTT SUB request)
+   * Internal batch subscription helper (strictly max 1024 topics per MQTT SUB request)
    */
   _rawSubscribe(topicsList) {
     const BATCH_SIZE = 1024;
+    console.log(`[IIFL STREAM] 📡 Dispatching ${topicsList.length} subscriptions in chunks of up to ${BATCH_SIZE}...`);
     for (let i = 0; i < topicsList.length; i += BATCH_SIZE) {
       const batch = topicsList.slice(i, i + BATCH_SIZE);
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(topicsList.length / BATCH_SIZE);
       this.client.subscribe(batch, { qos: 0 }, (err, granted) => {
         if (err) {
-          console.warn('[IIFL STREAM] ⚠️ Batch subscription error:', err.message);
+          console.warn(`[IIFL STREAM] ⚠️ Batch ${batchNum}/${totalBatches} subscription error:`, err.message);
         } else {
-          console.log(`[IIFL STREAM] 📡 Subscribed to ${batch.length} topic(s) (granted: ${granted?.length || 0}).`);
+          console.log(`[IIFL STREAM] ✅ Batch ${batchNum}/${totalBatches} active: ${batch.length} topic(s) (granted: ${granted?.length || 0}). Total active: ${this.subscribedTopics.size}.`);
         }
       });
     }
