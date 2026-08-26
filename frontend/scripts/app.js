@@ -345,6 +345,15 @@ function analysisRows() {
   }
   const filterRows = (sourceRows) => sourceRows.filter((quote) => {
     const exchange = String(quote.exchange || 'NSEEQ').toUpperCase();
+    const sym = String(quote.symbol || quote.nseSymbol || '').toUpperCase().trim();
+
+    // Strict User Rule: 52W High & 52W Low tabs display ONLY NSE stocks (no BSE / unknown tokens)
+    if (state.analysisTab === 'high' || state.analysisTab === 'low') {
+      if (exchange.startsWith('BSE') || sym.startsWith('TOKEN-') || /^\d+$/.test(sym)) {
+        return false;
+      }
+    }
+
     const isFutureOption = (quote.segment || '').toUpperCase() === 'F&O' || exchange.endsWith('FO');
     const exchangeAllowed = (exchange.startsWith('NSE') || !quote.exchange) ? options.nse : exchange.startsWith('BSE') ? options.bse : true;
     return exchangeAllowed && (isFutureOption ? options.fo : options.cash);
@@ -961,8 +970,9 @@ function applyDeltaPatch(delta) {
     updateInList(state.marketAnalysis.gainers);
     updateInList(state.marketAnalysis.losers);
 
-    // Live insertion for 52W High breakout if not already in list
-    if (delta.lp > 0 && delta.w52h > 0 && delta.lp >= delta.w52h && Array.isArray(state.marketAnalysis.highs)) {
+    // Live insertion for 52W High breakout if not already in list (NSE only)
+    const isNseTarget = targetQuote && String(targetQuote.exchange || 'NSEEQ').toUpperCase().startsWith('NSE') && !String(targetQuote.symbol || '').startsWith('TOKEN-');
+    if (isNseTarget && delta.lp > 0 && delta.w52h > 0 && delta.lp >= delta.w52h && Array.isArray(state.marketAnalysis.highs)) {
       const exists = state.marketAnalysis.highs.some(x => String(x.instrumentId) === instId || (cleanSym && String(x.nseSymbol || x.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim() === cleanSym));
       if (!exists && targetQuote) {
         state.marketAnalysis.highs.unshift({
@@ -987,8 +997,8 @@ function applyDeltaPatch(delta) {
       }
     }
 
-    // Live insertion for 52W Low breakdown if not already in list
-    if (delta.lp > 0 && delta.w52l > 0 && delta.lp <= delta.w52l && Array.isArray(state.marketAnalysis.lows)) {
+    // Live insertion for 52W Low breakdown if not already in list (NSE only)
+    if (isNseTarget && delta.lp > 0 && delta.w52l > 0 && delta.lp <= delta.w52l && Array.isArray(state.marketAnalysis.lows)) {
       const exists = state.marketAnalysis.lows.some(x => String(x.instrumentId) === instId || (cleanSym && String(x.nseSymbol || x.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').toUpperCase().trim() === cleanSym));
       if (!exists && targetQuote) {
         state.marketAnalysis.lows.unshift({
