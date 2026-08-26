@@ -747,12 +747,11 @@ function syncStreamSubscriptions(session) {
   addTopic('nseeq/999920005'); // Bank Nifty
   addTopic('bseeq/999901');    // Sensex
 
-  // 3. Exchange-Wide Event Channels - IIFL broadcasts ALL 52W Highs/Lows across the entire exchange on these topics!
+  // 3. Exchange-Wide Event Channels - IIFL broadcasts ALL 52W Highs/Lows across the NSE exchange
   addTopic('nseeq'); // prod/marketfeed/high52week/v1/nseeq & low52week/v1/nseeq
-  addTopic('bseeq'); // prod/marketfeed/high52week/v1/bseeq & low52week/v1/bseeq
   addTopic('nsefo'); // prod/marketfeed/high52week/v1/nsefo & low52week/v1/nsefo
 
-  console.log(`[IIFL STREAM] 📡 Registering ${orderedTopics.length} focused subscriptions (${session.watchlist?.length || 0} Watchlist Scrips + Indices + Exchange 52W Channels)...`);
+  console.log(`[IIFL STREAM] 📡 Registering ${orderedTopics.length} focused subscriptions (${session.watchlist?.length || 0} Watchlist Scrips + Indices + NSE 52W Channels)...`);
   iiflStream.subscribe(orderedTopics);
 }
 
@@ -999,15 +998,14 @@ function handle52WEvent(session, instrumentId, price, isHigh) {
   if (!session || !instrumentId || !price) return;
   const instIdStr = String(instrumentId).trim();
 
-  // 1. Resolve Instrument details
+  // 1. Resolve Instrument details - STRICTLY NSE ONLY
   const inst = knownInstrument('NSEEQ', instIdStr) ||
                knownInstruments.get(`NSEEQ:${instIdStr}`) ||
-               knownInstruments.get(`BSEEQ:${instIdStr}`) ||
-               session.quotes?.find(q => String(q.instrumentId) === instIdStr);
+               session.quotes?.find(q => String(q.instrumentId) === instIdStr && String(q.exchange || 'NSEEQ').toUpperCase().startsWith('NSE'));
 
   let sym = inst?.symbol;
   let companyName = inst?.displayName || inst?.symbol;
-  let exchange = inst?.exchange || 'NSEEQ';
+  let exchange = 'NSEEQ';
 
   if (!sym) {
     const nseInfo = nseMaster.findInstrumentById?.(instIdStr);
@@ -1015,6 +1013,11 @@ function handle52WEvent(session, instrumentId, price, isHigh) {
       sym = `${nseInfo.symbol}-EQ`;
       companyName = nseInfo.companyName || sym;
     }
+  }
+
+  // Reject any unmapped BSE token or non-NSE instrument
+  if (!sym || sym.startsWith('TOKEN-') || /^\d+$/.test(sym)) {
+    return;
   }
 
   const cleanSym = String(sym || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').toUpperCase().trim();
