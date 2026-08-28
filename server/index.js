@@ -523,17 +523,18 @@ function isMarketHours() {
   return totalMins >= (8 * 60 + 15) && totalMins <= (15 * 60 + 30);
 }
 
-function isBefore815AM() {
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Kolkata',
-    hour: 'numeric', minute: 'numeric', hour12: false
-  }).formatToParts(now);
-  const h = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
-  const m = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
-  const totalMins = h * 60 + m;
-  return totalMins < (8 * 60 + 15);
-}
+// Legacy morning check commented out — universal dynamic Day High/Low comparison now applies in all scenarios
+// function isBefore815AM() {
+//   const now = new Date();
+//   const parts = new Intl.DateTimeFormat('en-US', {
+//     timeZone: 'Asia/Kolkata',
+//     hour: 'numeric', minute: 'numeric', hour12: false
+//   }).formatToParts(now);
+//   const h = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+//   const m = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+//   const totalMins = h * 60 + m;
+//   return totalMins < (8 * 60 + 15);
+// }
 
 function updateActionWatch(session, nextQuotes) {
   const today = indiaTradingDate();
@@ -541,8 +542,6 @@ function updateActionWatch(session, nextQuotes) {
     session.actionWatchDate = today;
     session.actionWatch = [];
     session.intradayRanges.clear();
-    // Morning check: if session is authenticated before market open (8:15 AM IST), mark early login
-    session.wasLoggedInAt8AM = Boolean(session.accessToken) && isBefore815AM();
   }
 
   // Pre-build set of watchlist instrumentIds & clean symbols for strict O(1) membership check
@@ -1142,6 +1141,8 @@ function clearSession(session, message) {
   session.authenticatedAt = null;
   session.mode = 'SIMULATION';
   session.lastError = message || null;
+  session.actionWatch = [];
+  session.intradayRanges.clear();
   ensureIIFLStream(session);
 }
 
@@ -1173,14 +1174,12 @@ async function exchangeAuthorizationCode(code, clientId, session) {
   session.expiresAt = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
   session.mode = 'LIVE';
   session.lastError = null;
-  // Preserve action watch notifications across market session; only reset on new day at 12:00 AM
-  const today = indiaTradingDate();
-  if (session.actionWatchDate !== today) {
-    session.actionWatch = [];
-    session.actionWatchDate = today;
-    session.wasLoggedInAt8AM = isBefore815AM();
-    session.intradayRanges.clear();
-  }
+
+  // Fresh live session on login: clear old notifications and prior ranges
+  // Initial live quote ticks anchor the day's baseline, and notifications only fire when new ticks make a new Day High/Low!
+  session.actionWatch = [];
+  session.actionWatchDate = indiaTradingDate();
+  session.intradayRanges.clear();
 
   // Launch real-time binary stream
   ensureIIFLStream(session);
