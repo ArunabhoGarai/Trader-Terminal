@@ -421,24 +421,18 @@ function loadGlobalState() {
         });
       }
 
-      if (data.actionWatch && Array.isArray(data.actionWatch)) {
-        const watchInstSet = new Set(session.watchlist.map(w => String(w.instrumentId)));
-        const watchSymSet = new Set(session.watchlist.map(w => String(w.symbol || '').toUpperCase().trim()));
-        session.actionWatch = data.actionWatch.filter(ev => watchInstSet.has(String(ev.instrumentId)) || watchSymSet.has(String(ev.symbol || '').toUpperCase().trim()));
-      }
       // Rebuild initial quotes matching the loaded watchlist - always start with valid simulation quotes so prices are NEVER 0/blank
       session.quotes = session.watchlist.map((inst, idx) => makeSimulationQuote(inst, idx));
-      if (data.intradayRanges) {
-        // Restore saved ranges and normalise to include deduplication fields (added in newer builds)
-        session.intradayRanges = new Map(data.intradayRanges.map(([key, range]) => [
-          key,
-          { lastAlertHigh: null, lastAlertLow: null, lastAlertTime: 0, ...range }
-        ]));
-      } else {
-        // Fresh start — seed from LTP only
-        session.intradayRanges = new Map(session.quotes.map((q) => [instrumentKey(q), { high: q.lastPrice, low: q.lastPrice, lastAlertHigh: null, lastAlertLow: null, lastAlertTime: 0 }]));
-      }
-      console.log(`[STATE] Loaded terminal state (mode: ${session.mode}) with ${session.watchlist.length} scrips and ${session.actionWatch.length} alerts.`);
+
+      // NEVER restore actionWatch or intradayRanges from disk.
+      // Always start fresh on boot — the first live tick from IIFL anchors the current
+      // Day High / Day Low as baseline, and only genuine subsequent breakouts fire alerts.
+      // This completely eliminates stale 15-minute-old alerts on server restart / page refresh.
+      session.actionWatch = [];
+      session.actionWatchDate = indiaTradingDate();
+      session.intradayRanges = new Map();
+
+      console.log(`[STATE] Loaded terminal state (mode: ${session.mode}) with ${session.watchlist.length} scrips. Action Watch starts FRESH (zero stale alerts).`);
     } catch (e) {
       console.warn('[STATE] Failed to load terminal_state.json, starting fresh.', e);
     }
@@ -456,10 +450,9 @@ function saveGlobalState() {
     authenticatedAt: session.authenticatedAt,
     mode: session.accessToken ? 'LIVE' : session.mode,
     watchlist: session.watchlist,
-    actionWatch: session.actionWatch,
-    actionWatchDate: session.actionWatchDate,
+    // actionWatch and intradayRanges are intentionally NOT saved.
+    // They always start fresh on boot to guarantee zero stale alerts.
     columnWidths: session.columnWidths || {},
-    intradayRanges: Array.from(session.intradayRanges.entries()),
   };
   const json = JSON.stringify(state);
   if (json !== lastStateJson) {
