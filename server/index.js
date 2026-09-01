@@ -631,6 +631,10 @@ function updateActionWatch(session, nextQuotes) {
         }
       }
 
+      const now = new Date();
+      const nowISO = now.toISOString();
+      const exchangeTimeISO = quote.exchangeTime || null;
+
       const event = {
         instrumentId: String(quote.instrumentId),
         symbol: sym || `TOKEN-${quote.instrumentId}`,
@@ -642,9 +646,19 @@ function updateActionWatch(session, nextQuotes) {
         week52High: w52High,
         week52Low: w52Low,
         direction,
-        timestamp: quote.updatedAt || new Date().toISOString(),
+        timestamp: nowISO,
         time: indiaTimeString(),
+        exchangeTime: exchangeTimeISO,
       };
+
+      // Diagnostic: log IIFL broker delivery latency
+      if (exchangeTimeISO) {
+        const latencyMs = now.getTime() - new Date(exchangeTimeISO).getTime();
+        if (latencyMs > 5000) {
+          console.warn(`[ACTION WATCH] ⚠️ IIFL delayed delivery: ${sym || instId} ${status} @ ₹${eventPrice} — Exchange time: ${exchangeTimeISO}, Received: ${nowISO} (${(latencyMs / 1000).toFixed(1)}s late)`);
+        }
+      }
+
       newEvents.push(event);
       session.actionWatch.unshift(event);
       if (session.actionWatch.length > ACTION_WATCH_LIMIT) session.actionWatch.length = ACTION_WATCH_LIMIT;
@@ -877,7 +891,8 @@ function handleIncomingStreamQuote(session, streamQuote) {
         week52High: new52High,
         week52Low: new52Low,
         isReal52W: Boolean(new52High > 0),
-        updatedAt: streamQuote.updatedAt
+        updatedAt: streamQuote.updatedAt,
+        exchangeTime: streamQuote.exchangeTime || null
       };
       session.quotes[qIdx] = currentQ;
       quoteUpdated = true;

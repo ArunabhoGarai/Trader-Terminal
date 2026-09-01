@@ -366,6 +366,15 @@ function parseMarketFeed(buffer, subTopic = '') {
   const diff = close > 0 ? +(ltp - close).toFixed(2) : 0;
   const pctChange = close > 0 ? +(((ltp - close) / close) * 100).toFixed(2) : 0;
 
+  // Convert IIFL lastTradedTime (epoch seconds) to ISO timestamp
+  let exchangeTime = null;
+  if (lastTradedTime > 1000000000) {
+    // Valid epoch seconds (after year ~2001)
+    exchangeTime = new Date(lastTradedTime * 1000).toISOString();
+  }
+
+  const receivedAt = new Date().toISOString();
+
   return {
     exchange,
     instrumentId,
@@ -384,10 +393,11 @@ function parseMarketFeed(buffer, subTopic = '') {
     tradedVolume,
     averageTradedPrice,
     lastTradedTime,
+    exchangeTime,
     bids,
     asks,
     priceDivisor,
-    updatedAt: new Date().toISOString()
+    updatedAt: receivedAt
   };
 }
 
