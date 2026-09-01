@@ -173,6 +173,14 @@ function indiaTimeString() {
   return new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date());
 }
 
+function isMarketOpen() {
+  // NSE continuous trading: 09:15 – 15:30 IST
+  const now = new Date();
+  const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const hhmm = ist.getHours() * 100 + ist.getMinutes();
+  return hhmm >= 915 && hhmm <= 1530;
+}
+
 // ---------------------------------------------------------------------------
 // Quote builders
 // ---------------------------------------------------------------------------
@@ -222,7 +230,7 @@ function makeSimulationQuote(instrument, position = 0) {
     low, bestBidPrice: Math.max(0, basePrice - spread),
     bestBidQty: 80 + position * 53, bestAskPrice: basePrice + spread,
     bestAskQty: 100 + position * 61, tradedVolume: 70000 + position * 12431,
-    week52High, week52Low, isReal52W: false, updatedAt: new Date().toISOString(), position,
+    week52High, week52Low, isReal52W: false, isSimulation: true, updatedAt: new Date().toISOString(), position,
   };
 }
 
@@ -535,6 +543,13 @@ function updateActionWatch(session, nextQuotes) {
     session.actionWatchDate = today;
     session.actionWatch = [];
     session.intradayRanges.clear();
+  }
+
+  // Only detect breakouts during live NSE market hours (09:15 – 15:30 IST).
+  // Post-market and pre-market ticks from IIFL carry stale/closing data that
+  // would produce phantom "New High" / "New Low" alerts.
+  if (!isMarketOpen()) {
+    return [];
   }
 
   // Pre-build set of watchlist instrumentIds & clean symbols for strict O(1) membership check
@@ -879,8 +894,10 @@ function handleIncomingStreamQuote(session, streamQuote) {
         ...existing,
         lastPrice: streamQuote.lastPrice,
         open: streamQuote.open || existing.open,
-        high: streamQuote.high || existing.high,
-        low: streamQuote.low || existing.low,
+        // Use stream high/low with LTP fallback — NEVER fall back to simulation quote high/low
+        // because simulation values are synthetic and would cause phantom breakout alerts
+        high: streamQuote.high > 0 ? streamQuote.high : (existing.high > 0 && !existing.isSimulation ? existing.high : streamQuote.lastPrice),
+        low: streamQuote.low > 0 ? streamQuote.low : (existing.low > 0 && !existing.isSimulation ? existing.low : streamQuote.lastPrice),
         close: streamQuote.close || existing.close,
         pctChange: streamQuote.pctChange,
         bestBidPrice: streamQuote.bestBidPrice || existing.bestBidPrice,
@@ -892,7 +909,8 @@ function handleIncomingStreamQuote(session, streamQuote) {
         week52Low: new52Low,
         isReal52W: Boolean(new52High > 0),
         updatedAt: streamQuote.updatedAt,
-        exchangeTime: streamQuote.exchangeTime || null
+        exchangeTime: streamQuote.exchangeTime || null,
+        isSimulation: false
       };
       session.quotes[qIdx] = currentQ;
       quoteUpdated = true;
