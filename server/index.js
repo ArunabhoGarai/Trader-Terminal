@@ -21,7 +21,19 @@ const nse52WMaster = require('./nse_52w_master');
 const { IIFLMarketDataStream } = require('./iifl_stream');
 let iiflStream = null;
 
-nseMaster.loadNSEMaster();
+// Initialize NSE Master disk cache & start automated daily schedule to download & replace stock listings
+nseMaster.startDailyNSESchedule(async () => {
+  console.log('[NSE Master] 🔄 Daily listings refreshed, syncing contracts catalog...');
+  try {
+    const refreshed = await contractsFor('NSEEQ', true);
+    if (refreshed.length > 0) {
+      refreshed.forEach(inst => knownInstruments.set(instrumentKey(inst), inst));
+    }
+    syncCatalogWithNSEMaster();
+  } catch (e) {
+    console.warn('[NSE Catalog] ⚠️ Sync notice:', e.message);
+  }
+});
 
 loadDotEnv(path.join(__dirname, '.env'));
 
@@ -1709,7 +1721,12 @@ function loadContractsFromDisk() {
       const data = JSON.parse(fs.readFileSync(CONTRACTS_DISK_CACHE, 'utf8'));
       for (const [code, list] of Object.entries(data)) {
         if (Array.isArray(list)) {
-          list.forEach(inst => knownInstruments.set(instrumentKey(inst), inst));
+          list.forEach(inst => {
+            knownInstruments.set(instrumentKey(inst), inst);
+            if (inst.instrumentId && inst.symbol) {
+              nseMaster.mapInstrumentId(inst.instrumentId, inst.symbol, inst.displayName);
+            }
+          });
           contractCache.set(code, { at: Date.now(), instruments: list });
         }
       }
@@ -1722,9 +1739,24 @@ function loadContractsFromDisk() {
 
 loadContractsFromDisk();
 
-async function contractsFor(code) {
+function syncCatalogWithNSEMaster() {
+  let updatedCount = 0;
+  for (const inst of knownInstruments.values()) {
+    if (inst.exchange === 'NSEEQ' || inst.exchange === 'NSE') {
+      const cleanSym = String(inst.symbol || '').replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
+      const companyName = nseMaster.getCompanyName(cleanSym) || nseMaster.getCompanyName(inst.symbol);
+      if (companyName && inst.displayName !== companyName) {
+        inst.displayName = companyName;
+        updatedCount++;
+      }
+    }
+  }
+  return updatedCount;
+}
+
+async function contractsFor(code, forceRefresh = false) {
   const cached = contractCache.get(code);
-  if (cached && Date.now() - cached.at < CONTRACT_CACHE_MS && cached.instruments.length > 0) return cached.instruments;
+  if (!forceRefresh && cached && Date.now() - cached.at < CONTRACT_CACHE_MS && cached.instruments.length > 0) return cached.instruments;
   try {
     const response = await axios.get(`${CONFIG.apiBaseUrl}/contractfiles/${code}.json`, { 
       timeout: 30000,
@@ -1736,6 +1768,13 @@ async function contractsFor(code) {
     const instruments = contractRows(response.data).map((row, index) => normaliseContract(row, code, index)).filter(Boolean);
     if (instruments.length > 0) {
       contractCache.set(code, { at: Date.now(), instruments });
+      instruments.forEach(inst => {
+        knownInstruments.set(instrumentKey(inst), inst);
+        if (inst.instrumentId && inst.symbol) {
+          nseMaster.mapInstrumentId(inst.instrumentId, inst.symbol, inst.displayName);
+        }
+      });
+      syncCatalogWithNSEMaster();
       try {
         const toSave = {};
         for (const [k, v] of contractCache.entries()) toSave[k] = v.instruments;
@@ -1766,8 +1805,9 @@ async function searchInstruments(exchange, segment, query) {
   for (const inst of knownInstruments.values()) {
     if (!codes.includes(inst.exchange)) continue;
     const sym = String(inst.symbol || '').toUpperCase();
+    const cleanSym = sym.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
     const name = String(inst.displayName || inst.symbol || '').toUpperCase();
-    if (sym.includes(needle) || name.includes(needle)) {
+    if (sym.includes(needle) || cleanSym.includes(needle) || name.includes(needle)) {
       const key = `${inst.exchange}:${inst.instrumentId}`;
       if (!seen.has(key)) {
         seen.add(key);
@@ -1780,8 +1820,9 @@ async function searchInstruments(exchange, segment, query) {
   for (const inst of STATIC_CATALOG) {
     if (!codes.includes(inst.exchange)) continue;
     const sym = String(inst.symbol || '').toUpperCase();
+    const cleanSym = sym.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
     const name = String(inst.displayName || inst.symbol || '').toUpperCase();
-    if (sym.includes(needle) || name.includes(needle)) {
+    if (sym.includes(needle) || cleanSym.includes(needle) || name.includes(needle)) {
       const key = `${inst.exchange}:${inst.instrumentId}`;
       if (!seen.has(key)) {
         seen.add(key);
@@ -1790,20 +1831,47 @@ async function searchInstruments(exchange, segment, query) {
     }
   }
 
-  // 3. Relevance ranking: Exact match > StartsWith > Substring
+  // 3. Search freshly downloaded NSE Master listings for any newly released stocks
+  if (codes.includes('NSEEQ') || codes.includes('NSE')) {
+    const nseSymbols = nseMaster.getAllSymbols();
+    for (const listing of nseSymbols) {
+      if (!listing || !listing.symbol) continue;
+      const sym = String(listing.symbol).toUpperCase().trim();
+      const name = String(listing.companyName || '').toUpperCase().trim();
+      
+      if (sym.includes(needle) || name.includes(needle)) {
+        // Find matching instrument in catalog
+        const existing = findInstrumentBySymbol(sym);
+        if (existing) {
+          const key = `${existing.exchange}:${existing.instrumentId}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            if (listing.companyName && existing.displayName !== listing.companyName) {
+              existing.displayName = listing.companyName;
+            }
+            matches.push(existing);
+          }
+        }
+      }
+    }
+  }
+
+  // 4. Relevance ranking: Exact match > StartsWith > Substring
   matches.sort((a, b) => {
     const aSym = String(a.symbol).toUpperCase();
     const bSym = String(b.symbol).toUpperCase();
+    const aClean = aSym.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
+    const bClean = bSym.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
     
-    const aExact = aSym === needle ? 0 : 1;
-    const bExact = bSym === needle ? 0 : 1;
+    const aExact = (aSym === needle || aClean === needle) ? 0 : 1;
+    const bExact = (bSym === needle || bClean === needle) ? 0 : 1;
     if (aExact !== bExact) return aExact - bExact;
 
-    const aStarts = aSym.startsWith(needle) ? 0 : 1;
-    const bStarts = bSym.startsWith(needle) ? 0 : 1;
+    const aStarts = (aSym.startsWith(needle) || aClean.startsWith(needle)) ? 0 : 1;
+    const bStarts = (bSym.startsWith(needle) || bClean.startsWith(needle)) ? 0 : 1;
     if (aStarts !== bStarts) return aStarts - bStarts;
 
-    return aSym.localeCompare(bSym);
+    return aClean.localeCompare(bClean);
   });
 
   return matches.slice(0, 15);
@@ -1949,6 +2017,39 @@ app.post('/api/market-watch/refresh', async (req, res) => {
 app.post('/api/nse/refresh', async (req, res) => {
   const result = await nseScraper.scrapeNSE(true);
   res.json(result);
+});
+
+// Manual on-demand trigger to download and replace listings & contracts live
+app.all('/api/listings/refresh', async (req, res) => {
+  try {
+    console.log('[Manual Update] 🔄 Manual trigger received: refreshing NSE stock listings and IIFL contracts...');
+    const nseUpdated = await nseMaster.downloadAndReplaceNSEListings();
+    const refreshedContracts = await contractsFor('NSEEQ', true);
+    if (refreshedContracts.length > 0) {
+      refreshedContracts.forEach(inst => knownInstruments.set(instrumentKey(inst), inst));
+    }
+    const syncedCount = syncCatalogWithNSEMaster();
+    
+    // Check specific scrips for verification
+    const jpl = knownInstruments.get('NSEEQ:766830') || findInstrumentBySymbol('JPL');
+    const swiggy = findInstrumentBySymbol('SWIGGY');
+    const hyundai = findInstrumentBySymbol('HYUNDAI');
+    
+    res.json({
+      status: 'ok',
+      message: 'Successfully refreshed NSE stock listings and contracts cache.',
+      nseListingsCount: nseMaster.getAllSymbols().length,
+      catalogSize: knownInstruments.size,
+      syncedCompanyNames: syncedCount,
+      verifiedScrips: {
+        JPL: jpl || null,
+        SWIGGY: swiggy || null,
+        HYUNDAI: hyundai || null
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'error', message: err.message });
+  }
 });
 
 app.post('/api/settings/column-widths', (req, res) => {
@@ -2599,8 +2700,10 @@ server.listen(CONFIG.port, CONFIG.host, async () => {
     const nseEqInstruments = await contractsFor('NSEEQ');
     if (nseEqInstruments.length > 0) {
       nseEqInstruments.forEach(inst => knownInstruments.set(instrumentKey(inst), inst));
-      console.log(`[IIFL Catalog] ✅ Successfully pre-loaded ${nseEqInstruments.length} NSEEQ equity instruments into memory.`);
+      syncCatalogWithNSEMaster();
+      console.log(`[IIFL Catalog] ✅ Successfully pre-loaded ${nseEqInstruments.length} NSEEQ equity instruments into memory (Catalog size: ${knownInstruments.size}).`);
     } else {
+      syncCatalogWithNSEMaster();
       console.log(`[IIFL Catalog] ℹ️ Loaded ${knownInstruments.size} instruments from local memory/disk cache.`);
     }
   } catch (err) {
