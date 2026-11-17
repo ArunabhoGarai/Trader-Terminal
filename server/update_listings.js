@@ -57,21 +57,25 @@ async function runManualUpdate() {
   }
 
   // -------------------------------------------------------------------------
-  // STEP 2: Download & Replace IIFL Equity Contracts (NSEEQ.json)
+  // STEP 2: Download & Replace IIFL Equity Contracts (NSEEQ.json & BSEEQ.json)
   // -------------------------------------------------------------------------
   console.log('\n▶ STEP 2: Fetching live equity contract tokens from IIFL Capital API...');
   let nseContracts = [];
-  try {
-    const iiflUrl = 'https://api.iiflcapital.com/v1/contractfiles/NSEEQ.json';
-    console.log(`  📡 Requesting: ${iiflUrl}...`);
-    const res = await axios.get(iiflUrl, {
-      timeout: 30000,
-      headers: {
-        'Accept': 'application/json, text/plain, */*',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      }
-    });
+  let bseContracts = [];
 
+  const axiosOptions = {
+    timeout: 30000,
+    headers: {
+      'Accept': 'application/json, text/plain, */*',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+  };
+
+  // Download NSEEQ
+  try {
+    const nseUrl = 'https://api.iiflcapital.com/v1/contractfiles/NSEEQ.json';
+    console.log(`  📡 Requesting NSE contracts: ${nseUrl}...`);
+    const res = await axios.get(nseUrl, axiosOptions);
     const rawList = Array.isArray(res.data) ? res.data : (res.data?.result || res.data?.data || []);
     if (rawList.length > 0) {
       nseContracts = rawList.map((row, index) => {
@@ -93,23 +97,55 @@ async function runManualUpdate() {
           tickSize: row.tickSize || '0.05'
         };
       }).filter(Boolean);
-
-      // Save to contracts_cache.json
-      let fullCache = {};
-      try {
-        if (fs.existsSync(CONTRACTS_FILE)) fullCache = JSON.parse(fs.readFileSync(CONTRACTS_FILE, 'utf8'));
-      } catch (_) {}
-      fullCache['NSEEQ'] = nseContracts;
-      fs.writeFileSync(CONTRACTS_FILE, JSON.stringify(fullCache), 'utf8');
-
-      const contractStats = fs.statSync(CONTRACTS_FILE);
-      console.log(`  ✅ Successfully updated contracts_cache.json (${nseContracts.length} instruments, ${(contractStats.size / 1024).toFixed(1)} KB)`);
-    } else {
-      console.warn('  ⚠️ IIFL contract file returned empty list.');
+      console.log(`  ✅ Successfully parsed ${nseContracts.length} NSEEQ contracts.`);
     }
   } catch (err) {
-    console.warn(`  ⚠️ Failed to download IIFL contracts: ${err.message}`);
+    console.warn(`  ⚠️ Failed to download NSE contracts: ${err.message}`);
   }
+
+  // Download BSEEQ
+  try {
+    const bseUrl = 'https://api.iiflcapital.com/v1/contractfiles/BSEEQ.json';
+    console.log(`  📡 Requesting BSE contracts: ${bseUrl}...`);
+    const resBse = await axios.get(bseUrl, axiosOptions);
+    const rawListBse = Array.isArray(resBse.data) ? resBse.data : (resBse.data?.result || resBse.data?.data || []);
+    if (rawListBse.length > 0) {
+      bseContracts = rawListBse.map((row, index) => {
+        const instrumentId = String(row.instrumentId ?? row.instrumentID ?? row.exchangeInstrumentId ?? row.token ?? '').trim();
+        const rawSymbol = String(row.symbol ?? row.tradingSymbol ?? row.underlyingInstrumentSymbol ?? row.name ?? '').trim().toUpperCase();
+        if (!instrumentId || !rawSymbol) return null;
+
+        const cleanSym = rawSymbol.replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '').trim();
+        const companyName = nseMaster.getCompanyName(cleanSym) || nseMaster.getCompanyName(rawSymbol) || row.formattedInstrumentName || rawSymbol;
+
+        return {
+          instrumentId,
+          symbol: rawSymbol,
+          exchange: 'BSEEQ',
+          segment: 'Equity',
+          displayName: companyName,
+          basePrice: parseFloat(row.lastPrice ?? row.close ?? 100) || 100,
+          lotSize: row.lotSize || '1',
+          tickSize: row.tickSize || '0.05'
+        };
+      }).filter(Boolean);
+      console.log(`  ✅ Successfully parsed ${bseContracts.length} BSEEQ contracts.`);
+    }
+  } catch (err) {
+    console.warn(`  ⚠️ Failed to download BSE contracts: ${err.message}`);
+  }
+
+  // Save both NSEEQ and BSEEQ to contracts_cache.json
+  let fullCache = {};
+  try {
+    if (fs.existsSync(CONTRACTS_FILE)) fullCache = JSON.parse(fs.readFileSync(CONTRACTS_FILE, 'utf8'));
+  } catch (_) {}
+  if (nseContracts.length > 0) fullCache['NSEEQ'] = nseContracts;
+  if (bseContracts.length > 0) fullCache['BSEEQ'] = bseContracts;
+  fs.writeFileSync(CONTRACTS_FILE, JSON.stringify(fullCache), 'utf8');
+
+  const contractStats = fs.statSync(CONTRACTS_FILE);
+  console.log(`  💾 Successfully updated contracts_cache.json (${(nseContracts.length + bseContracts.length)} total contracts across NSE & BSE, ${(contractStats.size / (1024 * 1024)).toFixed(2)} MB)`);
 
   // -------------------------------------------------------------------------
   // STEP 3: Refresh 52-Week High & Low Archive
@@ -127,49 +163,87 @@ async function runManualUpdate() {
   }
 
   // -------------------------------------------------------------------------
-  // STEP 4: Verification of Key & Newly Released Scrips
+  // STEP 4: Verification of Key Scrips (NSE, BSE, and Exclusive Scrips)
   // -------------------------------------------------------------------------
-  console.log('\n▶ STEP 4: Verifying targeted scrips (JPL-EQ, SWIGGY-EQ, HYUNDAI-EQ, etc.)...');
+  console.log('\n▶ STEP 4: Verifying targeted scrips (NSE, BSE, and Exclusive scrips)...');
   
   // Scrips to verify: defaults + any CLI arguments
   const cliArgs = process.argv.slice(2).map(a => a.toUpperCase().trim()).filter(Boolean);
-  const verifySymbols = Array.from(new Set(['JPL', 'SWIGGY', 'HYUNDAI', 'RELIANCE', ...cliArgs]));
+  const verifySymbols = Array.from(new Set(['RELIANCE', 'TCS', 'JPL', 'SWIGGY', 'HYUNDAI', '544937', ...cliArgs]));
 
-  // Index contracts by symbol
-  const contractsBySym = new Map();
-  nseContracts.forEach(c => {
+  // Index contracts by symbol and exchange
+  const allContracts = [...nseContracts, ...bseContracts];
+  const contractsByKey = new Map();
+  allContracts.forEach(c => {
     const raw = c.symbol.toUpperCase();
     const clean = raw.replace(/-(EQ|BE|SM|ST|BZ|E1|E2)$/i, '');
-    contractsBySym.set(raw, c);
-    if (!contractsBySym.has(clean)) contractsBySym.set(clean, c);
+    contractsByKey.set(`${c.exchange}:${raw}`, c);
+    contractsByKey.set(`${c.exchange}:${clean}`, c);
+    contractsByKey.set(`${c.exchange}:${c.instrumentId}`, c);
+    contractsByKey.set(`ID:${c.instrumentId}`, c);
   });
 
-  console.log('------------------------------------------------------------------------------------------------');
-  console.log('| SYMBOL       | TOKEN       | SERIES | COMPANY NAME                     | STATUS               |');
-  console.log('------------------------------------------------------------------------------------------------');
+  console.log('----------------------------------------------------------------------------------------------------------------');
+  console.log('| SYMBOL / QUERY | EXCHANGE | TOKEN       | COMPANY NAME                     | STATUS                          |');
+  console.log('----------------------------------------------------------------------------------------------------------------');
 
   for (const sym of verifySymbols) {
+    // Check if token was provided (e.g. 544937)
+    if (/^\d+$/.test(sym)) {
+      const byId = contractsByKey.get(`ID:${sym}`);
+      if (byId) {
+        const symPad = byId.symbol.padEnd(14);
+        const exPad = byId.exchange.padEnd(8);
+        const tokenPad = byId.instrumentId.padEnd(11);
+        const companyPad = (byId.displayName || 'Unknown').slice(0, 32).padEnd(32);
+        console.log(`| ${symPad} | ${exPad} | ${tokenPad} | ${companyPad} | ✅ BSE Exclusive (Ready)       |`);
+      }
+      continue;
+    }
+
+    // Check NSE
+    const nseC = contractsByKey.get(`NSEEQ:${sym}`) || contractsByKey.get(`NSEEQ:${sym}-EQ`);
+    // Check BSE
+    const bseC = contractsByKey.get(`BSEEQ:${sym}`);
+
     const listing = nseMaster.getListingDetails(sym);
-    const contract = contractsBySym.get(sym) || contractsBySym.get(`${sym}-EQ`);
 
-    const symbolPad = (contract?.symbol || `${sym}-EQ`).padEnd(12);
-    const tokenPad = (contract?.instrumentId || 'N/A').padEnd(11);
-    const seriesPad = (listing?.series || 'EQ').padEnd(6);
-    const company = (listing?.companyName || contract?.displayName || 'Unknown').slice(0, 32);
-    const companyPad = company.padEnd(32);
-    const status = (contract && listing) ? '✅ Ready (Search & Stream)' : (contract ? '✅ In IIFL Catalog' : '⚠️ Pending Token');
-    const statusPad = status.padEnd(20);
+    if (nseC) {
+      const symPad = nseC.symbol.padEnd(14);
+      const exPad = 'NSEEQ'.padEnd(8);
+      const tokenPad = nseC.instrumentId.padEnd(11);
+      const companyPad = (nseC.displayName || listing?.companyName || 'Unknown').slice(0, 32).padEnd(32);
+      const status = '✅ Ready (NSE)';
+      console.log(`| ${symPad} | ${exPad} | ${tokenPad} | ${companyPad} | ${status.padEnd(31)} |`);
+    }
 
-    console.log(`| ${symbolPad} | ${tokenPad} | ${seriesPad} | ${companyPad} | ${statusPad} |`);
+    if (bseC) {
+      const symPad = bseC.symbol.padEnd(14);
+      const exPad = 'BSEEQ'.padEnd(8);
+      const tokenPad = bseC.instrumentId.padEnd(11);
+      const companyPad = (bseC.displayName || 'Unknown').slice(0, 32).padEnd(32);
+      const status = nseC ? '✅ Ready (BSE)' : '✅ BSE Exclusive (Ready)';
+      console.log(`| ${symPad} | ${exPad} | ${tokenPad} | ${companyPad} | ${status.padEnd(31)} |`);
+    }
+
+    if (!nseC && !bseC) {
+      const symPad = sym.padEnd(14);
+      const exPad = 'N/A'.padEnd(8);
+      const tokenPad = 'N/A'.padEnd(11);
+      const companyPad = (listing?.companyName || 'Unknown').slice(0, 32).padEnd(32);
+      console.log(`| ${symPad} | ${exPad} | ${tokenPad} | ${companyPad} | ⚠️ Pending Contract Token       |`);
+    }
   }
-  console.log('------------------------------------------------------------------------------------------------');
+  console.log('----------------------------------------------------------------------------------------------------------------');
 
   console.log('\n================================================================');
   console.log('🎉 MANUAL UPDATE COMPLETED SUCCESSFULLY!');
   console.log('================================================================');
   console.log('Summary:');
   console.log(` • Active NSE Stock Listings: ${nseMaster.getAllSymbols().length} symbols`);
-  console.log(` • Active Equity Contracts:   ${nseContracts.length} instruments with valid tokens`);
+  console.log(` • Active NSE Equity Tokens:  ${nseContracts.length} instruments`);
+  console.log(` • Active BSE Equity Tokens:  ${bseContracts.length} instruments`);
+  console.log(` • Total Searchable Catalog:  ${(nseContracts.length + bseContracts.length)} instruments`);
   console.log(` • Cache files updated on disk:`);
   console.log(`     - ${EQUITY_L_FILE}`);
   console.log(`     - ${SME_EQUITY_L_FILE}`);
