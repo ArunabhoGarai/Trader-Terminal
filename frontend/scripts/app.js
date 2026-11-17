@@ -269,25 +269,38 @@ function searchInstruments() {
       if (exFilter !== 'ALL' && inst.exchange !== exFilter && !inst.exchange.startsWith(exFilter)) return false;
       if (segFilter !== 'ALL' && inst.segment !== segFilter) return false;
       const sym = String(inst.symbol || '').toUpperCase();
+      const cleanSym = sym.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
       const name = String(inst.displayName || '').toUpperCase();
-      return sym.includes(needle) || name.includes(needle);
+      const id = String(inst.instrumentId || '').trim();
+      return sym.includes(needle) || cleanSym.includes(needle) || name.includes(needle) || id === needle || id.includes(needle);
     });
 
     localMatches.sort((a, b) => {
-      const aSym = String(a.symbol).toUpperCase();
-      const bSym = String(b.symbol).toUpperCase();
-      const aExact = aSym === needle ? 0 : 1;
-      const bExact = bSym === needle ? 0 : 1;
+      const aId = String(a.instrumentId || '').trim();
+      const bId = String(b.instrumentId || '').trim();
+      if (aId === needle && bId !== needle) return -1;
+      if (bId === needle && aId !== needle) return 1;
+
+      const aSym = String(a.symbol || '').toUpperCase();
+      const bSym = String(b.symbol || '').toUpperCase();
+      const aClean = aSym.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
+      const bClean = bSym.replace(/-(EQ|BE|SM|ST|BZ|E1|E2|N[1-9]|RR)$/i, '').trim();
+
+      const aExact = (aSym === needle || aClean === needle) ? 0 : 1;
+      const bExact = (bSym === needle || bClean === needle) ? 0 : 1;
       if (aExact !== bExact) return aExact - bExact;
 
-      const aStarts = aSym.startsWith(needle) ? 0 : 1;
-      const bStarts = bSym.startsWith(needle) ? 0 : 1;
-      if (aStarts !== bStarts) return aStarts - bStarts;
+      if (aClean !== bClean) return aClean.localeCompare(bClean);
+
+      // Within the same company: show NSEEQ first, then BSEEQ
+      if (a.exchange !== b.exchange) {
+        return a.exchange === 'NSEEQ' ? -1 : 1;
+      }
 
       return aSym.localeCompare(bSym);
     });
 
-    state.suggestions = localMatches.slice(0, 15);
+    state.suggestions = localMatches.slice(0, 25);
     renderSearchResults();
   }
 
@@ -299,7 +312,7 @@ function searchInstruments() {
     .then(data => {
       if (request !== state.searchRequest || !data || !Array.isArray(data.instruments)) return;
       if (data.instruments.length > 0) {
-        state.suggestions = data.instruments.slice(0, 15);
+        state.suggestions = data.instruments.slice(0, 25);
         renderSearchResults();
       }
     })
@@ -435,13 +448,13 @@ function analysisStatus(quote) {
 }
 
 function formatEventTime(event) {
-  // Use server-provided time string if available, otherwise format from timestamp
   if (event.time) return event.time;
-  try {
-    return new Date(event.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-  } catch (_) {
-    return '--:--:--';
+  if (event.timestamp) {
+    try {
+      return new Date(event.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    } catch (_) {}
   }
+  return '--:--:--';
 }
 
 function renderAnalysis() {
